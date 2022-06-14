@@ -1,0 +1,195 @@
+
+// fn main() {
+    // let args: Vec<String> = std::env::args().skip(1).collect();
+    // if args.len() > 0 {
+    //     print!("Thanks for the args! {:?}", args);
+    // }
+
+    // let first_arg = std::env::args().nth(1).expect("Ayo where the argument at?");
+    // let num: i32 = first_arg.parse().expect("Ayo this aint no int_32");
+    // println!("Thanks for the {num} G, you a real one :)");
+    
+    // let bruh = "hmmmm";
+    // let no = bruh.chars().collect();
+    // let text = "the quick brown fox is so damn tired";
+
+    // match text.find("brhjowng") {
+    //     Some(index) => {
+    //         println!("Nice, look at {}", index);
+    //     },
+    //     None => println!("Aww")
+    // } 
+
+    // for arg in std::env::args(){
+    //     println!("You said {}", arg);
+    // }
+
+    // let path = env::args().nth(1).expect("No file provided");
+    // println!("Path: {}", path);
+    // println!("{:?}", read_string(&path));
+
+    // let a = A { s: "hello dammit" };
+
+    // println!("{:?}", a);
+
+    // let mut file = File::open(&path).expect("Sorry G, can't open the file");
+    // let mut text = String::new();
+    
+    // match file.read_to_string(&mut text) {//.expect("L, can't read the file");
+    //     Ok(_) => println!("File contents: {text}"),
+    //     Err(e) => print!("Errored with {e}")
+    // }
+    // println!("The file has {} bytes", text.len());
+
+    // println!("It was... {:?}", good_or_bad(false));
+    // let res = good_or_bad(true);
+
+    // match res {
+    //     Ok(n) => {
+    //         let m = n * 23;
+    //         println!("Nice, we got {m}!");
+    //     },
+    //     Err(e) => println!("Oof, we got {e}")
+    // }
+
+// }
+
+// fn read_string(path: &str) -> std::io::Result<String> {
+//     let mut file = File::open(&path)?;
+//     let mut text = String::new();
+
+//     file.read_to_string(&mut text)?;
+//     Ok(text)
+
+
+// }
+
+// #[derive(Debug)]
+// struct A {
+//     s: &'static str
+// }
+// fn good_or_bad(is_good: bool) -> Result<i32, String> {
+//     if is_good {
+//         Ok(42)
+//     } else {
+//         Err("bad".to_string())
+//     }
+// }
+
+// fn old_main() {
+//     println!("Hello, world!");
+//     let a = [0, 0];
+//     let b = [5, 5];
+//     let dist = distance(&a, &b);
+//     println!("Distance {}", dist);
+
+//     let mut sum: f64 = 0.0;
+//     for i in 0..10 {
+//         sum += i as f64;
+//         let even_odd = if i % 2 == 0{"even"} else {"odd"};
+//         println!("Hello again world, x{}, {}ly!", i, even_odd);
+//     }
+//     println!("Your total is ${}", sum);
+//     println!("Cube of your total is ${}", cube(&(sum as i32)));
+//     sales_tax(&mut sum);
+//     println!("With tax applied, ${}", sum);
+    
+//     let pi = consts::PI;
+//     let x = pi / 2.0;
+//     println!("Cosine of π/2 = {}", x.cos());
+
+//     let array = [1, 2, 7, 6, 2, 1, 5, 9, 0];
+//     println!("This array is {} long.", array.len());
+//     for i in 0..9 {
+//         println!("[{}] = {}", i, array[i]);
+//     }
+//     println!("It contains {:?}", array);
+//     println!("Slice... {:?}", &array[0..4]);
+//     println!("and dice! {:?}", &array[4..]);
+
+//     let slice = &array;
+//     let first = slice.get(0);
+//     let last = slice.get(10);
+
+//     println!("First: {:?} | Last: {:?}", first, last);
+//     println!("Does first contain?: {:?} | Does last contain?: {:?}", first.is_some(), last.is_some());
+//     println!("Is first empty?: {:?} | Is last empty?: {:?}", first.is_none(), last.is_none());
+//     println!("Value of first: {:?} | Value of last: {:?}", *first.unwrap(), *last.unwrap_or(&0));
+
+//     let mut v = Vec::new();
+//     v.push(10); v.push(20); v.push(100);
+//     let first = v[0];
+//     let maybe_first = v.get(0);
+
+//     println!("Hi, my name is v and I am {:?}", v);
+//     println!("v's first: {}", first);
+//     println!("v's maybe_first: {:?}", maybe_first);
+//     println!("v's slice: {:?}", &v);
+
+//     for i in array {
+//         println!("{}", i);
+//     }
+
+//     let new_sum: i32 = array.iter().sum();
+//     println!("New sum: {}", new_sum);
+    
+//     let mut v2 = vec![10, 23, 20, 12, 10, 4, 0, 23];
+//     println!("v2 started out as: {:?}", v2);
+//     v2.sort(); v2.dedup();
+//     println!("now v2 is: {:?}", v2);
+
+//     let text = "Hello world!"; //str slice
+//     let mut allocated_text = text.to_string();
+
+//     allocated_text.push('!');
+//     allocated_text.push_str(" Goodbye world...");
+//     allocated_text += " Sorry. Too tired for it all!";
+//     allocated_text.pop();
+
+//     let f_string = format!("2 + 2 = {}", 2 + 2);
+
+//     dump(text);
+//     dump(&allocated_text);
+//     dump(&f_string);
+
+//     println!("Remember array? {}", array_to_string(&array));
+
+//     let desc = "The quick brown fox jumps over the lazy dog";
+//     let words: Vec<&str> = desc.split_whitespace().collect();
+//     let mut words_again = Vec::new();
+//     words_again.extend(desc.split_whitespace());
+
+//     let words_stripped: String = desc.chars().filter(|ch| !ch.is_whitespace()).collect();
+
+//     println!("words:          {:?}", words);
+//     println!("words_again:    {:?}", words_again);
+//     println!("words_stripped: {:?}", words_stripped);
+
+
+// }
+
+// fn array_to_string(arr: &[i32]) -> String {
+//     let mut s = '['.to_string();
+//     for v in arr {
+//         s.push_str(&v.to_string());
+//         s.push_str(", ");
+//     }
+//     s.pop(); s.pop(); s.push(']');
+//     s
+// }
+
+// fn dump(s: &str) {
+//     println!("str: \"{}\"", s);
+// }
+
+// fn cube(x: &i32) -> i32 {
+//     (*x) * (*x) * (*x)
+// }
+
+// fn sales_tax(x: &mut f64) {
+//     *x = *x * 1.06;
+// }
+
+// fn distance(a: &[i32], b: &[i32]) -> f32 {
+//     (((a[0] - b[0]) as f32).powf(2.0) + ((a[1] - b[1]) as f32).powf(2.0)).powf(0.5)
+// }
