@@ -42,6 +42,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f9b8508dccb7687a1d6c4ce66b2b0ecef467c94667de27d8d7fe1f8d2a9cdc"
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -920,6 +926,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 name = "htool2"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "custom_error",
  "figment",
  "hex",
@@ -929,6 +936,7 @@ dependencies = [
  "path-absolutize",
  "serde",
  "sha256",
+ "thiserror",
  "toml",
 ]
 
