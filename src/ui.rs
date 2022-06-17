@@ -1,15 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::path::Path;
+use crate::errors::MediaReadError;
 use eframe::epaint::TextureHandle;
+use egui_extras::RetainedImage;
 use image::io::Reader as ImageReader;
 use image::{imageops as ImageOps, DynamicImage};
-use egui_extras::RetainedImage;
-use crate::errors::MediaReadError;
+use std::path::Path;
 
 use super::Config;
 use anyhow::{Context, Error, Result};
 use eframe::egui::{self, Button, Direction};
+use poll_promise::Promise;
 use rfd::FileDialog;
 
 use std::{
@@ -34,22 +35,29 @@ struct MediaEntry {
     attempted_load: bool,
     dir_entry: DirEntry,
     is_selected: bool,
-    image: Option<RetainedImage>
-    // image: Option<DynamicImage>,
-    // image_texture: Option<egui::TextureHandle>,
-    // thumbnail_texture: Option<egui::TextureHandle>
+    image: Option<Promise<Result<RetainedImage>>>, // image: Option<DynamicImage>,
+                                                   // image_texture: Option<egui::TextureHandle>,
+                                                   // thumbnail_texture: Option<egui::TextureHandle>
 }
 
 impl MediaEntry {
-    pub fn load_image(&mut self) -> Result<()> { //change to return self.image or blah blah
-        if self.image.is_some() { return Ok(()) }
+    pub fn load_image(&mut self) -> Result<RetainedImage> {
+        //change to return self.image or blah blah
+        // if self.image.is_some() { return Ok(()) }
         // println!("1");
         let path = self.dir_entry.path();
         // println!("2");
         let image = ImageReader::open(path)?.with_guessed_format()?.decode()?;
         // println!("3");
         let (w, h) = (image.width(), image.height());
-        let image_cropped = ImageOps::crop_imm(&image, if h > w { 0 } else { (w - h) / 2 }, if w > h { 0 } else { (h - w) / 2 }, if h > w { w } else { h }, if w > h { h } else { w }).to_image();
+        let image_cropped = ImageOps::crop_imm(
+            &image,
+            if h > w { 0 } else { (w - h) / 2 },
+            if w > h { 0 } else { (h - w) / 2 },
+            if h > w { w } else { h },
+            if w > h { h } else { w },
+        )
+        .to_image();
         // println!("4");
         let thumbnail = ImageOps::thumbnail(&image_cropped, 100, 100);
         // println!("5");
@@ -58,19 +66,15 @@ impl MediaEntry {
         // let image_buffer = image.to_rgba8();
         let pixels = thumbnail.as_flat_samples();
         // println!("7");
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-            size,
-            pixels.as_slice(),
-        );
-        
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+
         // println!("8");
-        self.image = Some(RetainedImage::from_color_image(
+        Ok(RetainedImage::from_color_image(
             "rust-logo-256x256.png",
-            color_image),
-        );
+            color_image,
+        ))
         // println!("9");
         // self.image = Some(ImageReader::open(self.dir_entry.path())?.decode()?);
-        Ok(())
     }
     // pub fn get_thumbnail_texture(&mut self, config: &Config, context: &eframe::egui::Context) -> Result<&TextureHandle> {
     //     // let image = ImageReader::open(path)?.decode()?;
@@ -94,11 +98,9 @@ impl MediaEntry {
     //     )));
     //     self.thumbnail_texture.as_ref().context("couldnt generate thumbnail")
 
-        // Ok(())
+    // Ok(())
     // }
-    pub fn load_image_texture(&mut self) {
-
-    }
+    pub fn load_image_texture(&mut self) {}
 }
 
 /*
@@ -133,7 +135,10 @@ impl Default for ImporterUI {
         let config = Config::load().expect("couldn't load config");
 
         Self {
-            placeholder_image: RetainedImage::from_color_image("placeholder", egui::ColorImage::example()),
+            placeholder_image: RetainedImage::from_color_image(
+                "placeholder",
+                egui::ColorImage::example(),
+            ),
             scanned_dir_entries: None,
             alternate_scan_dir: None,
             config,
@@ -149,8 +154,9 @@ impl ImporterUI {
             .unwrap_or(&self.config.path.landing)
     }
 
-
-    fn load_thumbnail_from_path(path: &std::path::Path) -> Result<egui::ColorImage, image::ImageError> {
+    fn load_thumbnail_from_path(
+        path: &std::path::Path,
+    ) -> Result<egui::ColorImage, image::ImageError> {
         let image = ImageReader::open(path)?.decode()?;
         let image_cropped = ImageOps::crop_imm(&image, 20, 20, 20, 20).to_image();
         let thumbnail = ImageOps::thumbnail(&image_cropped, 100, 100);
@@ -208,8 +214,7 @@ impl eframe::App for ImporterUI {
                         let mut scanned_dir_entries = vec![];
                         for dir_entry_res in dir_entries_iter {
                             if let Ok(dir_entry) = dir_entry_res {
-                                scanned_dir_entries.push(
-                                Arc::new(Mutex::new(MediaEntry {
+                                scanned_dir_entries.push(Arc::new(Mutex::new(MediaEntry {
                                     attempted_load: false,
                                     started_load: false,
                                     image: None,
@@ -236,13 +241,11 @@ impl eframe::App for ImporterUI {
                     if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                         for media_entry_arc in scanned_dirs.iter_mut() {
                             let media_entry_mutex = media_entry_arc.lock();
-                            match media_entry_mutex  {
+                            match media_entry_mutex {
                                 Ok(mut media_entry) => {
                                     media_entry.is_selected = true;
                                 }
-                                Err(error) => {
-
-                                }
+                                Err(error) => {}
                             }
                         }
                     }
@@ -258,15 +261,12 @@ impl eframe::App for ImporterUI {
                     if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                         for media_entry_arc in scanned_dirs.iter_mut() {
                             let media_entry_mutex = media_entry_arc.lock();
-                            match media_entry_mutex  {
+                            match media_entry_mutex {
                                 Ok(mut media_entry) => {
                                     media_entry.is_selected = false;
                                 }
-                                Err(error) => {
-                                    
-                                }
+                                Err(error) => {}
                             }
-                        
                         }
                     }
                 }
@@ -278,13 +278,11 @@ impl eframe::App for ImporterUI {
                     if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                         for media_entry_arc in scanned_dirs.iter_mut() {
                             let media_entry_mutex = media_entry_arc.lock();
-                            match media_entry_mutex  {
+                            match media_entry_mutex {
                                 Ok(mut media_entry) => {
                                     media_entry.is_selected = !media_entry.is_selected;
                                 }
-                                Err(error) => {
-                                    
-                                }
+                                Err(error) => {}
                             }
                         }
                     }
@@ -292,18 +290,19 @@ impl eframe::App for ImporterUI {
 
                 if ui
                     .add_enabled(
-                        self.scanned_dir_entries.is_some() && self.scanned_dir_entries.as_ref().unwrap().iter().any(|media_entry_arc| {
-                            let media_entry_mutex = media_entry_arc.lock();
-                            match media_entry_mutex  {
-                                Ok(media_entry) => {
-                                    media_entry.is_selected
-                                    // media_entry.is_selected = !media_entry.is_selected;
-                                }
-                                Err(error) => {
-                                    false
-                                }
-                            }
-                        }),
+                        self.scanned_dir_entries.is_some()
+                            && self.scanned_dir_entries.as_ref().unwrap().iter().any(
+                                |media_entry_arc| {
+                                    let media_entry_mutex = media_entry_arc.lock();
+                                    match media_entry_mutex {
+                                        Ok(media_entry) => {
+                                            media_entry.is_selected
+                                            // media_entry.is_selected = !media_entry.is_selected;
+                                        }
+                                        Err(error) => false,
+                                    }
+                                },
+                            ),
                         Button::new("import selected"),
                     )
                     .clicked()
@@ -312,27 +311,45 @@ impl eframe::App for ImporterUI {
 
             ui.columns(2, |cols| {
                 let mut cols_iter = cols.iter_mut();
-                let  files_col = &mut cols_iter.next().unwrap();
-                let  previews_col = &mut cols_iter.next().unwrap();
+                let files_col = &mut cols_iter.next().unwrap();
+                let previews_col = &mut cols_iter.next().unwrap();
                 files_col.label("file");
                 previews_col.label("preview");
-                if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-                    for media_entry_arc in scanned_dirs.iter_mut() {
-                        // let media_entry_arc = Arc::new(Mutex::new(media_entry));
 
+
+                // scan button was clicked, and scanned_dirs has loaded with mediaentries
+                if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                    // iterate through each mediaentry to draw its name on the sidebar, and to load its image
+                    // wrapped in an arc mutex for multithreading purposes
+                    for media_entry_arc in scanned_dirs.iter_mut() {
+                        // take
                         let media_entry_mutex = media_entry_arc.lock();
                         if media_entry_mutex.is_err() {
                             println!("skipped errored mutex");
                             continue;
                         }
+
                         let mut media_entry = media_entry_mutex.unwrap();
+
+                        // display label stuff 
                         let empty_path = Path::new("");
                         let dir_entry = &media_entry.dir_entry;
                         let dir_entry_path = dir_entry.path();
-                        let dir_entry_parent = dir_entry_path.parent().unwrap_or(&empty_path).file_name().unwrap_or(empty_path.as_os_str()).to_str().unwrap_or("");
-                        let dir_entry_filename = dir_entry_path.file_name().unwrap_or(empty_path.as_os_str()).to_str().unwrap_or("");
+                        let dir_entry_parent = dir_entry_path
+                            .parent()
+                            .unwrap_or(&empty_path)
+                            .file_name()
+                            .unwrap_or(empty_path.as_os_str())
+                            .to_str()
+                            .unwrap_or("");
+                        let dir_entry_filename = dir_entry_path
+                            .file_name()
+                            .unwrap_or(empty_path.as_os_str())
+                            .to_str()
+                            .unwrap_or("");
                         let dir_entry_label = format!("{dir_entry_parent}/{dir_entry_filename}");
-    
+
+                        // create label in left column
                         if files_col
                             .selectable_label(media_entry.is_selected, dir_entry_label)
                             .clicked()
@@ -340,71 +357,24 @@ impl eframe::App for ImporterUI {
                             media_entry.is_selected = !media_entry.is_selected;
                         };
 
-                        // let texture = media_entry.get_thumbnail_texture(&self.config, previews_col.ctx());
-                        println!("{}, {}, {}", media_entry.dir_entry.path().display(), media_entry.started_load, media_entry.attempted_load);
-                        
-                        if !media_entry.started_load {
-                            media_entry.started_load = true;
-                            thread::spawn({
-                                println!("spawned thread for {}", media_entry.dir_entry.file_name().to_str().unwrap_or("[none]"));
-                                let media_entry_arc_clone = Arc::clone(&media_entry_arc) ;
+                        // promise for loading image
+                        let promise = media_entry.image.get_or_insert_with(|| {
+                            // clone the arc, make spawn a thread 
+                            let media_entry_arc_clone = Arc::clone(&media_entry_arc);
+                            let promise = Promise::spawn_thread(
+                                format!("load_{dir_entry_filename}"),
                                 move || {
+                                    // take mutex, then load image (slow)
                                     let media_entry_mutex = media_entry_arc_clone.lock();
-
-                                    match media_entry_mutex {
-                                        Ok(mut media_entry_mutex) => {
-                                            println!("loading {}", media_entry_mutex.dir_entry.path().display());
-                                            let load_result = media_entry_mutex.load_image(); 
-                                            media_entry_mutex.attempted_load = true;
-                                            if load_result.is_err() {
-                                                println!("error showing image for {}", media_entry_mutex.dir_entry.path().display());
-                                            }
-                                        }
-                                        Err(error) => {
-
-                                        }
-                                    }
-                            }});
-                            println!("sup bay {}", media_entry.dir_entry.path().display());
-                        } else {
-                            match &media_entry.image {
-                                Some(image) => {
-                                    // previews_col.image(texture, texture.size_vec2());
-                                    image.show(previews_col);
-                                }
-                                None => {
-                                    println!("no image for {}", media_entry.dir_entry.path().display())
-                                    // self.placeholder_image.show(previews_col);
-                                }
-                            }
-                        }
-
-                        // let texture: &egui::TextureHandle = media_entry.thumbnail_texture.get_or_insert_with(|| {
-                        //     // Load the texture only once.
-                        //     // let img = ImporterUI::load_image_from_path(dir_entry_path.as_path());
-                        //     // let ctx = previews_col.ctx();
-                        //     // println!("p: {:?} img: {:?}", dir_entry_path, img.is_ok());
-                        //     media_entry.load_image();
-                        //     media_entry.get_thumbnail_texture(&self.config, previews_col.ctx()).unwrap()
-                        //     // let img = ImageReader::open(dir_entry_path);//?.with_guessed_format()?.decode()?
-                        //     // let img2 = img.unwrap().with_guessed_format().unwrap();
-                        //     // let img3= img2.decode().unwrap();
-                        //     // previews_col.ctx().load_texture("my-image", egui::ColorImage::example())
-                        //     // previews_col.ctx().load_texture("my-image", img.unwrap_or(egui::ColorImage::example()))
-                        // });
-                
-                        // Show the image:
-                        ;
+                                    let mut media_entry = media_entry_mutex.unwrap();
+                                    media_entry.load_image()
+                                },
+                            );
+                            promise
+                        });
                     }
                 }
-                // for (i, col) in cols.iter_mut().enumerate() {
-                //     col.label(format!("Column {} out of {}", i + 1, self.num_columns));
-                //     if i + 1 == self.num_columns && col.button("Delete this").clicked() {
-                //         self.num_columns -= 1;
-                //     }
-                // }
             });
-
         });
     }
 }
