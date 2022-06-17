@@ -2,7 +2,7 @@ use std::{fs};
 
 use anyhow::{Context, Result};
 use serde::{Serialize, Deserialize};
-use figment::{Figment, providers::{Env, Format, Toml, Serialized}};
+use figment::{Figment, providers::{Format, Toml, Serialized}};
 
 const CONFIG_FILENAME: &str = "config.toml";
 
@@ -10,6 +10,16 @@ const CONFIG_FILENAME: &str = "config.toml";
 pub struct Path {
     pub root: String,
     pub landing: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Ui {
+    pub import: Import,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Import {
+    pub thumbnail_size: u8,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -22,6 +32,7 @@ pub struct Config {
     pub version: u8,
     pub path: Path,
     pub hash: Hash,
+    pub ui: Ui,
 }
 impl Default for Config {
     fn default() -> Config {
@@ -33,6 +44,11 @@ impl Default for Config {
             },
             hash: Hash { 
                 hashing_threads: 10 
+            },
+            ui: Ui { 
+                import: Import { 
+                    thumbnail_size: 100 
+                } 
             }
         }
     }

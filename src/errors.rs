@@ -1,10 +1,11 @@
 use custom_error::custom_error;
-use thiserror::Error;
+
 // use figment::Error;
 
 custom_error! { pub MediaReadError
     UndefinedPath = "no path was set before trying to read media",
     NoMoreDirectoryEntries = "directory entry iterator exhausted",
+    UnreadableImage = "couldnt read image",
 }
 
 // custom_error! { pub ConfigError

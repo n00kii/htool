@@ -8,14 +8,15 @@ use sha256;
 
 mod config;
 mod errors;
+mod ui;
 use config::Config;
 use errors::*;
 
 use std::{
-    env, error,
+    env,
     fs::{self, DirEntry, ReadDir},
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
 };
 
@@ -37,7 +38,6 @@ fn main() {
 struct MediaImporter {
     current_path: Option<PathBuf>,
     hasher: image_hasher::Hasher,
-    thread: Option<JoinHandle<()>>,
 }
 
 struct MediaImportationManager {
@@ -79,12 +79,15 @@ impl MediaImporter {
         MediaImporter {
             current_path: None,
             hasher: hasher_config.to_hasher(),
-            thread: None,
         }
     }
 
     pub fn set_file(&mut self, dir_entry: &DirEntry) {
         self.current_path = Some(dir_entry.path());
+    }
+
+    pub fn scan(&self) {
+        
     }
 
     pub fn start(
@@ -102,11 +105,10 @@ impl MediaImporter {
                             .ok_or(MediaReadError::NoMoreDirectoryEntries)??;
                         drop(dir_entries);
                         self_mutex.set_file(&dir_entry);
-                        println!("{:?}", dir_entry);
-                        // break;
+                        self_mutex.read_media();
                     }
-                    Err(e) => {
-
+                    Err(_e) => {
+                        println!("dir_entries poisoned! can't access mutex anymore")
                     }
                 }
             }
@@ -163,10 +165,13 @@ fn read_images(path: &str) -> Result<()> {
                     }
                 }
             }
+            "ui" => {
+                ui::main();
+            }
             "hash" => {
                 println!("hashing!");
 
-                let dir_entries_arc = Arc::new(Mutex::new(fs::read_dir(path)?));
+                let _dir_entries_arc = Arc::new(Mutex::new(fs::read_dir(path)?));
                 let config = Config::load()?;
                 let mut importation_manager = MediaImportationManager::new(&config);
                 match importation_manager.run(&config) {
