@@ -45,6 +45,7 @@ impl MediaEntry {
         //change to return self.image or blah blah
         // if self.image.is_some() { return Ok(()) }
         // println!("1");
+        println!("loading image {:?}", self.dir_entry.file_name());
         let path = self.dir_entry.path();
         // println!("2");
         let image = ImageReader::open(path)?.with_guessed_format()?.decode()?;
@@ -67,8 +68,10 @@ impl MediaEntry {
         let pixels = thumbnail.as_flat_samples();
         // println!("7");
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-
+        
         // println!("8");
+        
+        println!("finished image {:?}", self.dir_entry.file_name());
         Ok(RetainedImage::from_color_image(
             "rust-logo-256x256.png",
             color_image,
@@ -323,7 +326,8 @@ impl eframe::App for ImporterUI {
                     // wrapped in an arc mutex for multithreading purposes
                     for media_entry_arc in scanned_dirs.iter_mut() {
                         // take
-                        let media_entry_mutex = media_entry_arc.lock();
+                        let media_entry_mutex = media_entry_arc.lock(); // <-- this forces main thread to wait until worker threads done using it
+                        // TODO: change so loadimage is static fxn, pass dir_entry, remove arc mutex stuff
                         if media_entry_mutex.is_err() {
                             println!("skipped errored mutex");
                             continue;
