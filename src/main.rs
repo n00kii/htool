@@ -85,11 +85,7 @@ impl MediaImporter {
     pub fn set_file(&mut self, dir_entry: &DirEntry) {
         self.current_path = Some(dir_entry.path());
     }
-
-    pub fn scan(&self) {
-        
-    }
-
+    
     pub fn start(
         self_arc: Arc<Mutex<Self>>,
         dir_entries_arc: Arc<Mutex<ReadDir>>,
