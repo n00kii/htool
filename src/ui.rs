@@ -36,8 +36,7 @@ pub fn main() {
 }
 
 struct MediaEntry {
-    started_load: bool,
-    attempted_load: bool,
+    is_disabled: bool,
     dir_entry: DirEntry,
     file_label: String,
     mime_type: Option<String>,
@@ -62,122 +61,39 @@ impl MediaEntry {
 
     pub fn get_thumbnail(&mut self) -> Option<&Promise<Result<RetainedImage, Error>>> {
         match &self.thumbnail {
-            None => {
-                match self.get_bytes().ready() {
-                    None => {
-                        None
-                    }
-                    Some(result) => {
-                        // self.thumbnail.get_or_insert_with(|| {
-                        let (sender, promise) = Promise::new();
-                        match result {
-                            Err(error) => sender.send(Err(anyhow::Error::msg("error"))),
-                            Ok(bytes) => {
-                                let bytes_copy = bytes.clone();
-                                thread::spawn(move || {
-                                    // bytes_copy;
-                                    let bytes_2 = &bytes_copy as &[u8];
-                                    let image = MediaEntry::load_image_from_memory(bytes_2, 100);
-                                        sender.send(image);
-                                });
-                                // crossbeam_utils::thread::scope(|s| {
-                                //     s.spawn(|_| {
-                                //         // let image = MediaEntry::load_image_from_memory(bytes, 100);
-                                //         // sender.send(image);
-                                //     });
-                                // });
-                            }
+            None => match self.get_bytes().ready() {
+                None => None,
+                Some(result) => {
+                    let (sender, promise) = Promise::new();
+                    match result {
+                        Err(error) => {
+                            self.is_disabled = true;
+                            sender.send(Err(anyhow::Error::msg("error")))
                         }
-                        self.thumbnail = Some(promise);
-                            // promise
-                        // });
-                        self.thumbnail.as_ref()
+                        Ok(bytes) => {
+                            let bytes_copy = bytes.clone();
+                            thread::spawn(move || {
+                                let bytes_2 = &bytes_copy as &[u8];
+                                let image = MediaEntry::load_image_from_memory(bytes_2, 100);
+                                sender.send(image);
+                            });
+                        }
                     }
-                }
-            }
-            Some(promise) => {
+                    self.thumbnail = Some(promise);
                     self.thumbnail.as_ref()
+                }
+            },
+            Some(promise) => {
+                if let Some(Err(error)) = promise.ready() {
+                    self.is_disabled = true;
+                }
+                self.thumbnail.as_ref()
             }
         }
     }
 
-    // pub fn get_thumbnail(&mut self) -> &Option<Result<RetainedImage, Error>> {
-    //     // let bytes: Vec<u8> = vec![2, 3, 4, 4, 2];
-    //     // let self2 = Rc::new(self);
-    //     // let self3 = self2.clone();
-    //     // let path = self.dir_entry.path().clone();
-
-    //     match self.get_bytes().ready() {
-    //         None => {
-    //             // println!("not ready");
-    //             self.thumbnail = None
-    //         }
-    //         Some(Err(error)) => {
-    //             // println!("err");
-    //             self.thumbnail = Some(Err(anyhow::Error::msg("message")));
-    //         }
-    //         Some(Ok(bytes)) => {
-    //             // println!("ready");
-    //             let image = MediaEntry::load_image_from_memory(bytes, 100);
-    //             let image_option = Some(image);
-    //             if self.thumbnail.is_none() {
-    //                 self.thumbnail = image_option;
-    //             }
-    //         }
-    //     }
-
-    //     // if let None = bytes_state {
-    //     //     println!("not ready");
-    //     //     self.thumbnail = None;
-    //     // } else if let Some(Err(error)) = bytes_state {
-    //     //     println!("err");
-    //     //     self.thumbnail = Some(Err(anyhow::Error::msg("message")));
-
-    //     // } else if let Some(Ok(bytes)) = bytes_state {
-    //     //     println!("ready");
-    //     //     let image = MediaEntry::load_image_from_memory(bytes, 100);
-    //     //     let image_option = Some( image );
-    //     //     if self.thumbnail.is_none() {
-    //     //         self.thumbnail = image_option;
-    //     //     }
-    //     // }
-
-    //     &self.thumbnail
-    //     //     self.thumbnail.get_or_insert_with(|| {
-    //     //     match bytes.ready() {
-    //     //         None => {
-    //     //             // None
-    //     //         }
-    //     //         Some(Err(error)) => {
-    //     //         }
-    //     //         Some(Ok(bytes)) => {
-    //     //         }
-    //     //     }
-    //     // })
-    //     // self.thumbnail.get_or_insert_with(|| {
-    //     //     let path = self.dir_entry.path().clone();
-    //     //     let (sender, promise) = Promise::new();
-    //     //     thread::spawn(move || {
-    //     //         bytes_arc.read();
-    //     //         // sender;
-    //     //     });
-    //     // let promise = Promise::spawn_thread("", move || {
-    //     //     let bytes = bytes_arc.read();
-    //     //     if let Ok(bytes) = bytes {
-    //     //         Ok(RetainedImage::from_color_image(
-    //     //             "&path_arc.display().to_string()",
-    //     //             egui::ColorImage::example(),
-    //     //         ))
-    //     //     } else {
-    //     //         Err(anyhow::Error::msg("message"))
-    //     //     }
-    //     // });
-    //     // promise
-    //     // promise
-    //     // });
-    // }
-
     pub fn load_image_from_memory(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
+        println!("loading from memory, size: {} kB", image_data.len() / 1000);
         let image = image::load_from_memory(image_data)?;
         let (w, h) = (image.width(), image.height());
         let image_cropped = ImageOps::crop_imm(
@@ -191,7 +107,6 @@ impl MediaEntry {
         let thumbnail =
             ImageOps::thumbnail(&image_cropped, thumbnail_size.into(), thumbnail_size.into());
         let size = [thumbnail.width() as usize, thumbnail.height() as usize];
-        // let image_buffer = image.to_rgba8();
         let pixels = thumbnail.as_flat_samples();
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
         Ok(RetainedImage::from_color_image("", color_image))
@@ -328,8 +243,7 @@ impl ImporterUI {
                                 .unwrap_or("");
                             let file_label = format!("{dir_entry_parent}/{dir_entry_filename}");
                             scanned_dir_entries.push(MediaEntry {
-                                attempted_load: false,
-                                started_load: false,
+                                is_disabled: false,
                                 thumbnail: None,
                                 mime_type: None,
                                 dir_entry,
@@ -353,7 +267,7 @@ impl ImporterUI {
                 .clicked()
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-                    for media_entry in scanned_dirs.iter_mut() {
+                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| !media_entry.is_disabled) {
                         media_entry.is_selected = true;
                     }
                 }
@@ -367,7 +281,7 @@ impl ImporterUI {
                 .clicked()
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-                    for media_entry in scanned_dirs.iter_mut() {
+                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| !media_entry.is_disabled) {
                         media_entry.is_selected = false;
                     }
                 }
@@ -378,7 +292,7 @@ impl ImporterUI {
                 .clicked()
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-                    for media_entry in scanned_dirs.iter_mut() {
+                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| !media_entry.is_disabled) {
                         media_entry.is_selected = !media_entry.is_selected;
                     }
                 }
@@ -430,17 +344,19 @@ impl eframe::App for ImporterUI {
                         |files_col_scroll| {
                             for media_entry in scanned_dirs.iter_mut() {
                                 // display label stuff
-
-                                // create label in left column
-                                if files_col_scroll
-                                    .selectable_label(
-                                        media_entry.is_selected,
-                                        &media_entry.file_label,
-                                    )
-                                    .clicked()
-                                {
-                                    media_entry.is_selected = !media_entry.is_selected;
-                                };
+                                files_col_scroll.add_enabled_ui(
+                                    !media_entry.is_disabled,
+                                    |files_col_scroll| {
+                                        let response = files_col_scroll.selectable_label(
+                                            media_entry.is_selected,
+                                            &media_entry.file_label,
+                                        );
+                                        if response.clicked() {
+                                            media_entry.is_selected = !media_entry.is_selected;
+                                        };
+                                        // response.on_hover_text(format!("{}", &media_entry.file_label));
+                                    },
+                                );
                             }
                         },
                     );
@@ -458,78 +374,67 @@ impl eframe::App for ImporterUI {
                                 |scroll_wrap| {
                                     scroll_wrap.with_layout(layout, |scroll_wrap| {
                                         for media_entry in scanned_dirs.iter_mut() {
-                                            let path_clone = media_entry.dir_entry.path().clone();
-                                            let bytes_thread_id =
-                                                format!("bytes_{}", &media_entry.file_label);
-                                            let thumbnail_thread_id =
-                                                format!("thumbnail_{}", &media_entry.file_label);
-                                            let image_size =
-                                                self.config.ui.import.thumbnail_size.clone();
-                                            // let config_arc = Arc::new(&self.config);
-                                            // let config_clone = Arc::clone(&config_arc);
-                                            // promise for loading image
-
-                                            // media_entry.bytes.get_or_insert_with(|| {
-                                            //     let promise = Promise::spawn_thread(bytes_thread_id, move || {
-                                            //         // arc;
-                                            //         // MediaEntry::load_media(path_clone, image_size)
-                                            //     });
-                                            //     vec![]
-                                            // });
-
-                                            // let promise =
-                                            //     media_entry.thumbnail.get_or_insert_with(|| {
-                                            //         let promise = Promise::spawn_thread(
-                                            //             thumbnail_thread_id,
-                                            //             move || {
-                                            //                 // arc;
-
-                                            //                 MediaEntry::load_media(
-                                            //                     path_clone, image_size,
-                                            //                 )
-                                            //             },
-                                            //         );
-                                            //         promise
-                                            //     });
-
-                                            // let mut preview_frame = Frame::none().show(scroll_wrap, |preview_frame| {
-                                            // let spinner = egui::Spinner::new().size(100.0);
-                                            // let (rect, response) = preview_frame.allocate_exact_size(Vec2::new(110.0, 110.0), egui::Sense::hover());
-                                            let preview_size = 110.0;
+                                            let preview_size =
+                                                (&self.config.ui.import.thumbnail_size + 10) as f32;
                                             let preview_size2 = [preview_size, preview_size];
-                                            // media_entry.get_bytes();
-                                            media_entry.get_thumbnail();
-                                            // match media_entry.get_thumbnail() {
-                                            //     None => {
-                                            //         let spinner = egui::Spinner::new();
-                                            //         scroll_wrap.add_sized(preview_size2, spinner);
-                                            //         // preview_frame.put(rect, spinner);
-                                            //     }
-                                            //     Some(Err(error)) => {
-                                            //         let text = egui::RichText::new("!")
-                                            //             .color(egui::Color32::from_rgb(
-                                            //                 255, 149, 138,
-                                            //             ))
-                                            //             .size(48.0);
-                                            //         let label = egui::Label::new(text)
-                                            //             .sense(egui::Sense::hover());
-                                            //         scroll_wrap
-                                            //             .add_sized(preview_size2, label)
-                                            //             .on_hover_text(format!("{error}"));
+                                            let label_clone = media_entry.file_label.clone();
+                                            match media_entry.get_thumbnail() {
+                                                None => {
+                                                    let spinner = egui::Spinner::new();
+                                                    scroll_wrap.add_sized(preview_size2, spinner);
+                                                    // preview_frame.put(rect, spinner);
+                                                }
+                                                Some(promise) => {
+                                                    match promise.ready() {
+                                                        None => {
+                                                            let spinner = egui::Spinner::new();
+                                                            scroll_wrap
+                                                                .add_sized(preview_size2, spinner);
+                                                            // preview_frame.put(rect, spinner);
+                                                        }
 
-                                            //         // preview_frame.put(rect, label);
-                                            //     }
-                                            //     Some(Ok(image)) => {
-                                            //         // image.show(scroll_wrap);
-                                            //         let image_button = egui::ImageButton::new(
-                                            //             image.texture_id(ctx),
-                                            //             image.size_vec2(),
-                                            //         );
-                                            //         scroll_wrap
-                                            //             .add_sized(preview_size2, image_button);
-                                            //         // preview_frame.put(rect, image_button);
-                                            //     }
-                                            // }
+                                                        Some(Err(error)) => {
+                                                            let text = egui::RichText::new("!")
+                                                                .color(egui::Color32::from_rgb(
+                                                                    255, 149, 138,
+                                                                ))
+                                                                .size(48.0);
+                                                            let label = egui::Label::new(text)
+                                                                .sense(egui::Sense::hover());
+                                                            scroll_wrap
+                                                                .add_sized(preview_size2, label)
+                                                                .on_hover_text(format!(
+                                                                    "{} ({error})",
+                                                                    label_clone
+                                                                ));
+
+                                                            // preview_frame.put(rect, label);
+                                                        }
+                                                        Some(Ok(image)) => {
+                                                            // image.show(scroll_wrap);
+                                                            let image_button =
+                                                                egui::ImageButton::new(
+                                                                    image.texture_id(ctx),
+                                                                    image.size_vec2(),
+                                                                )
+                                                                .selected(media_entry.is_selected);
+
+                                                            let response = scroll_wrap.add_sized(
+                                                                preview_size2,
+                                                                image_button,
+                                                            );
+                                                            if response
+                                                                .clicked()
+                                                            {
+                                                                media_entry.is_selected =
+                                                                    !media_entry.is_selected;
+                                                            }
+                                                            response.on_hover_text(format!("{}", label_clone));
+                                                            // preview_frame.put(rect, image_button);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             // });
                                         }
                                     });

@@ -27,3 +27,6 @@ crossbeam-utils = "0.8.9"
 egui_extras = "0.18.0"
 poll-promise = "0.1.0"
 infer = "0.8.1"
+
+[profile.dev]
+opt-level = 3

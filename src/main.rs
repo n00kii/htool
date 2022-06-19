@@ -24,15 +24,16 @@ use path_absolutize::*;
 use std::path::Path;
 
 fn main() {
-    let path = "C:/Users/Moruph/OneDrive - Massachusetts Institute of Technology/Shared/htool2/htool2/testing_files";
-    match read_images(&path) {
-        Ok(()) => {
-            println!("hashes complete!")
-        }
-        Err(e) => {
-            println!("something went wrong: {e}")
-        }
-    }
+    ui::main();
+    // let path = "C:/Users/Moruph/OneDrive - Massachusetts Institute of Technology/Shared/htool2/htool2/testing_files";
+    // match read_images(&path) {
+    //     Ok(()) => {
+    //         println!("hashes complete!")
+    //     }
+    //     Err(e) => {
+    //         println!("something went wrong: {e}")
+    //     }
+    // }
 }
 
 struct MediaImporter {
