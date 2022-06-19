@@ -29,7 +29,7 @@ use std::{
 
 pub fn main() {
     let mut options = eframe::NativeOptions::default();
-    options.initial_window_size = Some(Vec2::new(1220.0, 600.0));
+    options.initial_window_size = Some(Vec2::new(1350.0, 600.0));
     // println!("{:?}", options.initial_window_size);
     eframe::run_native(
         "htool2",
@@ -77,7 +77,7 @@ impl MediaEntry {
                 match promise.ready() {
                     None => false,
                     Some(_) => {
-                        return !self.is_disabled && !self.is_imported && !self.is_ignored
+                        return !self.is_disabled && !self.is_imported
                     }
                 }
             }
@@ -210,6 +210,8 @@ struct ImporterUI {
     alternate_scan_dir: Option<String>,
     delete_files_on_import: bool,
     hide_ignored_entries: bool,
+    hide_errored_entries: bool,
+    skip_importing_ignored: bool,
     scan_chunk_size: u16,
     scan_chunk_indices: (i32, i32),
 }
@@ -223,6 +225,8 @@ impl Default for ImporterUI {
             scan_chunk_size,
             delete_files_on_import: false,
             hide_ignored_entries: true,
+            hide_errored_entries: true,
+            skip_importing_ignored: true,
             scanned_dir_entries: None,
             alternate_scan_dir: None,
             config,
@@ -375,7 +379,9 @@ impl ImporterUI {
                 }
             }
 
+            ui.checkbox(&mut self.hide_errored_entries, "hide errored");
             ui.checkbox(&mut self.hide_ignored_entries, "hide ignored");
+            ui.checkbox(&mut self.skip_importing_ignored, "don't import ignored");
             
             if ui
             .add_enabled(
@@ -439,9 +445,11 @@ impl ImporterUI {
                         files_col_scroll.add_enabled_ui(
                             media_entry.is_importable(),
                             |files_col_scroll| {
-                                let response = files_col_scroll.selectable_label(
+                                let mut text = egui::RichText::new(format!("{}", media_entry.file_label));
+                                if media_entry.is_ignored { text = text.color(egui::Color32::RED); }
+                                let mut response = files_col_scroll.selectable_label(
                                     media_entry.is_selected,
-                                    &media_entry.file_label,
+                                    text,
                                 );
                                 if response.clicked() {
                                     media_entry.is_selected = !media_entry.is_selected;
@@ -450,14 +458,13 @@ impl ImporterUI {
                                 if media_entry.is_imported { 
                                     "already imported"
                                 } else if media_entry.is_disabled {
-                                   "can't read file"
+                                    "can't read file"
                                 } else if !media_entry.is_importable() {
                                     "bytes not loaded"
-                                } else if media_entry.is_ignored{
-                                    "ignored"
                                 } else {
                                     "unknown error"
                                 };
+                                if media_entry.is_ignored { response = response.on_hover_text("(ignored)"); }
                                 response.on_disabled_hover_text(format!("({disabled_reason})"));
                             },
                         );
@@ -546,7 +553,7 @@ impl ImporterUI {
                                                                 media_entry.is_selected =
                                                                     !media_entry.is_selected;
                                                             }
-                                                            response.on_hover_text(format!("{label_clone} [{mime_type}]"));
+                                                            response.on_hover_text(format!("{label_clone} [{mime_type}]{}", if media_entry.is_ignored { " (ignored)" } else { "" }));
                                                             
                                                         } else {
  
@@ -567,19 +574,20 @@ impl ImporterUI {
                                             }
                                         }
                                     } else if let Some(Err(error)) = mime_type  { // unknown file type
+                                        if self.hide_errored_entries { continue; }
                                         let text = egui::RichText::new("!")
-                                                        .color(egui::Color32::from_rgb(
-                                                            255, 149, 138,
-                                                        ))
-                                                        .size(48.0);
-                                                    let label = egui::Label::new(text)
-                                                        .sense(egui::Sense::hover());
-                                                    scroll_wrap
-                                                        .add_sized(preview_size2, label)
-                                                        .on_hover_text(format!(
-                                                            "{label_clone} ({error})",
-                                                            
-                                                        ));
+                                            .color(egui::Color32::from_rgb(
+                                                255, 149, 138,
+                                            ))
+                                            .size(48.0);
+                                        let label = egui::Label::new(text)
+                                            .sense(egui::Sense::hover());
+                                        scroll_wrap
+                                            .add_sized(preview_size2, label)
+                                            .on_hover_text(format!(
+                                                "{label_clone} ({error})",
+                                                
+                                            ));
                                     } else if mime_type.is_none() { // bytes not loaded
                                         let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
 
