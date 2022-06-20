@@ -8,7 +8,7 @@ use sha256;
 
 mod config;
 mod errors;
-mod ui;
+mod import;
 use config::Config;
 use errors::*;
 
@@ -23,17 +23,11 @@ use std::{
 use path_absolutize::*;
 use std::path::Path;
 
-fn main() {
-    ui::main();
-    // let path = "C:/Users/Moruph/OneDrive - Massachusetts Institute of Technology/Shared/htool2/htool2/testing_files";
-    // match read_images(&path) {
-    //     Ok(()) => {
-    //         println!("hashes complete!")
-    //     }
-    //     Err(e) => {
-    //         println!("something went wrong: {e}")
-    //     }
-    // }
+fn main() -> Result<()> {
+    let config = Config::load()?;
+    import::ui::launch(config.clone());
+    Ok(())
+
 }
 
 struct MediaImporter {
@@ -163,7 +157,7 @@ fn read_images(path: &str) -> Result<()> {
                 }
             }
             "ui" => {
-                ui::main();
+                // ui::main();
             }
             "hash" => {
                 println!("hashing!");

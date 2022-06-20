@@ -1,8 +1,0 @@
-version = 0
-
-[path]
-root = "./fileds"
-landing = "C:/Users/Moruph/OneDrive - Massachusetts Institute of Technology/Shared/htool2/htool2/testing_files"
-
-[hash]
-hashing_threads = 10

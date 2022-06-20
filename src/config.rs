@@ -6,28 +6,29 @@ use figment::{Figment, providers::{Format, Toml, Serialized}};
 
 const CONFIG_FILENAME: &str = "config.toml";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Path {
     pub root: String,
     pub landing: String,
+    pub database: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Ui {
     pub import: Import,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Import {
     pub thumbnail_size: u8,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Hash {
     pub hashing_threads: u8,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     pub version: u8,
     pub path: Path,
@@ -40,7 +41,8 @@ impl Default for Config {
             version: 0,
             path: Path {
                 root: "./files".into(),
-                landing: "C:/Users/Moruph/OneDrive - Massachusetts Institute of Technology/Shared/htool2/htool2/testing_files".into(),
+                landing: "F:/Media/Documents/Projects/htool2/htool2/testing_files".into(),
+                database: "./info.db3".into(),
             },
             hash: Hash { 
                 hashing_threads: 10 
