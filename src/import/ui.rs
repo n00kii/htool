@@ -2,6 +2,7 @@
 
 use eframe::emath::{Align, Vec2};
 use rfd::FileDialog;
+use std::path::PathBuf;
 use std::{path::Path, fs};
 use std::sync::Condvar;
 
@@ -29,7 +30,7 @@ pub fn launch(config: Config) {
 struct ImporterUI {
     config: Option<Config>,
     scanned_dir_entries: Option<Vec<MediaEntry>>,
-    alternate_scan_dir: Option<String>,
+    alternate_scan_dir: Option<PathBuf>,
     delete_files_on_import: bool,
     hide_ignored_entries: bool,
     hide_errored_entries: bool,
@@ -57,11 +58,12 @@ impl Default for ImporterUI {
 }
 
 impl ImporterUI {
-    fn scan_dir(&self) -> &String {
-        self.alternate_scan_dir
-            .as_ref()
-            .unwrap_or(&self.get_config().path.landing)
+    fn get_scan_dir(&self) -> PathBuf {
+        let landing_result = self.get_config().path.landing();
+        let landing = landing_result.unwrap_or_else(|_| PathBuf::from(""));
+        if self.alternate_scan_dir.is_some() { self.alternate_scan_dir.as_ref().unwrap().clone() } else { landing }
     }
+    
     fn set_config(&mut self, config: Config) {
         self.config = Some(config);
     }
@@ -75,7 +77,7 @@ impl ImporterUI {
             ui.heading("scan directory");
             if ui.button("change").clicked() {
                 if let Some(path) = FileDialog::new().pick_folder() {
-                    self.alternate_scan_dir = Some(path.display().to_string());
+                    self.alternate_scan_dir = Some(path);
                     self.scanned_dir_entries = None
                 }
             }
@@ -83,7 +85,7 @@ impl ImporterUI {
                 self.alternate_scan_dir = None;
                 self.scanned_dir_entries = None
             }
-            ui.label(format!("{}", self.scan_dir()));
+            ui.label(format!("{}", self.get_scan_dir().display()));
         });
     }
 
@@ -98,7 +100,7 @@ impl ImporterUI {
                 })
                 .clicked()
             {
-                let dir_entries_iter = fs::read_dir(self.scan_dir());
+                let dir_entries_iter = fs::read_dir(self.get_scan_dir());
                 if let Ok(dir_entries_iter) = dir_entries_iter {
                     let mut scanned_dir_entries = vec![];
                     for (index, dir_entry_res) in dir_entries_iter.enumerate() {

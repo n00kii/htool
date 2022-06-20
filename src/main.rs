@@ -50,8 +50,9 @@ impl MediaImportationManager {
     }
 
     pub fn run(&mut self, config: &Config) -> Result<()> {
+        let landing_path = config.path.landing()?;
         let dir_entries_arc = Arc::new(Mutex::new(
-            fs::read_dir(&config.path.landing).context("couldn't read landing dir")?,
+            fs::read_dir(landing_path).context("couldn't read landing dir")?,
         ));
         let mut threads = vec![];
         for importer_arc in &self.importers {
@@ -143,10 +144,10 @@ fn read_images(path: &str) -> Result<()> {
                 match config {
                     Ok(config) => {
                         // let pathBuf = PathBuf::from();
-                        println!("config: {:?}", config);
-                        println!("{:?}", &config.path.root);
-                        println!("{:?}", Path::new(&config.path.root).absolutize());
-                        println!("{:?}", Config::save(&config));
+                        // println!("config: {:?}", config);
+                        // println!("{:?}", &config.path.root);
+                        // println!("{:?}", Path::new(&config.path.root).absolutize());
+                        // println!("{:?}", Config::save(&config));
 
                         // let p = Path::new(&config.path.root);
                         // assert_eq!("/path/to/123/456", p.absolutize().unwrap().to_str().unwrap());
