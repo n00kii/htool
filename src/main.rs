@@ -7,10 +7,10 @@ use image_hasher::{HashAlg, HasherConfig};
 use sha256;
 
 mod config;
-mod errors;
 mod import;
+mod data;
 use config::Config;
-use errors::*;
+use data::Data;
 
 use std::{
     env,
@@ -25,7 +25,9 @@ use std::path::Path;
 
 fn main() -> Result<()> {
     let config = Config::load()?;
-    import::ui::launch(config.clone());
+    let config_arc = Arc::new(config);
+    // Config::save(&config)?;
+    import::ui::launch(Arc::clone(&config_arc));
     Ok(())
 
 }
@@ -94,7 +96,7 @@ impl MediaImporter {
                     Ok(mut dir_entries) => {
                         let dir_entry = dir_entries
                             .next()
-                            .ok_or(MediaReadError::NoMoreDirectoryEntries)??;
+                            .ok_or(anyhow::Error::msg("message"))??;
                         drop(dir_entries);
                         self_mutex.set_file(&dir_entry);
                         self_mutex.read_media();
@@ -114,7 +116,7 @@ impl MediaImporter {
         let path = self
             .current_path
             .as_ref()
-            .ok_or(MediaReadError::UndefinedPath)?;
+            .ok_or(anyhow::Error::msg("message"))?;
 
         let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
         let sha_hash = sha256::digest_bytes(&img.as_bytes());

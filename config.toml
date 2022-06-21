@@ -1,0 +1,11 @@
+version = 0
+
+[path]
+root = "./"
+landing = "testing_files/"
+database = "data.db"
+
+[hash]
+hashing_threads = 10
+[ui.import]
+thumbnail_size = 100

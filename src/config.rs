@@ -3,23 +3,30 @@ use std::{fs, path::PathBuf, env};
 use anyhow::{Context, Result};
 use serde::{Serialize, Deserialize};
 use figment::{Figment, providers::{Format, Toml, Serialized}};
+use path_absolutize::*;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Path {
-    // pub root: String,
+    pub root: Option<String>,
     pub landing: String,
     pub database: String,
 }
 
 impl Path {
     pub fn current_root(&self) -> Result<PathBuf> {
-        let exe = env::current_exe().context("couldn't get parent path")?;
-        
-        let parent_path = exe.parent().ok_or(anyhow::Error::msg("message"))?;
-        let parent_path_buf = PathBuf::from(parent_path);
-        Ok(parent_path_buf)
+        if self.root.is_some() {
+            return Ok(PathBuf::from(self.root.as_ref().unwrap()).absolutize()?.to_path_buf())
+             
+        } else {
+
+            let exe = env::current_exe().context("couldn't get parent path")?;
+            
+            let parent_path = exe.parent().ok_or(anyhow::Error::msg("message"))?;
+            let parent_path_buf = PathBuf::from(parent_path);
+            Ok(parent_path_buf)
+        }
     }
     
     pub fn absolutize_path(&self, local_root_path: &String) -> Result<PathBuf> {
@@ -27,9 +34,6 @@ impl Path {
         let local_root_path = PathBuf::from(local_root_path);
 
         let absolutized_path_buf = root_path_buf.join(&local_root_path);
-        println!("{:?}, {:?}, {:?}", absolutized_path_buf, root_path_buf, local_root_path);
-        // let absolutized_path = absolutized_path_buf.to_str().unwrap_or("".into()).to_string();
-
         Ok(absolutized_path_buf)
     }
 
@@ -68,8 +72,9 @@ impl Default for Config {
         Config {
             version: 0,
             path: Path {
-                landing: "/landing/".into(),
-                database: "/data.db".into(),
+                root: Some("./root".into()),
+                landing: "landing/".into(),
+                database: "data.db".into(),
             },
             hash: Hash { 
                 hashing_threads: 10 

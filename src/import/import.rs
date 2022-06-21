@@ -2,9 +2,11 @@ use super::super::Config;
 use anyhow::{Context, Error, Result};
 use eframe::egui;
 use egui_extras::RetainedImage;
-use image::imageops;
+use image::{imageops, error};
 use image::io::Reader as ImageReader;
 use image_hasher::{HashAlg, HasherConfig};
+use infer::Type;
+use super::super::Data;
 use poll_promise::Promise;
 use rusqlite::{Connection, Result as SqlResult, params};
 use std::{
@@ -15,25 +17,27 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+
 pub struct MediaEntry {
-    pub is_disabled: bool,
-    pub is_ignored: bool,
+    pub is_unloadable: bool,
+    pub is_hidden: bool,
     pub is_imported: bool,
     pub is_selected: bool,
     pub is_to_be_loaded: Arc<(Mutex<bool>, Condvar)>,
 
     pub dir_entry: DirEntry,
-    pub mime_type: Option<Result<String>>,
+    pub mime_type: Option<Result<Type>>,
     pub file_label: String,
 
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
+    pub modified_thumbnail: Option<RetainedImage>
 }
 
-pub fn import_media(media_entries: Vec<&MediaEntry>, config: &Config) -> Result<()> {
+pub fn import_media(media_entries: Vec<&MediaEntry>, config: Arc<Config>) -> Result<()> {
     for media_entry in media_entries {
         let bytes = media_entry.bytes.as_ref();
-        let db_path = &config.path.database;
+        let db_path = &config.path.database();
         match bytes {
             None => return Err(anyhow::Error::msg("no bytes to import")),
             Some(promise) => {
@@ -41,27 +45,39 @@ pub fn import_media(media_entries: Vec<&MediaEntry>, config: &Config) -> Result<
                     None => return Err(anyhow::Error::msg("bytes are stil loading")),
                     Some(Err(error)) => return Err(anyhow::Error::msg("failed to load bytes")),
                     Some(Ok(bytes)) => {
-
+                        let filekind = match &media_entry.mime_type {
+                            Some(Ok(kind)) => {
+                                Some(kind.clone())
+                            }
+                            Some(Err(error)) => {
+                                None
+                            }
+                            None => {
+                                None
+                            }
+                        };
+                        
                         let bytes = Arc::clone(bytes);
-                        let db_path = db_path.clone();
+                        let config = Arc::clone(&config);
                         thread::spawn(move || -> Result<()> {
                             let bytes = &*bytes as &[u8];
-                            println!("{} kB", bytes.len() / 1000);
-                            let conn = Connection::open(&db_path)?;
+                            Data::register_media(config, bytes, filekind)?;
+                            // println!("{} kB", bytes.len() / 1000);
+                            // let conn = Connection::open(&db_path)?;
 
-                            println!("starting loading of {} kB", bytes.len());
-                            conn.execute(
-                                "CREATE TABLE IF NOT EXISTS media_blobs (
-                                    id  INTEGER PRIMARY KEY,
-                                    data  BLOB
-                                )",
-                                [], // empty list of parameters.
-                            )?;
+                            // println!("starting loading of {} kB", bytes.len());
+                            // conn.execute(
+                            //     "CREATE TABLE IF NOT EXISTS media_blobs (
+                            //         id  INTEGER PRIMARY KEY,
+                            //         data  BLOB
+                            //     )",
+                            //     [], // empty list of parameters.
+                            // )?;
 
-                            conn.execute(
-                                "INSERT INTO media_blobs (data) VALUES (?1)",
-                                params![bytes],
-                            )?;
+                            // conn.execute(
+                            //     "INSERT INTO media_blobs (data) VALUES (?1)",
+                            //     params![bytes],
+                            // )?;
 
                             // conn.close();
 
@@ -125,7 +141,7 @@ impl MediaEntry {
             None => false,
             Some(promise) => match promise.ready() {
                 None => false,
-                Some(_) => return !self.is_disabled && !self.is_imported,
+                Some(_) => return !self.is_unloadable && !self.is_imported,
             },
         }
     }
@@ -134,7 +150,26 @@ impl MediaEntry {
         self.bytes = None
     }
 
-    pub fn get_mime_type(&mut self) -> Option<&Result<String, Error>> {
+    pub fn get_status_label(&self) -> Option<String> {
+        let mut statuses = vec![];
+
+        if self.is_hidden { statuses.push("hidden") };
+        if self.is_imported { statuses.push("already imported") };
+        if self.is_unloadable { statuses.push("unable to load") };
+        if !self.try_check_if_is_to_be_loaded() { statuses.push("not in current scan chunk") };
+
+        let label = statuses.join(", ");
+
+        if label.len() > 0 {
+            Some(label)
+        } else {
+            None
+        }
+        
+    }
+
+
+    pub fn get_mime_type(&mut self) -> Option<&Result<Type, Error>> {
         match &self.mime_type {
             None => match self.get_bytes().ready() {
                 None => {
@@ -143,15 +178,16 @@ impl MediaEntry {
                 Some(bytes_result) => match bytes_result {
                     Err(_error) => {
                         self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
-                        self.is_disabled = true;
+                        self.is_unloadable = true;
                     }
                     Ok(bytes) => match infer::get(&bytes) {
                         Some(kind) => {
-                            self.mime_type = Some(Ok(kind.mime_type().to_string()));
+                            
+                            self.mime_type = Some(Ok(kind));
                         }
                         None => {
                             self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
-                            self.is_disabled = true;
+                            self.is_unloadable = true;
                         }
                     },
                 },
@@ -163,7 +199,7 @@ impl MediaEntry {
         self.mime_type.as_ref()
     }
 
-    pub fn get_thumbnail(&mut self) -> Option<&Promise<Result<RetainedImage, Error>>> {
+    pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
         match &self.thumbnail {
             None => match self.get_bytes().ready() {
                 None => None,
@@ -172,14 +208,14 @@ impl MediaEntry {
                     match result {
                         Err(_error) => {
                             // self.is_disabled = true;
-                            sender.send(Err(anyhow::Error::msg("failed to load bytes")))
+                            sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
                         }
                         Ok(bytes) => {
                             let bytes_copy = Arc::clone(bytes);
                             // let arc = Arc::new(bytes);
                             thread::spawn(move || {
                                 let bytes = &bytes_copy as &[u8];
-                                let image = MediaEntry::load_image_from_memory(bytes, 100);
+                                let image = MediaEntry::load_image_from_memory(bytes, thumbnail_size);
                                 sender.send(image);
                             });
                         }

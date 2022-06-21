@@ -8,15 +8,15 @@ use std::sync::Condvar;
 
 use super::super::Config;
 use eframe::egui::{self, Button, Direction, ScrollArea, Ui, ProgressBar};
-use super::logic::{MediaEntry, import_media};
+use super::import::{MediaEntry, import_media};
 
 use std::{
     sync::{Arc, Mutex},
 };
 
-pub fn launch(config: Config) {
+pub fn launch(config: Arc<Config>) {
     let mut options = eframe::NativeOptions::default();
-    options.initial_window_size = Some(Vec2::new(1350.0, 600.0));
+    options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
 
     let mut app = ImporterUI::default();
     app.set_config(config);
@@ -28,13 +28,13 @@ pub fn launch(config: Config) {
 }
 
 struct ImporterUI {
-    config: Option<Config>,
+    config: Option<Arc<Config>>,
     scanned_dir_entries: Option<Vec<MediaEntry>>,
     alternate_scan_dir: Option<PathBuf>,
     delete_files_on_import: bool,
-    hide_ignored_entries: bool,
+    show_hidden_entries: bool,
     hide_errored_entries: bool,
-    skip_importing_ignored: bool,
+    import_hidden_entries: bool,
     scan_chunk_size: u16,
     scan_chunk_indices: (i32, i32),
 }
@@ -47,9 +47,9 @@ impl Default for ImporterUI {
             scan_chunk_indices: (0, scan_chunk_size as i32),
             scan_chunk_size,
             delete_files_on_import: false,
-            hide_ignored_entries: true,
+            show_hidden_entries: false,
             hide_errored_entries: true,
-            skip_importing_ignored: true,
+            import_hidden_entries: true,
             scanned_dir_entries: None,
             alternate_scan_dir: None,
             config,
@@ -64,7 +64,7 @@ impl ImporterUI {
         if self.alternate_scan_dir.is_some() { self.alternate_scan_dir.as_ref().unwrap().clone() } else { landing }
     }
     
-    fn set_config(&mut self, config: Config) {
+    fn set_config(&mut self, config: Arc<Config>) {
         self.config = Some(config);
     }
 
@@ -90,7 +90,7 @@ impl ImporterUI {
     }
 
     fn render_options(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
+        ui.vertical(|ui| {
             ui.heading("options");
             if ui
                 .button(if self.scanned_dir_entries.is_some() {
@@ -124,9 +124,9 @@ impl ImporterUI {
                             self.scan_chunk_indices = (0, self.scan_chunk_size.into());
                             let is_to_be_loaded = if self.scan_chunk_indices.0 <= index && index < self.scan_chunk_indices.1 { true } else { false };
                             scanned_dir_entries.push(MediaEntry {
-                                is_ignored: false,
+                                is_hidden: false,
                                 is_to_be_loaded: Arc::new((Mutex::new(is_to_be_loaded), Condvar::new())),
-                                is_disabled: false,
+                                is_unloadable: false,
                                 is_imported: false,
                                 thumbnail: None,
                                 mime_type: None,
@@ -134,6 +134,7 @@ impl ImporterUI {
                                 file_label,
                                 bytes: None,
                                 is_selected: false,
+                                modified_thumbnail: None,
                             });
                         }
                     }
@@ -202,17 +203,18 @@ impl ImporterUI {
             if ui
                 .add_enabled(self.scanned_dir_entries.is_some(), Button::new("invert"))
                 .clicked()
-            {
-                if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_importable()) {
-                        media_entry.is_selected = !media_entry.is_selected;
+                {
+                    if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                        for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_importable()) {
+                            media_entry.is_selected = !media_entry.is_selected;
                     }
                 }
             }
 
             ui.checkbox(&mut self.hide_errored_entries, "hide errored");
-            ui.checkbox(&mut self.hide_ignored_entries, "hide ignored");
-            ui.checkbox(&mut self.skip_importing_ignored, "don't import ignored");
+            ui.checkbox(&mut self.show_hidden_entries, "show hidden");
+            ui.checkbox(&mut self.import_hidden_entries, "don't import hidden");
+            ui.checkbox(&mut self.delete_files_on_import, "delete files on import");
             
             if ui
             .add_enabled(
@@ -223,13 +225,13 @@ impl ImporterUI {
                 .unwrap()
                 .iter()
                             .any(|media_entry| media_entry.is_selected),
-                            Button::new("ignore selected"),
+                            Button::new("hide selected"),
                         )
                         .clicked()
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                     for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                        media_entry.is_ignored = true;
+                        media_entry.is_hidden = true;
                     }
                 }
             }
@@ -243,18 +245,57 @@ impl ImporterUI {
                 .unwrap()
                 .iter()
                             .any(|media_entry| media_entry.is_selected),
-                            Button::new("unignore selected"),
+                            Button::new("unhide selected"),
                         )
                         .clicked()
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                     for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                        media_entry.is_ignored = false;
+                        media_entry.is_hidden = false;
                     }
                 }
             }
 
-            ui.checkbox(&mut self.delete_files_on_import, "delete files on import");
+            if ui
+            .add_enabled(
+                self.scanned_dir_entries.is_some()
+                && self
+                .scanned_dir_entries
+                .as_ref()
+                .unwrap()
+                .iter()
+                            .any(|media_entry| media_entry.is_hidden),
+                            Button::new("select hidden"),
+                        )
+                        .clicked()
+            {
+                if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_hidden) {
+                        media_entry.is_selected = true;
+                    }
+                }
+            }
+
+            if ui
+            .add_enabled(
+                self.scanned_dir_entries.is_some()
+                && self
+                .scanned_dir_entries
+                .as_ref()
+                .unwrap()
+                .iter()
+                            .any(|media_entry| media_entry.is_hidden),
+                            Button::new("deselect hidden"),
+                        )
+                        .clicked()
+            {
+                if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                    for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_hidden) {
+                        media_entry.is_selected = false;
+                    }
+                }
+            }
+
             if ui
                 .add_enabled(
                     self.scanned_dir_entries.is_some()
@@ -270,11 +311,11 @@ impl ImporterUI {
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                     let media_entries = scanned_dirs.iter().filter(|media_entry| media_entry.is_selected).collect::<Vec<&MediaEntry>>();
-                    let import_result = import_media(media_entries, self.config.as_ref().unwrap());
+                    let import_result = import_media(media_entries, Arc::clone(self.config.as_ref().unwrap()));
                     println!("{:?}", import_result);
                     for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
                         media_entry.is_imported = true;
-                        media_entry.is_ignored = false;
+                        media_entry.is_hidden = false;
                         media_entry.is_selected = false;
                     }
                 }
@@ -292,209 +333,198 @@ impl ImporterUI {
         }
     }
 
-    fn render_files_col(&mut self, cols: &mut [Ui]) {
-        let files_col = &mut cols[0];
-        files_col.label("file");
-        if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-            ScrollArea::vertical().id_source("files_col").show(
-                files_col,
-                |files_col_scroll| {
-                    for media_entry in scanned_dirs.iter_mut() {
-                        // display label stuff
-                        files_col_scroll.add_enabled_ui(
-                            media_entry.is_importable(),
-                            |files_col_scroll| {
-                                let mut text = egui::RichText::new(format!("{}", media_entry.file_label));
-                                if media_entry.is_ignored { text = text.color(egui::Color32::RED); }
-                                let mut response = files_col_scroll.selectable_label(
-                                    media_entry.is_selected,
-                                    text,
-                                );
-                                if response.clicked() {
-                                    media_entry.is_selected = !media_entry.is_selected;
-                                };
-                                let disabled_reason = 
-                                if media_entry.is_imported { 
-                                    "already imported"
-                                } else if media_entry.is_disabled {
-                                    "can't read file"
-                                } else if !media_entry.is_importable() {
-                                    "bytes not loaded"
-                                } else {
-                                    "unknown error"
-                                };
-                                if media_entry.is_ignored { response = response.on_hover_text("(ignored)"); }
-                                response.on_disabled_hover_text(format!("({disabled_reason})"));
-                            },
-                        );
-                    }
-                },
-            );
-        }
+    fn render_files(&mut self, ui: &mut Ui) {
+        // let files_col = &mut cols[0];
+        ui.vertical(|files_col| {
+
+            files_col.label("file");
+            if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                ScrollArea::vertical().id_source("files_col").show(
+                    files_col,
+                    |files_col_scroll| {
+                        for media_entry in scanned_dirs.iter_mut() {
+                            if media_entry.is_hidden && !self.show_hidden_entries { continue; }
+    
+                            // display label stuff
+                            files_col_scroll.add_enabled_ui(
+                                media_entry.is_importable(),
+                                |files_col_scroll| {
+                                    let mut text = egui::RichText::new(format!("{}", media_entry.file_label));
+                                    if media_entry.is_hidden { text = text.color(egui::Color32::from_rgb(255, 150, 150)); }
+                                    let mut response = files_col_scroll.selectable_label(
+                                        media_entry.is_selected,
+                                        text,
+                                    );
+                                    if response.clicked() {
+                                        media_entry.is_selected = !media_entry.is_selected;
+                                    };
+                                    let disabled_reason = media_entry.get_status_label();
+                                    if media_entry.is_hidden { response = response.on_hover_text("(hidden)"); }
+                                    response.on_disabled_hover_text(format!("({})", disabled_reason.unwrap_or("unknown error".to_string())));
+                                },
+                            );
+                        }
+                    },
+                );
+            }
+        });
     }
 
-    fn render_previews_col(&mut self, cols: &mut [Ui], ctx: &egui::Context) {
-        let previews_col = &mut cols[1];
-        previews_col.label("preview");
-        let thumbnail_size = self.get_config().ui.import.thumbnail_size;
-        if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
-            // iterate through each mediaentry to draw its name on the sidebar, and to load its image
-            // wrapped in an arc mutex for multithreading purposes
-            ScrollArea::vertical().id_source("previews_col").show(
-                previews_col,
-                |previews_col_scroll| {
-                    let layout = egui::Layout::from_main_dir_and_cross_align(
-                        Direction::LeftToRight,
-                        Align::Center,
-                    )
-                    .with_main_wrap(true);
-                    previews_col_scroll.allocate_ui(
-                        Vec2::new(previews_col_scroll.available_size_before_wrap().x, 0.0),
-                        |scroll_wrap| {
-                            scroll_wrap.with_layout(layout, |scroll_wrap| {
-                                for media_entry in scanned_dirs.iter_mut() {
-                                    if media_entry.is_ignored && self.hide_ignored_entries { continue; }
-                                    let preview_size =
-                                        (thumbnail_size + 10) as f32;
-                                    let preview_size2 = [preview_size, preview_size];
-                                    let label_clone = media_entry.file_label.clone();
-                                    let is_importable = media_entry.is_importable();
-                                    let mime_type = media_entry.get_mime_type();
-                                    if let Some(Ok(mime_type)) = mime_type { // mime type read
-                                        let mime_type = mime_type.clone();
-                                        match media_entry.get_thumbnail() {
-                                            None => {
-                                                let spinner = egui::Spinner::new();
-                                                scroll_wrap.add_sized(preview_size2, spinner).on_hover_text(format!("{label_clone} [{mime_type}] (loading bytes for thumbnail...)"));
-                                            }
-                                            Some(promise) => {
-                                                match promise.ready() {
-                                                    None => {
-                                                        let spinner = egui::Spinner::new();
-                                                        scroll_wrap
-                                                        .add_sized(preview_size2, spinner)
-                                                        .on_hover_text(format!("{label_clone} [{mime_type}] (loading thumbnail...)"));
-                        
-                                                    }
+    fn render_previews(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        // let previews_col = &mut cols[1];
+        ui.vertical(|previews_col| {
+            previews_col.label("preview");
 
-                                                    Some(Err(_error)) => {
-                                                        let text = egui::RichText::new("?")
-                                                            .color(egui::Color32::from_rgb(
-                                                                252, 229, 124
-                                                            ))
-                                                            .size(48.0);
-                                                        let label = egui::Label::new(text)
-                                                            .sense(egui::Sense::hover());
-                                                        scroll_wrap
-                                                            .add_sized(preview_size2, label)
-                                                            .on_hover_text(format!(
-                                                                "{} [{mime_type}] (couldn't generate thumbnail)",
-                                                                label_clone
-                                                            ));
-
-                                                        // preview_frame.put(rect, label);
-                                                    }
-                                                    Some(Ok(image)) => {
-                                                        if is_importable {
-                                                            let mut image_button =
-                                                            egui::ImageButton::new(
-                                                                image.texture_id(ctx),
-                                                                image.size_vec2(),
-                                                            )
-                                                            .selected(media_entry.is_selected);
-                                                            
-                                                            if media_entry.is_ignored {
-                                                                image_button = image_button.tint(egui::Color32::from_rgba_premultiplied(255, 100, 100, 255));
-                                                            }
-                                                            let response = scroll_wrap.add_sized(
-                                                                preview_size2,
-                                                                image_button,
-                                                            );
-                                                            if response
-                                                                .clicked()
-                                                            {
-                                                                media_entry.is_selected =
-                                                                    !media_entry.is_selected;
-                                                            }
-                                                            response.on_hover_text(format!("{label_clone} [{mime_type}]{}", if media_entry.is_ignored { " (ignored)" } else { "" }));
-                                                            
-                                                        } else {
- 
-                                                            let mut image = egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2());
-                                                            let ignored_reason = 
-                                                            if media_entry.is_ignored { 
-                                                                "ignored" 
-                                                            } else if media_entry.is_imported {
-                                                                image = image.tint(egui::Color32::from_rgba_premultiplied(100, 100, 255, 255));
-                                                                "already imported"
-                                                            } else { 
-                                                                image = image.tint(egui::Color32::from_rgba_premultiplied(100, 100, 100, 255));
-                                                                "not in current scan chunk"
-                                                            };
-                                                            let response = scroll_wrap.add_sized(preview_size2, image);
-                                                            response.on_hover_text(format!("{label_clone} [{mime_type}] ({ignored_reason})"));
-       
+            let thumbnail_size = self.get_config().ui.import.thumbnail_size;
+            if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
+                // iterate through each mediaentry to draw its name on the sidebar, and to load its image
+                // wrapped in an arc mutex for multithreading purposes
+                ScrollArea::vertical().id_source("previews_col").show(
+                    previews_col,
+                    |previews_col_scroll| {
+                        let layout = egui::Layout::from_main_dir_and_cross_align(
+                            Direction::LeftToRight,
+                            Align::Center,
+                        )
+                        .with_main_wrap(true);
+                        previews_col_scroll.allocate_ui(
+                            Vec2::new(previews_col_scroll.available_size_before_wrap().x, 0.0),
+                            |scroll_wrap| {
+                                scroll_wrap.with_layout(layout, |scroll_wrap| {
+                                    for media_entry in scanned_dirs.iter_mut() {
+                                        if media_entry.is_hidden && !self.show_hidden_entries { continue; }
+                                        let preview_size =
+                                            (thumbnail_size + 10) as f32;
+                                        let preview_size2 = [preview_size, preview_size];
+                                        let label_clone = media_entry.file_label.clone();
+                                        let is_importable = media_entry.is_importable();
+                                        let mime_type = media_entry.get_mime_type();
+                                        if let Some(Ok(mime_type)) = mime_type { // mime type read
+                                            let mime_type = mime_type.clone();
+                                            match media_entry.get_thumbnail(thumbnail_size) {
+                                                None => {
+                                                    let spinner = egui::Spinner::new();
+                                                    scroll_wrap.add_sized(preview_size2, spinner).on_hover_text(format!("{label_clone} [{mime_type}] (loading bytes for thumbnail...)"));
+                                                }
+                                                Some(promise) => {
+                                                    match promise.ready() {
+                                                        None => {
+                                                            let spinner = egui::Spinner::new();
+                                                            scroll_wrap
+                                                            .add_sized(preview_size2, spinner)
+                                                            .on_hover_text(format!("{label_clone} [{mime_type}] (loading thumbnail...)"));
+                            
                                                         }
+    
+                                                        Some(Err(_error)) => {
+                                                            let text = egui::RichText::new("?")
+                                                                .color(egui::Color32::from_rgb(
+                                                                    252, 229, 124
+                                                                ))
+                                                                .size(48.0);
+                                                            let label = egui::Label::new(text)
+                                                                .sense(egui::Sense::hover());
+                                                            scroll_wrap
+                                                                .add_sized(preview_size2, label)
+                                                                .on_hover_text(format!(
+                                                                    "{} [{mime_type}] (couldn't generate thumbnail)",
+                                                                    label_clone
+                                                                ));
+    
+                                                        }
+                                                        Some(Ok(image)) => {
+                                                            if is_importable {
+                                                                let mut image_button =
+                                                                egui::ImageButton::new(
+                                                                    image.texture_id(ctx),
+                                                                    image.size_vec2(),
+                                                                )
+                                                                .selected(media_entry.is_selected);
+                                                                
+                                                                if media_entry.is_hidden {
+                                                                    image_button = image_button.tint(egui::Color32::from_rgb(255, 200, 200));
+                                                                }
+                                                                let response = scroll_wrap.add_sized(
+                                                                    preview_size2,
+                                                                    image_button,
+                                                                );
+                                                                if response
+                                                                    .clicked()
+                                                                {
+                                                                    media_entry.is_selected =
+                                                                        !media_entry.is_selected;
+                                                                }
+                                                                response.on_hover_text(format!("{label_clone} [{mime_type}]{}", if media_entry.is_hidden { " (hidden)" } else { "" }));
+                                                                
+                                                            } else {
+     
+                                                                let mut image = egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2());
+                                                                let disabled_reason = media_entry.get_status_label().unwrap_or("unknown error".to_string());
+                                                                if media_entry.is_imported {
+                                                                    image = image.tint(egui::Color32::from_rgb(200, 200, 255));
+                                                                } else if !media_entry.try_check_if_is_to_be_loaded() { 
+                                                                    image = image.tint(egui::Color32::from_rgb(200, 200, 200));
+                                                                }
 
+                                                                let response = scroll_wrap.add_sized(preview_size2, image);
+                                                                response.on_hover_text(format!("{label_clone} [{mime_type}] ({disabled_reason})"));
+           
+                                                            }
+    
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    } else if let Some(Err(error)) = mime_type  { // unknown file type
-                                        if self.hide_errored_entries { continue; }
-                                        let text = egui::RichText::new("!")
-                                            .color(egui::Color32::from_rgb(
-                                                255, 149, 138,
-                                            ))
-                                            .size(48.0);
-                                        let label = egui::Label::new(text)
-                                            .sense(egui::Sense::hover());
-                                        scroll_wrap
-                                            .add_sized(preview_size2, label)
-                                            .on_hover_text(format!(
-                                                "{label_clone} ({error})",
-                                                
-                                            ));
-                                    } else if mime_type.is_none() { // bytes not loaded
-                                        let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
-
-                                        if is_to_be_loaded {
-                                            let spinner = egui::Spinner::new();
+                                        } else if let Some(Err(error)) = mime_type  { // unknown file type
+                                            if self.hide_errored_entries { continue; }
+                                            let text = egui::RichText::new("!")
+                                                .color(egui::Color32::from_rgb(
+                                                    255, 149, 138,
+                                                ))
+                                                .size(48.0);
+                                            let label = egui::Label::new(text)
+                                                .sense(egui::Sense::hover());
                                             scroll_wrap
-                                                .add_sized(preview_size2, spinner)
-                                                .on_hover_text(format!("{label_clone} [?] (loading bytes for reading...)"));
-                                        } else {
-                                            let text = egui::RichText::new("...")
-                                                    .color(egui::Color32::from_rgb(
-                                                        252, 229, 124
-                                                    ))
-                                                    .size(48.0);
-                                                let label = egui::Label::new(text)
-                                                    .sense(egui::Sense::hover());
+                                                .add_sized(preview_size2, label)
+                                                .on_hover_text(format!(
+                                                    "{label_clone} ({error})",
+                                                    
+                                                ));
+                                        } else if mime_type.is_none() { // bytes not loaded
+                                            let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
+    
+                                            if is_to_be_loaded {
+                                                let spinner = egui::Spinner::new();
                                                 scroll_wrap
-                                                    .add_sized(preview_size2, label)
-                                                    .on_hover_text(format!(
-                                                        "{} [?] (not yet scanned)",
-                                                        label_clone
-                                                    ));
+                                                    .add_sized(preview_size2, spinner)
+                                                    .on_hover_text(format!("{label_clone} [?] (loading bytes for reading...)"));
+                                            } else {
+                                                let text = egui::RichText::new("...")
+                                                        .color(egui::Color32::from_rgb(
+                                                            252, 229, 124
+                                                        ))
+                                                        .size(48.0);
+                                                    let label = egui::Label::new(text)
+                                                        .sense(egui::Sense::hover());
+                                                    scroll_wrap
+                                                        .add_sized(preview_size2, label)
+                                                        .on_hover_text(format!(
+                                                            "{} [?] (not yet scanned)",
+                                                            label_clone
+                                                        ));
+                                            }
                                         }
                                     }
-                                }
-                            });
-                        },
-                    );
-                },
-            );
-        }
-    }
-    fn render_cols(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.columns(2, |cols| {
-
-            self.render_files_col(cols);
-            self.render_previews_col(cols, ctx);
-
+                                });
+                            },
+                        );
+                    },
+                );
+            }
         });
     }
+
+
 
     fn get_load_progress(&mut self) -> f32 {
         let mut progress = 0.0;
@@ -508,6 +538,7 @@ impl ImporterUI {
             }
             progress = loaded_count / total_count;
         }
+
         progress
     }
 
@@ -525,10 +556,15 @@ impl eframe::App for ImporterUI {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
 
-            self.render_scan_directory_selection(ui);
-            self.render_options(ui);
-            self.render_progress(ui);
-            self.render_cols(ui, ctx);
+            ui.horizontal(|ui| {
+                self.render_scan_directory_selection(ui);
+                self.render_progress(ui);
+            });
+            ui.with_layout(egui::Layout::left_to_right(), |ui| {
+                self.render_options(ui);
+                self.render_files(ui);
+                self.render_previews(ui, ctx);
+            });
 
         });
     }
