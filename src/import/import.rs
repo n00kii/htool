@@ -1,14 +1,17 @@
+use crate::config::Import;
+use crate::data::ImportationResult;
+
 use super::super::Config;
+use super::super::Data;
 use anyhow::{Context, Error, Result};
 use eframe::egui;
 use egui_extras::RetainedImage;
-use image::{imageops, error};
 use image::io::Reader as ImageReader;
+use image::{error, imageops};
 use image_hasher::{HashAlg, HasherConfig};
 use infer::Type;
-use super::super::Data;
 use poll_promise::Promise;
-use rusqlite::{Connection, Result as SqlResult, params};
+use rusqlite::{params, Connection, Result as SqlResult};
 use std::{
     fs::{self, DirEntry, File, ReadDir},
     io::Read,
@@ -16,7 +19,6 @@ use std::{
     sync::{Arc, Condvar, Mutex, RwLock},
     thread::{self, JoinHandle},
 };
-
 
 pub struct MediaEntry {
     pub is_unloadable: bool,
@@ -31,88 +33,51 @@ pub struct MediaEntry {
 
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
-    pub modified_thumbnail: Option<RetainedImage>
+    pub modified_thumbnail: Option<RetainedImage>,
+
+    pub importation_status: Option<Promise<Arc<ImportationResult>>>,
 }
 
-pub fn import_media(media_entries: Vec<&MediaEntry>, config: Arc<Config>) -> Result<()> {
+pub fn import_media(media_entries: Vec<&mut MediaEntry>, config: Arc<Config>) {
     for media_entry in media_entries {
         let bytes = media_entry.bytes.as_ref();
-        let db_path = &config.path.database();
+        let mut fail = |message: String| {
+            let (sender, promise) = Promise::new();
+            media_entry.importation_status = Some(promise);
+            sender.send(Arc::new(ImportationResult::Fail(anyhow::Error::msg(message))));
+        };
         match bytes {
-            None => return Err(anyhow::Error::msg("no bytes to import")),
+            None => {
+                fail("bytes not loaded".into());
+            }
             Some(promise) => {
                 match promise.ready() {
-                    None => return Err(anyhow::Error::msg("bytes are stil loading")),
-                    Some(Err(error)) => return Err(anyhow::Error::msg("failed to load bytes")),
+                    None => {
+                        fail("bytes are still loading".into());
+                    }
+                    Some(Err(error)) => {
+                        fail("failed to load bytes".into());
+                    }
                     Some(Ok(bytes)) => {
                         let filekind = match &media_entry.mime_type {
-                            Some(Ok(kind)) => {
-                                Some(kind.clone())
-                            }
-                            Some(Err(error)) => {
-                                None
-                            }
-                            None => {
-                                None
-                            }
+                            Some(Ok(kind)) => Some(kind.clone()),
+                            Some(Err(error)) => None,
+                            None => None,
                         };
-                        
+
                         let bytes = Arc::clone(bytes);
                         let config = Arc::clone(&config);
-                        thread::spawn(move || -> Result<()> {
+                        media_entry.importation_status = Some(Promise::spawn_thread("", move || {
                             let bytes = &*bytes as &[u8];
-                            Data::register_media(config, bytes, filekind)?;
-                            // println!("{} kB", bytes.len() / 1000);
-                            // let conn = Connection::open(&db_path)?;
-
-                            // println!("starting loading of {} kB", bytes.len());
-                            // conn.execute(
-                            //     "CREATE TABLE IF NOT EXISTS media_blobs (
-                            //         id  INTEGER PRIMARY KEY,
-                            //         data  BLOB
-                            //     )",
-                            //     [], // empty list of parameters.
-                            // )?;
-
-                            // conn.execute(
-                            //     "INSERT INTO media_blobs (data) VALUES (?1)",
-                            //     params![bytes],
-                            // )?;
-
-                            // conn.close();
-
-                            // conn.execute(
-                            //     "CREATE TABLE IF NOT EXISTS media_info (
-                            //         id  INTEGER PRIMARY KEY,
-                            //         hash TEXT,
-                            //         info  BLOB
-                            //     )",
-                            //     [], // empty list of parameters.
-                            // )?;
-
-                            // conn.execute(
-                            //     "INSERT INTO media_blobs (id, data) VALUES (?1, ?2)",
-                            //     params![me.name, me.data],
-                            // )?;
-                            
-                            // db_path;
-                            // bytes;
-                            Ok(())
-                        });
+                            let result = Data::register_media(config, bytes, filekind);
+                            Arc::new(result)
+                        }))
                     }
                 }
             }
         }
     }
-    Ok(())
-}
-
-struct MediaImporter {
-    current_path: Option<PathBuf>,
-    hasher: image_hasher::Hasher,
-}
-struct MediaImportationManager {
-    importers: Vec<Arc<Mutex<MediaImporter>>>,
+    // Ok(())
 }
 
 impl MediaEntry {
@@ -136,12 +101,28 @@ impl MediaEntry {
         })
     }
 
+    pub fn match_importation_status(&self, comparison_status: ImportationResult) -> bool {
+        match &self.importation_status {
+            Some(promise) => match promise.ready() {
+                Some(importation_result) => return *importation_result.as_ref() == comparison_status,
+                None => {}
+            },
+            _ => {}
+        }
+        false
+    }
+
     pub fn is_importable(&self) -> bool {
         match &self.bytes {
-            None => false,
+            None => return false,
             Some(promise) => match promise.ready() {
-                None => false,
-                Some(_) => return !self.is_unloadable && !self.is_imported,
+                None => return false,
+                Some(_) => {
+                    let cannot_be_reimported =
+                        self.match_importation_status(ImportationResult::Duplicate) || self.match_importation_status(ImportationResult::Success);
+
+                    return !self.is_unloadable && !self.is_imported && !cannot_be_reimported;
+                }
             },
         }
     }
@@ -153,10 +134,48 @@ impl MediaEntry {
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
 
-        if self.is_hidden { statuses.push("hidden") };
-        if self.is_imported { statuses.push("already imported") };
-        if self.is_unloadable { statuses.push("unable to load") };
-        if !self.try_check_if_is_to_be_loaded() { statuses.push("not in current scan chunk") };
+        let mut add = |message: &str| statuses.push(message.to_string());
+        if self.is_hidden {
+            add("hidden");
+        };
+        if self.is_imported {
+            add("already imported")
+        };
+        if self.is_unloadable {
+            add("unable to load")
+        };
+        if !self.try_check_if_is_to_be_loaded() {
+            add("not in current scan chunk")
+        };
+        if self.match_importation_status(ImportationResult::Success) {
+            add("imported")
+        }
+        if self.match_importation_status(ImportationResult::Duplicate) {
+            add("duplicate")
+        }
+        if self.match_importation_status(ImportationResult::Fail(anyhow::Error::msg(""))) {
+            let error_message = {
+                let error = match &self.importation_status {
+                    Some(promise) => match promise.ready() {
+                        Some(result) => match result.as_ref() {
+                            ImportationResult::Fail(error) => Some(format!("{error}")),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                error.unwrap_or("unknown error".to_string())
+                // "unknown error"
+            };
+            // statuses.push(format!("import failed due to: {error_message}"));
+            add(format!("import failed due to: {error_message}").as_str())
+        }
+        if let Some(result) = &self.thumbnail {
+            if let Some(Err(err)) = result.ready() {
+                add("couldn't generate thumbnail")
+            }
+        }
 
         let label = statuses.join(", ");
 
@@ -165,9 +184,7 @@ impl MediaEntry {
         } else {
             None
         }
-        
     }
-
 
     pub fn get_mime_type(&mut self) -> Option<&Result<Type, Error>> {
         match &self.mime_type {
@@ -182,7 +199,6 @@ impl MediaEntry {
                     }
                     Ok(bytes) => match infer::get(&bytes) {
                         Some(kind) => {
-                            
                             self.mime_type = Some(Ok(kind));
                         }
                         None => {
@@ -264,95 +280,10 @@ impl MediaEntry {
             if w > h { h } else { w },
         )
         .to_image();
-        let thumbnail =
-            imageops::thumbnail(&image_cropped, thumbnail_size.into(), thumbnail_size.into());
+        let thumbnail = imageops::thumbnail(&image_cropped, thumbnail_size.into(), thumbnail_size.into());
         let size = [thumbnail.width() as usize, thumbnail.height() as usize];
         let pixels = thumbnail.as_flat_samples();
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
         Ok(RetainedImage::from_color_image("", color_image))
     }
-}
-
-impl MediaImportationManager {
-    // pub fn new(config: &Config) -> Self {
-    //     let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
-    //     let importers: Vec<Arc<Mutex<MediaImporter>>> = (0..config.hash.hashing_threads)
-    //         .map(|_| Arc::new(Mutex::new(MediaImporter::new(&hasher_config))))
-    //         .collect();
-
-    //     Self { importers }
-    // }
-
-    // pub fn run(&mut self, config: &Config) -> Result<()> {
-    //     let dir_entries_arc = Arc::new(Mutex::new(
-    //         fs::read_dir(&config.path.landing).context("couldn't read landing dir")?,
-    //     ));
-    //     let mut threads = vec![];
-    //     for importer_arc in &self.importers {
-    //         let importer_lock_clone = Arc::clone(importer_arc);
-    //         let thread = MediaImporter::start(importer_lock_clone, Arc::clone(&dir_entries_arc));
-    //         threads.push(thread);
-    //         // thread.unwrap().join().unwrap();
-    //     }
-
-    //     for thread in threads {
-    //         thread?.join();
-    //     }
-
-    //     Ok(())
-    // }
-}
-
-impl MediaImporter {
-    pub fn new(hasher_config: &HasherConfig) -> Self {
-        MediaImporter {
-            current_path: None,
-            hasher: hasher_config.to_hasher(),
-        }
-    }
-
-    pub fn set_file(&mut self, dir_entry: &DirEntry) {
-        self.current_path = Some(dir_entry.path());
-    }
-
-    // pub fn start(
-    //     self_arc: Arc<Mutex<Self>>,
-    //     dir_entries_arc: Arc<Mutex<ReadDir>>,
-    // ) -> Result<JoinHandle<Result<()>>> {
-    //     let thread = thread::spawn(move || {
-    //         let mut self_mutex = self_arc.lock().expect("fuck");
-    //         loop {
-    //             let dir_entries_mutex = dir_entries_arc.lock();
-    //             match dir_entries_mutex {
-    //                 Ok(mut dir_entries) => {
-    //                     let dir_entry = dir_entries.next().context("couldn't read dir entry")??;
-    //                     drop(dir_entries);
-    //                     self_mutex.set_file(&dir_entry);
-    //                     self_mutex.read_media();
-    //                 }
-    //                 Err(_e) => {
-    //                     println!("dir_entries poisoned! can't access mutex anymore")
-    //                 }
-    //             }
-    //         }
-    //         Ok(())
-    //     });
-
-    //     Ok(thread)
-    // }
-
-    // fn read_media(&self) -> Result<()> {
-    //     let path = self.current_path.as_ref().context("context")?;
-
-    //     let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
-    //     let sha_hash = sha256::digest_bytes(&img.as_bytes());
-    //     let p_hash = hex::encode(self.hasher.hash_image(&img).as_bytes());
-    //     println!(
-    //         "path: {} p_hash: {} sha_hash: {}",
-    //         path.display(),
-    //         p_hash,
-    //         sha_hash
-    //     );
-    //     Ok(())
-    // }
 }

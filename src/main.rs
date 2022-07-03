@@ -7,8 +7,9 @@ use image_hasher::{HashAlg, HasherConfig};
 use sha256;
 
 mod config;
-mod import;
 mod data;
+mod gallery;
+mod import;
 use config::Config;
 use data::Data;
 
@@ -29,7 +30,6 @@ fn main() -> Result<()> {
     // Config::save(&config)?;
     import::ui::launch(Arc::clone(&config_arc));
     Ok(())
-
 }
 
 struct MediaImporter {
@@ -53,9 +53,7 @@ impl MediaImportationManager {
 
     pub fn run(&mut self, config: &Config) -> Result<()> {
         let landing_path = config.path.landing()?;
-        let dir_entries_arc = Arc::new(Mutex::new(
-            fs::read_dir(landing_path).context("couldn't read landing dir")?,
-        ));
+        let dir_entries_arc = Arc::new(Mutex::new(fs::read_dir(landing_path).context("couldn't read landing dir")?));
         let mut threads = vec![];
         for importer_arc in &self.importers {
             let importer_lock_clone = Arc::clone(importer_arc);
@@ -83,20 +81,15 @@ impl MediaImporter {
     pub fn set_file(&mut self, dir_entry: &DirEntry) {
         self.current_path = Some(dir_entry.path());
     }
-    
-    pub fn start(
-        self_arc: Arc<Mutex<Self>>,
-        dir_entries_arc: Arc<Mutex<ReadDir>>,
-    ) -> Result<JoinHandle<Result<()>>> {
+
+    pub fn start(self_arc: Arc<Mutex<Self>>, dir_entries_arc: Arc<Mutex<ReadDir>>) -> Result<JoinHandle<Result<()>>> {
         let thread = thread::spawn(move || {
             let mut self_mutex = self_arc.lock().expect("fuck");
             loop {
                 let dir_entries_mutex = dir_entries_arc.lock();
                 match dir_entries_mutex {
                     Ok(mut dir_entries) => {
-                        let dir_entry = dir_entries
-                            .next()
-                            .ok_or(anyhow::Error::msg("message"))??;
+                        let dir_entry = dir_entries.next().ok_or(anyhow::Error::msg("message"))??;
                         drop(dir_entries);
                         self_mutex.set_file(&dir_entry);
                         self_mutex.read_media();
@@ -113,20 +106,12 @@ impl MediaImporter {
     }
 
     fn read_media(&self) -> Result<()> {
-        let path = self
-            .current_path
-            .as_ref()
-            .ok_or(anyhow::Error::msg("message"))?;
+        let path = self.current_path.as_ref().ok_or(anyhow::Error::msg("message"))?;
 
         let img = ImageReader::open(path)?.with_guessed_format()?.decode()?;
         let sha_hash = sha256::digest_bytes(&img.as_bytes());
         let p_hash = hex::encode(self.hasher.hash_image(&img).as_bytes());
-        println!(
-            "path: {} p_hash: {} sha_hash: {}",
-            path.display(),
-            p_hash,
-            sha_hash
-        );
+        println!("path: {} p_hash: {} sha_hash: {}", path.display(), p_hash, sha_hash);
         Ok(())
     }
 }

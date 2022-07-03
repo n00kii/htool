@@ -1,0 +1,8 @@
+max_width = 150
+# error_on_line_overflow = true
+# error_on_unformatted = true
+# fn_single_line = true
+# imports_granularity = "Module"
+# normalize_comments = true
+# group_imports = "StdExternalCrate"
+# trailing_semicolon = false
