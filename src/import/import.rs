@@ -12,6 +12,7 @@ use image_hasher::{HashAlg, HasherConfig};
 use infer::Type;
 use poll_promise::Promise;
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::{
@@ -33,6 +34,7 @@ pub struct MediaEntry {
     pub mime_type: Option<Result<Type>>,
     pub file_label: String,
     pub linking_dir: Option<String>,
+    // pub link_id:
 
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
@@ -41,7 +43,7 @@ pub struct MediaEntry {
     pub importation_status: Option<Promise<Arc<ImportationResult>>>,
 }
 
-pub fn import_media(media_entries: Vec<&mut MediaEntry>, config: Arc<Config>) {
+pub fn import_media(media_entries: Vec<&mut MediaEntry>, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
     for media_entry in media_entries {
         let bytes = media_entry.bytes.as_ref();
         let mut fail = |message: String| {
@@ -69,9 +71,11 @@ pub fn import_media(media_entries: Vec<&mut MediaEntry>, config: Arc<Config>) {
 
                     let bytes = Arc::clone(bytes);
                     let config = Arc::clone(&config);
+                    let dir_link_map = Arc::clone(&dir_link_map);
+                    let linking_dir = media_entry.linking_dir.clone();
                     media_entry.importation_status = Some(Promise::spawn_thread("", move || {
                         let bytes = &*bytes as &[u8];
-                        let result = Data::register_media(config, bytes, filekind);
+                        let result = Data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
                         Arc::new(result)
                     }))
                 }
@@ -138,7 +142,7 @@ pub fn scan_directory(
                 let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
                     .to_str()
                     .unwrap_or("")
-                    .to_string(); //format!("{dir_entry_parent}/{dir_entry_filename}");
+                    .to_string().replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
                 let is_to_be_loaded = if let Some(scan_chunk_indices) = scan_chunk_indices {
                     if scan_chunk_indices.0 <= index && index < scan_chunk_indices.1 {
                         true
@@ -148,11 +152,7 @@ pub fn scan_directory(
                 } else {
                     true
                 };
-                let linking_dir = if let Some(linking_dir) = &linking_dir {
-                    Some(linking_dir.clone())
-                } else {
-                    None
-                };
+
                 // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(MediaEntry {
                     is_hidden: false,
@@ -167,7 +167,7 @@ pub fn scan_directory(
                     is_selected: false,
                     modified_thumbnail: None,
                     importation_status: None,
-                    linking_dir,
+                    linking_dir: linking_dir.clone(),
                 });
             }
         }

@@ -3,6 +3,8 @@ use anyhow::{Context, Error, Result};
 use image_hasher::{HashAlg, HasherConfig};
 use infer;
 use rusqlite::{named_params, params, Connection, Result as SqlResult};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
 
@@ -53,7 +55,7 @@ impl Data {
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tag_info (
-                tag TEXT,
+                tag TEXT PRIMARY KEY NOT NULL,
                 description TEXT
             )",
             [],
@@ -62,7 +64,7 @@ impl Data {
         conn.execute(
             // vertical array
             "CREATE TABLE IF NOT EXISTS media_tags (
-                hash TEXT,
+                hash TEXT NOT NULL,
                 tag TEXT
             )",
             [],
@@ -71,7 +73,7 @@ impl Data {
         conn.execute(
             // vertical array
             "CREATE TABLE IF NOT EXISTS media_links (
-                id AUTOINCREMENT INTEGER PRIMARY KEY NOT NULL,
+                id INTEGER NOT NULL,
                 value INTEGER,
                 type TEXT,
                 hash TEXT
@@ -81,8 +83,8 @@ impl Data {
         Ok(conn)
     }
     pub fn load_media_bytes(config: Arc<Config>, hash: String) {}
-    pub fn register_media(config: Arc<Config>, bytes: &[u8], filekind: Option<infer::Type>) -> ImportationResult {
-        fn register(config: Arc<Config>, bytes: &[u8], filekind: Option<infer::Type>) -> Result<ImportationResult> {
+    pub fn register_media(config: Arc<Config>, bytes: &[u8], filekind: Option<infer::Type>, linking_dir: Option<String>, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) -> ImportationResult {
+        fn register(config: Arc<Config>, bytes: &[u8], filekind: Option<infer::Type>, linking_dir: Option<String>, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) -> Result<ImportationResult> {
             println!("got {} kB for register", bytes.len() / 1000);
             let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
             let hasher = hasher_config.to_hasher();
@@ -127,6 +129,29 @@ impl Data {
             match insert_result {
                 Ok(_) => {
                     conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, bytes])?;
+                    // conn.execute(sql, params);
+                    if let Some(linking_dir) = linking_dir {
+                        if let Ok(mut dir_link_map) = dir_link_map.lock() {
+                            if let Some(link_id) = dir_link_map.get(&linking_dir) {
+                                conn.execute(
+                                    "INSERT INTO media_links (id, hash)
+                                    VALUES (?1, ?2)",
+                                    params![link_id, sha_hash],
+                                )?;
+                            } else { // new link_id
+                                let next_id: i32 = conn.query_row("SELECT IFNULL(MAX(id), 0) + 1 FROM media_links ", [], |row| {
+                                    row.get(0)
+                                })?;
+                                conn.execute(
+                                    "INSERT INTO media_links (id, hash)
+                                    VALUES (?1, ?2)",
+                                    params![next_id, sha_hash])?;
+
+                                dir_link_map.insert(linking_dir, next_id);
+                            }
+                        }
+                    }
+                    
                     return Ok(ImportationResult::Success);
                 },
                 Err(error) => {
@@ -142,7 +167,7 @@ impl Data {
             
         }
 
-        match register(config, bytes, filekind) {
+        match register(config, bytes, filekind, linking_dir, dir_link_map) {
             Ok(ImportationResult::Success) => return ImportationResult::Success,
             Ok(ImportationResult::Duplicate) => return ImportationResult::Duplicate,
             Ok(ImportationResult::Fail(error)) => return ImportationResult::Fail(error),
