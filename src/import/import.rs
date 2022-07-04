@@ -12,6 +12,8 @@ use image_hasher::{HashAlg, HasherConfig};
 use infer::Type;
 use poll_promise::Promise;
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::ffi::OsStr;
+use std::path::Path;
 use std::{
     fs::{self, DirEntry, File, ReadDir},
     io::Read,
@@ -30,6 +32,7 @@ pub struct MediaEntry {
     pub dir_entry: DirEntry,
     pub mime_type: Option<Result<Type>>,
     pub file_label: String,
+    pub linking_dir: Option<String>,
 
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
@@ -50,34 +53,127 @@ pub fn import_media(media_entries: Vec<&mut MediaEntry>, config: Arc<Config>) {
             None => {
                 fail("bytes not loaded".into());
             }
-            Some(promise) => {
-                match promise.ready() {
-                    None => {
-                        fail("bytes are still loading".into());
-                    }
-                    Some(Err(error)) => {
-                        fail("failed to load bytes".into());
-                    }
-                    Some(Ok(bytes)) => {
-                        let filekind = match &media_entry.mime_type {
-                            Some(Ok(kind)) => Some(kind.clone()),
-                            Some(Err(error)) => None,
-                            None => None,
-                        };
-
-                        let bytes = Arc::clone(bytes);
-                        let config = Arc::clone(&config);
-                        media_entry.importation_status = Some(Promise::spawn_thread("", move || {
-                            let bytes = &*bytes as &[u8];
-                            let result = Data::register_media(config, bytes, filekind);
-                            Arc::new(result)
-                        }))
-                    }
+            Some(promise) => match promise.ready() {
+                None => {
+                    fail("bytes are still loading".into());
                 }
-            }
+                Some(Err(error)) => {
+                    fail("failed to load bytes".into());
+                }
+                Some(Ok(bytes)) => {
+                    let filekind = match &media_entry.mime_type {
+                        Some(Ok(kind)) => Some(kind.clone()),
+                        Some(Err(error)) => None,
+                        None => None,
+                    };
+
+                    let bytes = Arc::clone(bytes);
+                    let config = Arc::clone(&config);
+                    media_entry.importation_status = Some(Promise::spawn_thread("", move || {
+                        let bytes = &*bytes as &[u8];
+                        let result = Data::register_media(config, bytes, filekind);
+                        Arc::new(result)
+                    }))
+                }
+            },
         }
     }
     // Ok(())
+}
+
+fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
+    let mut reverse_components = path.components().rev();
+    let mut desired_components = vec![];
+    let mut truncated_path = PathBuf::from("");
+    for _ in 0..num_components {
+        desired_components.push(reverse_components.next());
+    }
+
+    let reversed_components = desired_components.into_iter().rev();
+
+    for component in reversed_components {
+        if let Some(component) = component {
+            let path = PathBuf::from(component.as_os_str());
+            truncated_path = truncated_path.join(path);
+        }
+    }
+    truncated_path
+}
+
+pub fn scan_directory(
+    directory_path: PathBuf,
+    scan_chunk_indices: Option<(i32, i32)>,
+    directory_level: u8,
+    linking_dir: Option<String>,
+) -> Result<Vec<MediaEntry>> {
+    let dir_entries_iter = fs::read_dir(directory_path)?;
+    let mut scanned_dir_entries = vec![];
+    for (index, dir_entry_res) in dir_entries_iter.enumerate() {
+        let index = index as i32;
+        if let Ok(dir_entry) = dir_entry_res {
+            // TODO: don't error whole function for one entry (? below)
+            if dir_entry.metadata()?.is_dir() {
+                let linking_dir = 
+
+                if let Some(linking_dir) = &linking_dir {
+                    Some(linking_dir.clone())
+                } else {
+                    if directory_level == 0 {
+                        let dir_name = dir_entry.file_name().into_string();
+                        if let Ok(dir_name) = dir_name {
+                            Some(dir_name)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                let media_entries = scan_directory(dir_entry.path(), scan_chunk_indices, directory_level + 1, linking_dir)?;
+                scanned_dir_entries.extend(media_entries);
+            } else {
+                let dir_entry_path = dir_entry.path();
+
+                let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string(); //format!("{dir_entry_parent}/{dir_entry_filename}");
+                let is_to_be_loaded = if let Some(scan_chunk_indices) = scan_chunk_indices {
+                    if scan_chunk_indices.0 <= index && index < scan_chunk_indices.1 {
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                };
+                let linking_dir = if let Some(linking_dir) = &linking_dir {
+                    Some(linking_dir.clone())
+                } else {
+                    None
+                };
+                // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
+                scanned_dir_entries.push(MediaEntry {
+                    is_hidden: false,
+                    is_to_be_loaded: Arc::new((Mutex::new(is_to_be_loaded), Condvar::new())),
+                    is_unloadable: false,
+                    is_imported: false,
+                    thumbnail: None,
+                    mime_type: None,
+                    dir_entry,
+                    file_label,
+                    bytes: None,
+                    is_selected: false,
+                    modified_thumbnail: None,
+                    importation_status: None,
+                    linking_dir,
+                });
+            }
+        }
+    }
+
+    Ok(scanned_dir_entries)
 }
 
 impl MediaEntry {

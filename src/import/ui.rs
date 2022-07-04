@@ -2,6 +2,7 @@
 
 use super::super::data;
 use super::super::Config;
+use super::import::scan_directory;
 use super::import::{import_media, MediaEntry};
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
@@ -91,49 +92,54 @@ impl ImporterUI {
         ui.vertical(|ui| {
             ui.heading("options");
             if ui.button(if self.scanned_dir_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
-                let dir_entries_iter = fs::read_dir(self.get_scan_dir());
-                if let Ok(dir_entries_iter) = dir_entries_iter {
-                    let mut scanned_dir_entries = vec![];
-                    for (index, dir_entry_res) in dir_entries_iter.enumerate() {
-                        let index = index as i32;
-                        if let Ok(dir_entry) = dir_entry_res {
-                            let empty_path = Path::new("");
-                            let dir_entry_path = dir_entry.path();
-                            let dir_entry_parent = dir_entry_path
-                                .parent()
-                                .unwrap_or(&empty_path)
-                                .file_name()
-                                .unwrap_or(empty_path.as_os_str())
-                                .to_str()
-                                .unwrap_or("");
-                            let dir_entry_filename = dir_entry_path.file_name().unwrap_or(empty_path.as_os_str()).to_str().unwrap_or("");
-                            let file_label = format!("{dir_entry_parent}/{dir_entry_filename}");
-                            self.scan_chunk_indices = (0, self.scan_chunk_size.into());
-                            let is_to_be_loaded = if self.scan_chunk_indices.0 <= index && index < self.scan_chunk_indices.1 {
-                                true
-                            } else {
-                                false
-                            };
-                            scanned_dir_entries.push(MediaEntry {
-                                is_hidden: false,
-                                is_to_be_loaded: Arc::new((Mutex::new(is_to_be_loaded), Condvar::new())),
-                                is_unloadable: false,
-                                is_imported: false,
-                                thumbnail: None,
-                                mime_type: None,
-                                dir_entry,
-                                file_label,
-                                bytes: None,
-                                is_selected: false,
-                                modified_thumbnail: None,
-                                importation_status: None,
-                            });
-                        }
-                    }
-                    self.scanned_dir_entries = Some(scanned_dir_entries);
-                } else {
-                    println!("error reading from dir")
+                self.scan_chunk_indices = (0, self.scan_chunk_size.into());
+                let media_entries = scan_directory(self.get_scan_dir(), Some(self.scan_chunk_indices), 0, None);
+                if let Ok(media_entries) = media_entries {
+                    self.scanned_dir_entries = Some(media_entries);
                 }
+                // let dir_entries_iter = fs::read_dir(self.get_scan_dir());
+                // if let Ok(dir_entries_iter) = dir_entries_iter {
+                //     let mut scanned_dir_entries = vec![];
+                //     for (index, dir_entry_res) in dir_entries_iter.enumerate() {
+                //         let index = index as i32;
+                //         if let Ok(dir_entry) = dir_entry_res {
+                //             let empty_path = Path::new("");
+                //             let dir_entry_path = dir_entry.path();
+                //             let dir_entry_parent = dir_entry_path
+                //                 .parent()
+                //                 .unwrap_or(&empty_path)
+                //                 .file_name()
+                //                 .unwrap_or(empty_path.as_os_str())
+                //                 .to_str()
+                //                 .unwrap_or("");
+                //             let dir_entry_filename = dir_entry_path.file_name().unwrap_or(empty_path.as_os_str()).to_str().unwrap_or("");
+                //             let file_label = format!("{dir_entry_parent}/{dir_entry_filename}");
+                //             // self.scan_chunk_indices = (0, self.scan_chunk_size.into());
+                //             let is_to_be_loaded = if self.scan_chunk_indices.0 <= index && index < self.scan_chunk_indices.1 {
+                //                 true
+                //             } else {
+                //                 false
+                //             };
+                //             scanned_dir_entries.push(MediaEntry {
+                //                 is_hidden: false,
+                //                 is_to_be_loaded: Arc::new((Mutex::new(is_to_be_loaded), Condvar::new())),
+                //                 is_unloadable: false,
+                //                 is_imported: false,
+                //                 thumbnail: None,
+                //                 mime_type: None,
+                //                 dir_entry,
+                //                 file_label,
+                //                 bytes: None,
+                //                 is_selected: false,
+                //                 modified_thumbnail: None,
+                //                 importation_status: None,
+                //             });
+                //         }
+                //     }
+                //     self.scanned_dir_entries = Some(scanned_dir_entries);
+                // } else {
+                //     println!("error reading from dir")
+                // }
             }
             if ui.add_enabled(self.scanned_dir_entries.is_some(), Button::new("prev chunk")).clicked() {
                 let chunk_size = self.scan_chunk_size as i32;
