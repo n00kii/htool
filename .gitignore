@@ -1,4 +1,3 @@
-/target
 # These are some examples of commonly ignored file patterns.
 # You should customize this list as applicable to your project.
 # Learn more about .gitignore:
@@ -42,10 +41,15 @@ Thumbs.db
 *.war
 
 # Large media files
-*.mp4
-*.tiff
-*.avi
-*.flv
-*.mov
-*.wmv
+# *.mp4
+# *.tiff
+# *.avi
+# *.flv
+# *.mov
+# *.wmv
 
+# rust target
+/target
+
+# htool db
+*.db
