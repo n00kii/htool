@@ -1,2 +1,2 @@
 pub mod gallery;
-pub mod ui;
+pub mod gallery_ui;

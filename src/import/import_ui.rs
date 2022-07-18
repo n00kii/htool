@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-
 use super::super::data;
+use super::super::ui;
+use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::import::scan_directory;
 use super::import::{import_media, MediaEntry};
@@ -14,16 +15,8 @@ use std::{fs, path::Path};
 
 use std::sync::{Arc, Mutex};
 
-pub fn launch(config: Arc<Config>) {
-    let mut options = eframe::NativeOptions::default();
-    options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
 
-    let mut app = ImporterUI::default();
-    app.set_config(config);
-    eframe::run_native("htool2", options, Box::new(|_cc| Box::new(app)));
-}
-
-struct ImporterUI {
+pub struct ImporterUI {
     config: Option<Arc<Config>>,
     scanned_dir_entries: Option<Vec<MediaEntry>>,
     alternate_scan_dir: Option<PathBuf>,
@@ -66,17 +59,9 @@ impl ImporterUI {
         }
     }
 
-    fn set_config(&mut self, config: Arc<Config>) {
-        self.config = Some(config);
-    }
-
-    fn get_config(&self) -> &Config {
-        self.config.as_ref().unwrap()
-    }
-
     fn render_scan_directory_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.heading("scan directory");
+            ui.label("scan directory");
             if ui.button("change").clicked() {
                 if let Some(path) = FileDialog::new().pick_folder() {
                     self.alternate_scan_dir = Some(path);
@@ -93,16 +78,14 @@ impl ImporterUI {
 
     fn render_options(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
-            ui.heading("options");
+            ui.label("options");
             if ui.button(if self.scanned_dir_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
                 self.scan_chunk_indices = (0, self.scan_chunk_size.into());
                 let media_entries = scan_directory(self.get_scan_dir(), Some(self.scan_chunk_indices), 0, None);
                 if let Ok(media_entries) = media_entries {
                     self.scanned_dir_entries = Some(media_entries);
                     for media_entry in self.scanned_dir_entries.as_ref().unwrap() {
-                        if let Some(linking_dir) = &media_entry.linking_dir {
-
-                        }
+                        if let Some(linking_dir) = &media_entry.linking_dir {}
                     }
                 }
             }
@@ -247,10 +230,9 @@ impl ImporterUI {
                         .collect::<Vec<&mut MediaEntry>>();
 
                     let dir_link_map = Arc::clone(&self.dir_link_map);
-                    let import_result = import_media(media_entries, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
-                    println!("{:?}", import_result);
+                    import_media(media_entries, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
+
                     for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                        // media_entry.is_imported = true; // TODO: figure out how to convey importaton status
                         media_entry.is_hidden = false;
                         media_entry.is_selected = false;
                     }
@@ -495,18 +477,22 @@ impl ImporterUI {
     }
 }
 
-impl eframe::App for ImporterUI {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                self.render_scan_directory_selection(ui);
-                self.render_progress(ui);
-            });
-            ui.with_layout(egui::Layout::left_to_right(), |ui| {
-                self.render_options(ui);
-                self.render_files(ui);
-                self.render_previews(ui, ctx);
-            });
+impl ui::DockedWindow for ImporterUI {
+    fn set_config(&mut self, config: Arc<Config>) {
+        self.config = Some(config);
+    }
+    fn get_config(&self) -> Arc<Config> {
+        Arc::clone(self.config.as_ref().unwrap())
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            self.render_scan_directory_selection(ui);
+            self.render_progress(ui);
+        });
+        ui.with_layout(egui::Layout::left_to_right(), |ui| {
+            self.render_options(ui);
+            self.render_files(ui);
+            self.render_previews(ui, ctx);
         });
     }
 }

@@ -6,6 +6,7 @@ use image_hasher::{HashAlg, HasherConfig};
 // use pihash::{cache, hash};
 use sha256;
 
+mod ui;
 mod config;
 mod data;
 mod gallery;
@@ -25,10 +26,23 @@ use path_absolutize::*;
 use std::path::Path;
 
 fn main() -> Result<()> {
-    let config = Config::load()?;
-    let config_arc = Arc::new(config);
-    // Config::save(&config)?;
-    import::ui::launch(Arc::clone(&config_arc));
+    let config = Arc::new(Config::load()?);
+    let args: Vec<String> = env::args().collect();
+    if let Some(command) = args.get(1) {
+        match command.as_str() {
+
+            "test" => {
+                let mut app = ui::UserInterface::new(Arc::clone(&config));
+                app.load_docked_windows();
+                app.launch_preview();
+                ui::UserInterface::start(app);
+            }
+            _ => println!("unknown command {command}")
+        }
+    } else {
+        println!("no command")
+    }
+
     Ok(())
 }
 

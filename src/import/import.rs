@@ -1,6 +1,6 @@
 use crate::config::Import;
 use crate::data::ImportationResult;
-
+use super::super::ui;
 use super::super::Config;
 use super::super::Data;
 use anyhow::{Context, Error, Result};
@@ -327,7 +327,7 @@ impl MediaEntry {
                             // let arc = Arc::new(bytes);
                             thread::spawn(move || {
                                 let bytes = &bytes_copy as &[u8];
-                                let image = MediaEntry::load_image_from_memory(bytes, thumbnail_size);
+                                let image = MediaEntry::load_thumbnail(bytes, thumbnail_size);
                                 sender.send(image);
                             });
                         }
@@ -364,22 +364,9 @@ impl MediaEntry {
         cond_var.notify_all();
     }
 
-    pub fn load_image_from_memory(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
-        // println!("loading from memory, size: {} kB", image_data.len() / 1000);
-        let image = image::load_from_memory(image_data)?;
-        let (w, h) = (image.width(), image.height());
-        let image_cropped = imageops::crop_imm(
-            &image,
-            if h > w { 0 } else { (w - h) / 2 },
-            if w > h { 0 } else { (h - w) / 2 },
-            if h > w { w } else { h },
-            if w > h { h } else { w },
-        )
-        .to_image();
-        let thumbnail = imageops::thumbnail(&image_cropped, thumbnail_size.into(), thumbnail_size.into());
-        let size = [thumbnail.width() as usize, thumbnail.height() as usize];
-        let pixels = thumbnail.as_flat_samples();
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-        Ok(RetainedImage::from_color_image("", color_image))
+    pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
+        let pixels = Data::generate_thumbnail(image_data, thumbnail_size)?;
+        let img = ui::generate_retained_image(&pixels)?;
+        Ok(img)
     }
 }
