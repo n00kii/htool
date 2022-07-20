@@ -4,6 +4,7 @@ use super::super::ui;
 use anyhow::{Context, Error, Result};
 use egui_extras::RetainedImage;
 use poll_promise::Promise;
+use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 
@@ -21,6 +22,9 @@ pub struct GalleryEntryPlural {
 }
 
 pub trait GalleryItem {
+    // fn as_any(&self) -> &dyn Any;
+    fn as_gallery_entry(&self) -> Option<&GalleryEntry> {None}
+    fn as_gallery_entry_plural(&self) -> Option<&GalleryEntryPlural> {None}
     fn get_thumbnail(&mut self, config: Arc<Config>) -> Option<&Promise<Result<RetainedImage, Error>>>;
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>>;
     fn get_status_label(&self) -> Option<String> {
@@ -44,6 +48,9 @@ pub trait GalleryItem {
 }
 
 impl GalleryItem for GalleryEntry {
+    fn as_gallery_entry(&self) -> Option<&GalleryEntry> {
+        Some(self)
+    }
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
         self.thumbnail.as_ref()
     }
@@ -74,6 +81,9 @@ impl GalleryItem for GalleryEntry {
 }
 
 impl GalleryItem for GalleryEntryPlural {
+    fn as_gallery_entry_plural(&self) -> Option<&GalleryEntryPlural> {
+        Some(self)
+    }
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
         self.thumbnail.as_ref()
     }

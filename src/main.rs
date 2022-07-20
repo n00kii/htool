@@ -34,7 +34,7 @@ fn main() -> Result<()> {
             "test" => {
                 let mut app = ui::UserInterface::new(Arc::clone(&config));
                 app.load_docked_windows();
-                app.launch_preview();
+                // app.launch_preview();
                 ui::UserInterface::start(app);
             }
             _ => println!("unknown command {command}")

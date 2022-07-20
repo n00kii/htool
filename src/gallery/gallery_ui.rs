@@ -1,8 +1,11 @@
+use crate::ui::RenderLoadingImageOptions;
+use crate::ui::UserInterface;
+
+use super::super::data;
 use super::super::ui;
 use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::super::Data;
-use super::super::data;
 use super::gallery::load_gallery_items;
 use super::gallery::GalleryEntry;
 use super::gallery::GalleryItem;
@@ -14,43 +17,86 @@ use eframe::{
     egui::{self, Ui},
     emath::{Align, Vec2},
 };
+use egui_extras::RetainedImage;
+use image::DynamicImage;
 use poll_promise::Promise;
 use rand::Rng;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::thread;
 
 pub struct GalleryUI {
-    config: Option<Arc<Config>>,
-    gallery_items: Vec<Box<dyn GalleryItem>>,
+    pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
+    // pub root_interface: Option<Rc<UserInterface>>,
+    // pub root_interface_floating_windows: Option<&'a mut Vec<Box<dyn ui::FloatingWindow>>>,
+    pub config: Option<Arc<Config>>,
+    pub gallery_items: Vec<Box<dyn GalleryItem>>,
 }
 
 pub struct PreviewUI {
-    media_info_plural: Option<data::MediaInfoPlural>,
-    media_info: Option<Promise<Result<data::MediaInfo>>>,
-    config: Arc<Config>,
+    pub image: Option<Promise<Result<RetainedImage>>>,
+    pub media_info_plural: Option<data::MediaInfoPlural>,
+    pub media_info: Option<Promise<Result<data::MediaInfo>>>,
+    pub config: Arc<Config>,
 }
 
 impl ui::FloatingWindow for PreviewUI {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        self.render_image(ui)
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.render_image(ui, ctx);
     }
 }
 
 impl PreviewUI {
     pub fn new(config: Arc<Config>) -> Box<Self> {
         Box::new(PreviewUI {
+            image: None,
             config,
             media_info: None,
             media_info_plural: None,
         })
     }
-    pub fn render_image(&mut self, ui: &mut Ui) {
-        ui.label("text");
+
+    pub fn render_image(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let mut options = RenderLoadingImageOptions::default();
+        options.widget_size = [500., 500.];
+        let response = ui::render_loading_image(ui, ctx, self.get_image(), options);
+    }
+
+    pub fn get_image(&mut self) -> Option<&Promise<Result<RetainedImage>>> {
+        match &self.image {
+            None => match self.media_info.as_ref().unwrap().ready() {
+                None => None,
+                Some(result) => {
+                    let (sender, promise) = Promise::new();
+                    match result {
+                        Err(_error) => sender.send(Err(anyhow::Error::msg("failed to load mediainfo"))),
+                        Ok(media_info) => {
+                            let hash = media_info.hash.clone();
+                            let config = Arc::clone(&self.config);
+                            thread::spawn(move || {
+                                let bytes = Data::load_bytes(config, &hash);
+                                let load = || -> Result<RetainedImage> {
+                                    let bytes = bytes?;
+                                    let dynamic_image = image::load_from_memory(&bytes)?;
+                                    let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
+                                    Ok(retained_image)
+                                };
+                                sender.send(load())
+                            });
+                        }
+                    }
+                    self.image = Some(promise);
+                    self.image.as_ref()
+                }
+            },
+            Some(_promise) => self.image.as_ref(),
+        }
+
     }
     pub fn set_media_info_by_hash(&mut self, hash: String) {
         let config = Arc::clone(&self.config);
-        self.media_info = Some(Promise::spawn_thread("", move || {
-            Data::load_media_info(config, &hash)
-        }))
+        self.media_info = Some(Promise::spawn_thread("", move || Data::load_media_info(config, &hash)))
     }
     // pub load_image
 }
@@ -80,6 +126,7 @@ impl GalleryUI {
                 ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
+                        let config = self.get_config();
                         for gallery_item in self.gallery_items.iter_mut() {
                             let widget_size = (thumbnail_size + 3) as f32;
                             let widget_size = [widget_size, widget_size];
@@ -120,10 +167,14 @@ impl GalleryUI {
                                         }
 
                                         if response.clicked() {
-                                            println!("hello");
-                                            egui::Window::new("My Window").show(ctx, |ui| {
-                                                ui.label("Hello World!");
-                                            });
+                                            if let Some(gallery_entry) = gallery_item.as_gallery_entry() {
+                                                let mut floating_windows = self.root_interface_floating_windows.as_ref().unwrap().borrow_mut();
+                                                ui::UserInterface::launch_preview_by_hash(
+                                                    Arc::clone(&config),
+                                                    floating_windows,
+                                                    gallery_entry.hash.clone(),
+                                                );
+                                            }
                                         }
                                     }
                                 },
@@ -139,6 +190,7 @@ impl GalleryUI {
 impl Default for GalleryUI {
     fn default() -> Self {
         Self {
+            root_interface_floating_windows: None,
             config: None,
             gallery_items: vec![],
         }

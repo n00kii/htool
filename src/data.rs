@@ -37,12 +37,12 @@ impl PartialEq for ImportationResult {
 }
 
 pub struct MediaInfo {
-    hash: String,
-    mime: String,
-    p_hash: String,
-    date_registered: i64,
-    size: i64,
-    tags: Vec<String>
+    pub hash: String,
+    pub mime: String,
+    pub p_hash: String,
+    pub date_registered: i64,
+    pub size: i64,
+    pub tags: Vec<String>
 }
 
 pub struct MediaInfoPlural {
