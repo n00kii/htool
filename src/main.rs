@@ -37,6 +37,7 @@ fn main() -> Result<()> {
                 // app.launch_preview();
                 ui::UserInterface::start(app);
             }
+
             _ => println!("unknown command {command}")
         }
     } else {

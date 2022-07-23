@@ -7,7 +7,7 @@ use super::gallery::gallery_ui;
 use super::import::import_ui;
 use anyhow::Result;
 use eframe::{
-    egui::{self, Response, ScrollArea, Ui, WidgetText},
+    egui::{self, Response, ScrollArea, Ui, WidgetText, Style, Visuals, Id},
     emath::Vec2,
     epaint::Color32,
 };
@@ -143,6 +143,7 @@ pub trait FloatingWindow {
 
 pub struct FloatingWindowState {
     title: String,
+    widget_id: Id,
     is_open: bool,
     window: Box<dyn FloatingWindow>,
 }
@@ -185,7 +186,15 @@ impl UserInterface {
     pub fn start(app: UserInterface) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
-        eframe::run_native("htool2", options, Box::new(|_cc| Box::new(app)));
+        eframe::run_native("htool2", options, Box::new(|creation_context| {
+            let style = Style {
+                visuals: Visuals::dark(),
+                ..Style::default()
+            };
+            creation_context.egui_ctx.set_style(style);
+            Box::new(app)
+        })
+        );
     }
 
     pub fn load_docked_windows(&mut self) {
@@ -212,9 +221,14 @@ impl UserInterface {
     pub fn launch_preview_by_hash(config: Arc<Config>, mut floating_windows: RefMut<Vec<FloatingWindowState>>, hash: String) {
         let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config));
         preview.set_media_info_by_hash(hash.clone());
+        let mut title = hash.clone();
+        let widget_id = Id::new(&title);
+        title.truncate(6);
+        title.insert_str(0, "preview-");
         floating_windows.push(FloatingWindowState {
-            title: hash.clone(),
-            is_open: false,
+            title,
+            widget_id,
+            is_open: true,
             window: preview,
         });
     }
@@ -223,6 +237,7 @@ impl UserInterface {
         for window_state in self.floating_windows.borrow_mut().iter_mut() {
             // window_state.window.show(ctx, &mut window_state.is_open);
             egui::Window::new(&window_state.title)
+            .id(window_state.widget_id)
                 .open(&mut window_state.is_open)
                 .default_size([800.0, 400.0])
                 .vscroll(false)
@@ -258,9 +273,7 @@ impl UserInterface {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                         ui.add_space(5.0);
                         for window_state in self.floating_windows.borrow_mut().iter_mut() {
-                            let mut label = window_state.title.clone();
-                            label.truncate(6);
-                            ui.toggle_value(&mut window_state.is_open, label);
+                            ui.toggle_value(&mut window_state.is_open, &window_state.title);
                         }
                     });
                 });
