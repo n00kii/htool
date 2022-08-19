@@ -1,8 +1,8 @@
-use crate::config::Import;
-use crate::data::ImportationResult;
 use super::super::ui;
 use super::super::Config;
 use super::super::Data;
+use crate::config::Import;
+use crate::data::ImportationStatus;
 use anyhow::{Context, Error, Result};
 use eframe::egui;
 use egui_extras::RetainedImage;
@@ -28,28 +28,26 @@ pub struct MediaEntry {
     pub is_hidden: bool,
     pub is_imported: bool,
     pub is_selected: bool,
+    pub disable_bytes_loading: bool,
     pub is_to_be_loaded: Arc<(Mutex<bool>, Condvar)>,
 
     pub dir_entry: DirEntry,
     pub mime_type: Option<Result<Type>>,
     pub file_label: String,
     pub linking_dir: Option<String>,
-    // pub link_id:
-
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
     pub modified_thumbnail: Option<RetainedImage>,
 
-    pub importation_status: Option<Promise<Arc<ImportationResult>>>,
+    pub importation_status: Option<Promise<Arc<ImportationStatus>>>,
 }
 
-pub fn import_media(media_entries: Vec<&mut MediaEntry>, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
-    for media_entry in media_entries {
+pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
         let bytes = media_entry.bytes.as_ref();
         let mut fail = |message: String| {
             let (sender, promise) = Promise::new();
             media_entry.importation_status = Some(promise);
-            sender.send(Arc::new(ImportationResult::Fail(anyhow::Error::msg(message))));
+            sender.send(Arc::new(ImportationStatus::Fail(anyhow::Error::msg(message))));
         };
         match bytes {
             None => {
@@ -81,7 +79,6 @@ pub fn import_media(media_entries: Vec<&mut MediaEntry>, dir_link_map: Arc<Mutex
                 }
             },
         }
-    }
     // Ok(())
 }
 
@@ -106,20 +103,19 @@ fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
 
 pub fn scan_directory(
     directory_path: PathBuf,
-    scan_chunk_indices: Option<(i32, i32)>,
     directory_level: u8,
     linking_dir: Option<String>,
+    extension_filter: &Vec<&String>
 ) -> Result<Vec<MediaEntry>> {
+    println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
-    for (index, dir_entry_res) in dir_entries_iter.enumerate() {
+    'dir_entries: for (index, dir_entry_res) in dir_entries_iter.enumerate() {
         let index = index as i32;
         if let Ok(dir_entry) = dir_entry_res {
             // TODO: don't error whole function for one entry (? below)
             if dir_entry.metadata()?.is_dir() {
-                let linking_dir = 
-
-                if let Some(linking_dir) = &linking_dir {
+                let linking_dir = if let Some(linking_dir) = &linking_dir {
                     Some(linking_dir.clone())
                 } else {
                     if directory_level == 0 {
@@ -134,29 +130,30 @@ pub fn scan_directory(
                     }
                 };
 
-                let media_entries = scan_directory(dir_entry.path(), scan_chunk_indices, directory_level + 1, linking_dir)?;
+                let media_entries = scan_directory(dir_entry.path(), directory_level + 1, linking_dir, extension_filter)?;
                 scanned_dir_entries.extend(media_entries);
             } else {
                 let dir_entry_path = dir_entry.path();
 
+                if let Some(ext) = dir_entry_path.extension() {
+                    for exclude_ext in extension_filter {
+                        if ext.to_str().unwrap_or("") == exclude_ext.as_str() {
+                            continue 'dir_entries;
+                        }
+                    }
+                }
+                
                 let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
                     .to_str()
                     .unwrap_or("")
-                    .to_string().replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
-                let is_to_be_loaded = if let Some(scan_chunk_indices) = scan_chunk_indices {
-                    if scan_chunk_indices.0 <= index && index < scan_chunk_indices.1 {
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    true
-                };
+                    .to_string()
+                    .replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
+
 
                 // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(MediaEntry {
                     is_hidden: false,
-                    is_to_be_loaded: Arc::new((Mutex::new(is_to_be_loaded), Condvar::new())),
+                    is_to_be_loaded: Arc::new((Mutex::new(false), Condvar::new())),
                     is_unloadable: false,
                     is_imported: false,
                     thumbnail: None,
@@ -168,6 +165,7 @@ pub fn scan_directory(
                     modified_thumbnail: None,
                     importation_status: None,
                     linking_dir: linking_dir.clone(),
+                    disable_bytes_loading: false,
                 });
             }
         }
@@ -191,13 +189,54 @@ impl MediaEntry {
                 let mut file = File::open(path)?;
                 let mut bytes: Vec<u8> = vec![];
                 file.read_to_end(&mut bytes)?;
+                println!("loaded {} bytes", bytes.len());
                 Ok(Arc::new(bytes))
             });
             promise
         })
     }
 
-    pub fn match_importation_status(&self, comparison_status: ImportationResult) -> bool {
+    pub fn is_importing(&self) -> bool {
+        if let Some(promise) = self.importation_status.as_ref() {
+            promise.ready().is_none() || self.match_importation_status(ImportationStatus::PendingBytes)
+        } else {
+            false
+        }
+    }
+
+    pub fn are_bytes_loaded(&self) -> bool {
+        if let Some(bytes_promise) = self.bytes.as_ref() {
+            if let Some(bytes_res) = bytes_promise.ready() {
+                if let Ok(bytes) = bytes_res {
+                    return true
+                }
+            }
+        }
+        false
+    }
+
+    pub fn is_loading_or_needs_to_load(&self) -> bool {
+        let is_loading_thumbnail = if let Some(promise) = self.thumbnail.as_ref() {
+            promise.ready().is_none()
+        } else {
+            true
+        };
+
+        let is_loading_mime_type = self.mime_type.is_none();
+        let failed_mime_type = if let Some(mime_type_res) = self.mime_type.as_ref() {
+            if let Err(_) = mime_type_res {
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        (is_loading_thumbnail || is_loading_mime_type) && !failed_mime_type
+    }
+
+    pub fn match_importation_status(&self, comparison_status: ImportationStatus) -> bool {
         match &self.importation_status {
             Some(promise) => match promise.ready() {
                 Some(importation_result) => return *importation_result.as_ref() == comparison_status,
@@ -209,27 +248,36 @@ impl MediaEntry {
     }
 
     pub fn is_importable(&self) -> bool {
-        match &self.bytes {
-            None => return false,
-            Some(promise) => match promise.ready() {
-                None => return false,
-                Some(_) => {
-                    let cannot_be_reimported =
-                        self.match_importation_status(ImportationResult::Duplicate) || self.match_importation_status(ImportationResult::Success);
+        let cannot_be_reimported =
+            self.match_importation_status(ImportationStatus::Duplicate) || self.match_importation_status(ImportationStatus::Success);
 
-                    return !self.is_unloadable && !self.is_imported && !cannot_be_reimported;
-                }
-            },
-        }
+        return !self.is_unloadable && !self.is_imported && !cannot_be_reimported;
+
     }
 
-    pub fn unload_bytes(&mut self) {
-        self.bytes = None
+    pub fn unload_bytes_if_unnecessary(&mut self) {
+        // If bytes are loaded,
+        // we only need bytes to be loaded if thumbnail is still loading, or we are trying to import
+        if let Some(promise) = self.bytes.as_ref() {
+            if let Some(bytes_res) = promise.ready() {
+                if let Ok(bytes) = bytes_res {
+                    // let is_thumbnail_loading = if let Some(promise) = self.thumbnail.as_ref() {
+                    //     promise.ready().is_none()
+                    // } else {
+                    //     false
+                    // };
+
+                    if !(self.is_loading_or_needs_to_load() || self.is_importing()) {
+                        println!("unloaded {} bytes", bytes.len());
+                        self.bytes = None;
+                    }
+                }
+            }
+        }
     }
 
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
-
         let mut add = |message: &str| statuses.push(message.to_string());
         if self.is_hidden {
             add("hidden");
@@ -241,20 +289,20 @@ impl MediaEntry {
             add("unable to load")
         };
         if !self.try_check_if_is_to_be_loaded() {
-            add("not in current scan chunk")
+            add("not yet loaded")
         };
-        if self.match_importation_status(ImportationResult::Success) {
+        if self.match_importation_status(ImportationStatus::Success) {
             add("imported")
         }
-        if self.match_importation_status(ImportationResult::Duplicate) {
+        if self.match_importation_status(ImportationStatus::Duplicate) {
             add("duplicate")
         }
-        if self.match_importation_status(ImportationResult::Fail(anyhow::Error::msg(""))) {
+        if self.match_importation_status(ImportationStatus::Fail(anyhow::Error::msg(""))) {
             let error_message = {
                 let error = match &self.importation_status {
                     Some(promise) => match promise.ready() {
                         Some(result) => match result.as_ref() {
-                            ImportationResult::Fail(error) => Some(format!("{error}")),
+                            ImportationStatus::Fail(error) => Some(format!("{error}")),
                             _ => None,
                         },
                         _ => None,
@@ -288,22 +336,22 @@ impl MediaEntry {
                 None => {
                     // todo!();
                 }
-                Some(bytes_result) => match bytes_result {
-                    Err(_error) => {
-                        self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
-                        self.is_unloadable = true;
-                    }
-                    Ok(bytes) => match infer::get(&bytes) {
-                        Some(kind) => {
-                            self.mime_type = Some(Ok(kind));
-                        }
-                        None => {
-                            self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
+                    Some(bytes_result) => match bytes_result {
+                        Err(_error) => {
+                            self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
                             self.is_unloadable = true;
                         }
+                        Ok(bytes) => match infer::get(&bytes) {
+                            Some(kind) => {
+                                self.mime_type = Some(Ok(kind));
+                            }
+                            None => {
+                                self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
+                                self.is_unloadable = true;
+                            }
+                        },
                     },
                 },
-            },
             Some(_result) => {
                 // todo!();
             }
@@ -314,7 +362,10 @@ impl MediaEntry {
     pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
         match &self.thumbnail {
             None => match self.get_bytes().ready() {
-                None => None,
+                None => {
+                    println!("hmm");
+                    None
+                },
                 Some(result) => {
                     let (sender, promise) = Promise::new();
                     match result {
@@ -323,18 +374,20 @@ impl MediaEntry {
                             sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
                         }
                         Ok(bytes) => {
-                            let bytes_copy = Arc::clone(bytes);
-                            // let arc = Arc::new(bytes);
-                            thread::spawn(move || {
-                                let bytes = &bytes_copy as &[u8];
-                                let image = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                                sender.send(image);
-                            });
+                                let bytes = Arc::clone(bytes);
+                                // let arc = Arc::new(bytes);
+                                thread::spawn(move || {
+                                    let bytes = &bytes as &[u8];
+                                    println!("{:?}", bytes.len());
+                                    let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
+                                    println!("{:?}", image_res.is_err());
+                                    sender.send(image_res);
+                                });
+                            }
                         }
+                        self.thumbnail = Some(promise);
+                        self.thumbnail.as_ref()
                     }
-                    self.thumbnail = Some(promise);
-                    self.thumbnail.as_ref()
-                }
             },
             Some(_promise) => self.thumbnail.as_ref(),
         }
@@ -353,11 +406,11 @@ impl MediaEntry {
     }
 
     pub fn set_load_status(&mut self, load_status: bool) {
-        if !load_status {
-            self.unload_bytes();
-        } else {
-            self.get_bytes();
-        }
+        // if !load_status {
+        //     self.unload_bytes();
+        // } else {
+        //     // self.get_bytes();
+        // }
         let (lock, cond_var) = &*self.is_to_be_loaded;
         let mut is_to_be_loaded = lock.lock().unwrap();
         *is_to_be_loaded = load_status;

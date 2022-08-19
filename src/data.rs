@@ -18,16 +18,18 @@ pub struct Data {
     hasher_config: Arc<HasherConfig>,
 }
 #[derive(Debug)]
-pub enum ImportationResult {
+pub enum ImportationStatus {
+    PendingBytes,
     Success,
     Duplicate,
     Fail(anyhow::Error),
 }
 
-impl PartialEq for ImportationResult {
+impl PartialEq for ImportationStatus {
     fn eq(&self, other: &Self) -> bool {
-        use ImportationResult::*;
+        use ImportationStatus::*;
         match (self, other) {
+            (PendingBytes, PendingBytes) => true,
             (Success, Success) => true,
             (Duplicate, Duplicate) => true,
             (Fail(e1), Fail(e2)) => true,
@@ -310,14 +312,14 @@ impl Data {
         filekind: Option<infer::Type>,
         linking_dir: Option<String>,
         dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-    ) -> ImportationResult {
+    ) -> ImportationStatus {
         fn register(
             config: Arc<Config>,
             bytes: &[u8],
             filekind: Option<infer::Type>,
             linking_dir: Option<String>,
             dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-        ) -> Result<ImportationResult> {
+        ) -> Result<ImportationStatus> {
             // println!("got {} kB for register", bytes.len() / 1000);
             let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
             let hasher = hasher_config.to_hasher();
@@ -342,7 +344,7 @@ impl Data {
             let mut statement = conn.prepare("SELECT 1 FROM media_info WHERE hash = ?")?;
             let exists = statement.exists(params![sha_hash])?;
             if exists {
-                return Ok(ImportationResult::Duplicate);
+                return Ok(ImportationStatus::Duplicate);
             }
 
             let insert_result = if perceptual_hash.is_some() {
@@ -385,25 +387,23 @@ impl Data {
                         }
                     }
 
-                    return Ok(ImportationResult::Success);
+                    return Ok(ImportationStatus::Success);
                 }
                 Err(error) => {
                     // if (let rusqlite::Error::SqliteFailure(e, _) = error) && e.code == rusqlite::ErrorCode::ConstraintViolation { waiting for rust 1.62 :(
                     if let rusqlite::Error::SqliteFailure(e, _) = error {
                         if e.code == rusqlite::ErrorCode::ConstraintViolation {
-                            return Ok(ImportationResult::Duplicate);
+                            return Ok(ImportationStatus::Duplicate);
                         }
                     }
-                    return Ok(ImportationResult::Fail(error.into()));
+                    return Ok(ImportationStatus::Fail(error.into()));
                 }
             }
         }
 
         match register(config, bytes, filekind, linking_dir, dir_link_map) {
-            Ok(ImportationResult::Success) => return ImportationResult::Success,
-            Ok(ImportationResult::Duplicate) => return ImportationResult::Duplicate,
-            Ok(ImportationResult::Fail(error)) => return ImportationResult::Fail(error),
-            Err(error) => return ImportationResult::Fail(error),
+            Ok(status) => return status,
+            Err(error) => return ImportationStatus::Fail(error),
         };
     }
 }
