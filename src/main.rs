@@ -11,6 +11,8 @@ mod config;
 mod data;
 mod gallery;
 mod import;
+mod tags;
+
 use config::Config;
 use data::Data;
 

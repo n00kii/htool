@@ -7,14 +7,17 @@ use super::import::scan_directory;
 use super::import::{import_media, MediaEntry};
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
+use egui_toast::Toast;
+use egui_toast::ToastKind;
+use egui_toast::Toasts;
 use rfd::FileDialog;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Condvar;
+use std::time::Duration;
 use std::{fs, path::Path};
 
 use std::sync::{Arc, Mutex};
-
 
 pub struct ImporterUI {
     config: Option<Arc<Config>>,
@@ -76,7 +79,7 @@ impl ImporterUI {
         });
     }
 
-    fn render_options(&mut self, ui: &mut Ui) {
+    fn render_options(&mut self, ui: &mut Ui, toasts: &mut Toasts) {
         ui.vertical(|ui| {
             ui.label("options");
             if ui.button(if self.scanned_dir_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
@@ -225,10 +228,11 @@ impl ImporterUI {
             {
                 if let Some(scanned_dirs) = &mut self.scanned_dir_entries {
                     let media_entries = scanned_dirs
-                        .iter_mut()
-                        .filter(|media_entry| media_entry.is_selected)
-                        .collect::<Vec<&mut MediaEntry>>();
-
+                    .iter_mut()
+                    .filter(|media_entry| media_entry.is_selected)
+                    .collect::<Vec<&mut MediaEntry>>();
+                    
+                    toasts.info(format!("importing {} media...", media_entries.len()), Duration::from_secs(5));
                     let dir_link_map = Arc::clone(&self.dir_link_map);
                     import_media(media_entries, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
 
@@ -485,14 +489,25 @@ impl ui::DockedWindow for ImporterUI {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let toast_padding = 10.;
+        let mut toasts = Toasts::new(ctx)
+            .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
+            .direction(egui::Direction::BottomUp);
+
         ui.horizontal(|ui| {
             self.render_scan_directory_selection(ui);
             self.render_progress(ui);
         });
-        ui.with_layout(egui::Layout::left_to_right(), |ui| {
-            self.render_options(ui);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
+            self.render_options(ui, &mut toasts);
             self.render_files(ui);
+            // ScrollArea::vertical().show(ui, |ui| {
+            //     ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_main_wrap(true), |ui| {
+            //         ctx.inspection_ui(ui)
+            //     });
+            // });
             self.render_previews(ui, ctx);
         });
+        toasts.show();
     }
 }

@@ -1,13 +1,25 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
-use std::{sync::Arc, cell::{RefCell, RefMut}, rc::Rc};
+use downcast_rs as downcast;
+use egui_toast::Toasts;
+use std::{
+    cell::{RefCell, RefMut},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
+use crate::tags::tags_ui;
+
+use super::gallery::gallery_ui::PreviewUI;
+// use super::tags::tags_ui;
+// use super
 use super::config::Config;
 use super::gallery::gallery_ui;
 use super::import::import_ui;
 use anyhow::Result;
 use eframe::{
-    egui::{self, Response, ScrollArea, Ui, WidgetText, Style, Visuals, Id},
+    egui::{self, Id, Response, ScrollArea, Style, Ui, Visuals, WidgetText},
     emath::Vec2,
     epaint::Color32,
 };
@@ -23,7 +35,7 @@ pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) ->
 #[derive(PartialEq)]
 pub enum ImageResizeMethod {
     Stretch,
-    Contain
+    Contain,
 }
 pub struct RenderLoadingImageOptions {
     pub widget_size: [f32; 2],
@@ -34,7 +46,7 @@ pub struct RenderLoadingImageOptions {
     pub hover_text: Option<WidgetText>,
     pub image_tint: Option<Color32>,
     pub error_label_text: String,
-    pub resize_method: ImageResizeMethod
+    pub resize_method: ImageResizeMethod,
 }
 
 impl Default for RenderLoadingImageOptions {
@@ -52,6 +64,22 @@ impl Default for RenderLoadingImageOptions {
         }
     }
 }
+
+pub fn initialize_toasts(ctx: &egui::Context) -> egui_toast::Toasts {
+    let toast_padding = 10.;
+    let toasts = egui_toast::Toasts::new(ctx)
+        .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
+        .direction(egui::Direction::BottomUp);
+    toasts
+}
+
+pub fn default_toast_options() -> egui_toast::ToastOptions {
+    egui_toast::ToastOptions {
+        show_icon: true,
+        ..egui_toast::ToastOptions::with_duration(Duration::from_secs(3))
+    }
+}
+
 pub fn render_loading_image(
     ui: &mut Ui,
     ctx: &egui::Context,
@@ -94,9 +122,8 @@ pub fn render_loading_image(
             }
 
             Some(Ok(image)) => {
-                let image_size: [f32; 2] =
-                match options.resize_method {
-                    ImageResizeMethod::Contain  =>  {
+                let image_size: [f32; 2] = match options.resize_method {
+                    ImageResizeMethod::Contain => {
                         let image_size = image.size_vec2();
                         if image_size.x > image_size.y {
                             let scaling_ratio = options.widget_size[0] / image_size.x;
@@ -104,15 +131,13 @@ pub fn render_loading_image(
                         } else {
                             let scaling_ratio = options.widget_size[1] / image_size.y;
                             [scaling_ratio * image_size.x, options.widget_size[1]]
-
                         }
                     }
-                    ImageResizeMethod::Stretch => options.widget_size
+                    ImageResizeMethod::Stretch => options.widget_size,
                 };
 
                 let mut response = if options.is_button {
-                    let mut image_button =
-                        egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap());
+                    let mut image_button = egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap());
                     if let Some(tint) = options.image_tint {
                         image_button = image_button.tint(tint);
                     }
@@ -132,20 +157,23 @@ pub fn render_loading_image(
     // todo!();
 }
 
-pub trait DockedWindow {
+pub trait DockedWindow: downcast::Downcast {
     fn get_config(&self) -> Arc<Config>;
     fn set_config(&mut self, config: Arc<Config>);
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
 }
-pub trait FloatingWindow {
-    fn ui(&mut self, ui: &mut egui::Ui,  ctx: &egui::Context);
+pub trait FloatingWindow: downcast::Downcast {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
 }
 
+downcast::impl_downcast!(FloatingWindow);
+downcast::impl_downcast!(DockedWindow);
+
 pub struct FloatingWindowState {
-    title: String,
-    widget_id: Id,
-    is_open: bool,
-    window: Box<dyn FloatingWindow>,
+    pub title: String,
+    pub widget_id: Id,
+    pub is_open: bool,
+    pub window: Box<dyn FloatingWindow>,
 }
 
 struct DockedWindowState {
@@ -166,6 +194,7 @@ impl eframe::App for UserInterface {
         self.render_top_bar(ctx);
         self.render_side_panel(ctx);
         self.render_current_window(ctx);
+        ctx.request_repaint();
     }
 }
 
@@ -186,19 +215,21 @@ impl UserInterface {
     pub fn start(app: UserInterface) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
-        eframe::run_native("htool2", options, Box::new(|creation_context| {
-            let style = Style {
-                visuals: Visuals::dark(),
-                ..Style::default()
-            };
-            creation_context.egui_ctx.set_style(style);
-            Box::new(app)
-        })
+        eframe::run_native(
+            "htool2",
+            options,
+            Box::new(|creation_context| {
+                Box::new(app)
+            }),
         );
     }
 
     pub fn load_docked_windows(&mut self) {
         let mut window_states = vec![
+            DockedWindowState {
+                window: Box::new(import_ui::ImporterUI::default()),
+                id: "importer".to_string(),
+            },
             DockedWindowState {
                 window: Box::new(gallery_ui::GalleryUI {
                     root_interface_floating_windows: Some(Rc::clone(&self.floating_windows)),
@@ -207,8 +238,8 @@ impl UserInterface {
                 id: "gallery".to_string(),
             },
             DockedWindowState {
-                window: Box::new(import_ui::ImporterUI::default()),
-                id: "importer".to_string(),
+                window: Box::new(tags_ui::TagsUi::default()),
+                id: "tags".to_string(),
             },
         ];
 
@@ -218,26 +249,41 @@ impl UserInterface {
         self.docked_windows = window_states;
     }
 
-    pub fn launch_preview_by_hash(config: Arc<Config>, mut floating_windows: RefMut<Vec<FloatingWindowState>>, hash: String) {
-        let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config));
-        preview.set_media_info_by_hash(hash.clone());
-        let mut title = hash.clone();
-        let widget_id = Id::new(&title);
-        title.truncate(6);
-        title.insert_str(0, "preview-");
-        floating_windows.push(FloatingWindowState {
-            title,
-            widget_id,
-            is_open: true,
-            window: preview,
-        });
-    }
+    // pub fn launch_preview_by_hash(config: Arc<Config>, mut floating_windows: RefMut<Vec<FloatingWindowState>>, hash: String) {
+    //     for window_state in floating_windows.iter_mut() {
+    //         if let Some(preview_ui) = window_state.window.downcast_ref::<PreviewUI>() {
+    //             if let Some(info_promise) = preview_ui.media_info.as_ref() {
+    //                 if let Some(info_res) = info_promise.ready() {
+    //                     if let Ok(media_info) = info_res {
+    //                         if media_info.hash == hash {
+    //                             window_state.is_open = true;
+    //                             return;
+    //                         }
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+
+    //     let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config), hash.clone());
+    //     preview.set_media_info_by_hash(hash.clone());
+    //     let mut title = hash.clone();
+    //     let widget_id = Id::new(&title);
+    //     title.truncate(6);
+    //     title.insert_str(0, "preview-");
+    //     floating_windows.push(FloatingWindowState {
+    //         title,
+    //         widget_id,
+    //         is_open: true,
+    //         window: preview,
+    //     });
+    // }
 
     pub fn render_floating_windows(&mut self, ctx: &egui::Context) {
         for window_state in self.floating_windows.borrow_mut().iter_mut() {
             // window_state.window.show(ctx, &mut window_state.is_open);
             egui::Window::new(&window_state.title)
-            .id(window_state.widget_id)
+                .id(window_state.widget_id)
                 .open(&mut window_state.is_open)
                 .default_size([800.0, 400.0])
                 .vscroll(false)
@@ -247,6 +293,8 @@ impl UserInterface {
                 });
         }
     }
+
+    pub fn remove_floating_window() {}
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("wrap_app_top_bar").show(ctx, |ui| {

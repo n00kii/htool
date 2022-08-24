@@ -6,10 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# iced = "0.4.2"
 image = "0.24.2"
-# img_hash = "3.2.0"
-# pihash = "0.5.0"
 image_hasher = "1.0.0"
 hex = "0.4.3"
 sha256 = "1.0.3"
@@ -19,16 +16,17 @@ serde = "1.0.137"
 path-absolutize = "3.0.13"
 toml = "0.5.9"
 thiserror = "1.0"
-# config = "0.13.1"
 rand = "0.8.5"
 anyhow = "1.0"
-eframe = "0.18.0"
-rfd = "0.8.4"
+eframe = "0.19.0"
+rfd = "0.10.0"
 crossbeam-utils = "0.8.9"
-egui_extras = "0.18.0"
+egui_extras = "0.19.0"
 poll-promise = "0.1.0"
-infer = "0.8.1"
-rusqlite = { version = "0.27.0", features = ["bundled", "blob"] }
+infer = "0.9.0"
+egui-toast = {git = "https://github.com/n00kii/egui-toast"}
+downcast-rs = "1.2.0"
+rusqlite = { version = "0.28.0", features = ["bundled", "blob"] }
 
 [profile.dev]
 opt-level = 3

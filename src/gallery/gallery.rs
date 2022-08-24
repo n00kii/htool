@@ -7,7 +7,7 @@ use poll_promise::Promise;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
-
+use downcast_rs as downcast;
 
 
 pub struct GalleryEntry {
@@ -21,10 +21,7 @@ pub struct GalleryEntryPlural {
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
 }
 
-pub trait GalleryItem {
-    // fn as_any(&self) -> &dyn Any;
-    fn as_gallery_entry(&self) -> Option<&GalleryEntry> {None}
-    fn as_gallery_entry_plural(&self) -> Option<&GalleryEntryPlural> {None}
+pub trait GalleryItem: downcast::Downcast {
     fn get_thumbnail(&mut self, config: Arc<Config>) -> Option<&Promise<Result<RetainedImage, Error>>>;
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>>;
     fn get_status_label(&self) -> Option<String> {
@@ -47,10 +44,10 @@ pub trait GalleryItem {
     }
 }
 
+downcast::impl_downcast!(GalleryItem);
+
+
 impl GalleryItem for GalleryEntry {
-    fn as_gallery_entry(&self) -> Option<&GalleryEntry> {
-        Some(self)
-    }
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
         self.thumbnail.as_ref()
     }
@@ -81,9 +78,6 @@ impl GalleryItem for GalleryEntry {
 }
 
 impl GalleryItem for GalleryEntryPlural {
-    fn as_gallery_entry_plural(&self) -> Option<&GalleryEntryPlural> {
-        Some(self)
-    }
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
         self.thumbnail.as_ref()
     }
