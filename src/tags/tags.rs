@@ -126,35 +126,6 @@ impl Tag {
         }
     }
 }
-pub struct TagOperation {
-    pub new_tags: Vec<Tag>,
-    pub new_links: Vec<TagLink>,
-    pub register_unknown_tags: bool,
-    pub removed_tags: Vec<String>,
-    pub removed_links: Vec<i32>,
-}
-
-impl Default for TagOperation {
-    fn default() -> Self {
-        Self {
-            new_tags: vec![],
-            new_links: vec![],
-            removed_tags: vec![],
-            removed_links: vec![],
-            register_unknown_tags: false
-        }
-    }
-}
-
-impl TagOperation {
-    pub fn execute(&self) -> Result<()> {
-        
-        // for new_tag in self.new_tags {
-
-        // }
-        todo!() 
-    }
-}
 
 impl TagLink {
     pub fn empty_implication() -> Self {

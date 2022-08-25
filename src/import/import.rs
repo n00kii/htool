@@ -1,7 +1,7 @@
 use super::super::ui;
 use super::super::Config;
-use super::super::Data;
 use crate::config::Import;
+use crate::data;
 use crate::data::ImportationStatus;
 use anyhow::{Context, Error, Result};
 use eframe::egui;
@@ -57,13 +57,13 @@ pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMa
                 None => {
                     fail("bytes are still loading".into());
                 }
-                Some(Err(error)) => {
+                Some(Err(_error)) => {
                     fail("failed to load bytes".into());
                 }
                 Some(Ok(bytes)) => {
                     let filekind = match &media_entry.mime_type {
                         Some(Ok(kind)) => Some(kind.clone()),
-                        Some(Err(error)) => None,
+                        Some(Err(_error)) => None,
                         None => None,
                     };
 
@@ -73,7 +73,7 @@ pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMa
                     let linking_dir = media_entry.linking_dir.clone();
                     media_entry.importation_status = Some(Promise::spawn_thread("", move || {
                         let bytes = &*bytes as &[u8];
-                        let result = Data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
+                        let result = data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
                         Arc::new(result)
                     }))
                 }
@@ -110,8 +110,7 @@ pub fn scan_directory(
     // println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
-    'dir_entries: for (index, dir_entry_res) in dir_entries_iter.enumerate() {
-        let index = index as i32;
+    'dir_entries: for (_index, dir_entry_res) in dir_entries_iter.enumerate() {
         if let Ok(dir_entry) = dir_entry_res {
             // TODO: don't error whole function for one entry (? below)
             if dir_entry.metadata()?.is_dir() {
@@ -207,7 +206,7 @@ impl MediaEntry {
     pub fn are_bytes_loaded(&self) -> bool {
         if let Some(bytes_promise) = self.bytes.as_ref() {
             if let Some(bytes_res) = bytes_promise.ready() {
-                if let Ok(bytes) = bytes_res {
+                if let Ok(_bytes) = bytes_res {
                     return true
                 }
             }
@@ -260,15 +259,8 @@ impl MediaEntry {
         // we only need bytes to be loaded if thumbnail is still loading, or we are trying to import
         if let Some(promise) = self.bytes.as_ref() {
             if let Some(bytes_res) = promise.ready() {
-                if let Ok(bytes) = bytes_res {
-                    // let is_thumbnail_loading = if let Some(promise) = self.thumbnail.as_ref() {
-                    //     promise.ready().is_none()
-                    // } else {
-                    //     false
-                    // };
-
+                if let Ok(_bytes) = bytes_res {
                     if !(self.is_loading_or_needs_to_load() || self.is_importing()) {
-                        // println!("unloaded {} bytes", bytes.len());
                         self.bytes = None;
                     }
                 }
@@ -316,7 +308,7 @@ impl MediaEntry {
             add(format!("import failed due to: {error_message}").as_str())
         }
         if let Some(result) = &self.thumbnail {
-            if let Some(Err(err)) = result.ready() {
+            if let Some(Err(_err)) = result.ready() {
                 add("couldn't generate thumbnail")
             }
         }
@@ -418,7 +410,7 @@ impl MediaEntry {
     }
 
     pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
-        let pixels = Data::generate_thumbnail(image_data, thumbnail_size)?;
+        let pixels = data::generate_thumbnail(image_data, thumbnail_size)?;
         let img = ui::generate_retained_image(&pixels)?;
         Ok(img)
     }

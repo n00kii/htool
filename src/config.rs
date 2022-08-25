@@ -90,14 +90,13 @@ impl Default for Config {
 impl Config {
     pub fn figment() -> Figment {
         Figment::from(Serialized::defaults(Config::default())).merge(Toml::file(CONFIG_FILENAME))
-        // .merge(Env::prefixed("APP_"))
     }
 
     pub fn load() -> Result<Config> {
         Config::figment().extract().context("couldn't deserialize config")
     }
 
-    pub fn save(config: &Config) -> Result<()> {
+    pub fn _save(config: &Config) -> Result<()> {
         let toml_string = toml::to_string(config).context("couldn't serialize config")?;
         fs::write(CONFIG_FILENAME, toml_string).context("couldn't write config")?;
 

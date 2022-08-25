@@ -122,9 +122,9 @@ impl ImporterUI {
                     let media_entries = scan_directory(self.get_scan_dir(), 0, None, &extension_filter);
                     if let Ok(media_entries) = media_entries {
                         self.media_entries = Some(media_entries);
-                        for media_entry in self.media_entries.as_ref().unwrap() {
-                            if let Some(linking_dir) = &media_entry.linking_dir {}
-                        }
+                        // for media_entry in self.media_entries.as_ref().unwrap() {
+                        //     if let Some(linking_dir) = &media_entry.linking_dir {}
+                        // }
                     }
                 }
     
@@ -138,7 +138,7 @@ impl ImporterUI {
                         for (extension_group, extensions) in self.scan_extension_filter.iter_mut() {
                             let mut any_selected = extensions.values().any(|&x| x);
                             if ui.checkbox(&mut any_selected, extension_group).changed() {
-                                for (extension, do_include) in extensions.iter_mut() {
+                                for (_extension, do_include) in extensions.iter_mut() {
                                     *do_include = any_selected;
                                 }
                             }
@@ -485,7 +485,7 @@ impl ImporterUI {
                                                                 scroll_wrap.add_sized(widget_size, image)
                                                             }
                                                         }
-                                                        Err(error) => {
+                                                        Err(_error) => {
                                                             // couldn't make thumbnail
                                                             let text = egui::RichText::new("?").size(48.0);
                                                             if is_importable {

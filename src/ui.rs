@@ -124,7 +124,7 @@ pub fn render_loading_image(
                 response = bind_hover_text(response, &options.hover_text_on_loading_image);
                 Some(response)
             }
-            Some(Err(image_error)) => {
+            Some(Err(_image_error)) => {
                 let text = egui::RichText::new(options.error_label_text).size(48.0);
 
                 let mut response = if options.is_button {
@@ -235,7 +235,7 @@ impl UserInterface {
         eframe::run_native(
             "htool2",
             options,
-            Box::new(|creation_context| {
+            Box::new(|_creation_context| {
                 Box::new(app)
             }),
         );
@@ -314,7 +314,7 @@ impl UserInterface {
     pub fn remove_floating_window() {}
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("wrap_app_top_bar").show(ctx, |ui| {
+        egui::TopBottomPanel::top("app_top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.visuals_mut().button_frame = false;
                 egui::widgets::global_dark_light_mode_switch(ui);

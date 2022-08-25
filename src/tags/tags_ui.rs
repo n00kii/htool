@@ -1,7 +1,7 @@
-use super::tags::{Tag, TagData, TagLink, TagOperation};
+use super::tags::{Tag, TagData, TagLink};
 use crate::{
     config::{self, Config},
-    data::Data,
+    data,
     gallery::gallery_ui::GalleryUI,
     tags::tags::TagLinkType,
     ui::{self, DockedWindow},
@@ -27,8 +27,6 @@ pub struct TagsUi {
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
     tags: Vec<Tag>,
 }
-
-fn resolve_tag_operation(tag_op: TagOperation) {}
 
 impl Default for TagsUi {
     fn default() -> Self {
@@ -88,7 +86,7 @@ impl TagsUi {
     }
     fn load_tag_data(config: Arc<Config>) -> Option<Promise<Result<Vec<TagData>>>> {
         // let config = self.get_config();
-        Some(Promise::spawn_thread("", || Data::get_all_tag_data(config)))
+        Some(Promise::spawn_thread("", || data::get_all_tag_data(config)))
     }
     fn render_tags(&mut self, ui: &mut egui::Ui) {
         let config = self.get_config();
@@ -121,7 +119,7 @@ impl TagsUi {
                                     })
                                     .context_menu(|ui| {
                                         if ui.button(format!("delete tag \"{}\"", tag_data.tag.to_tagstring())).clicked() {
-                                            if let Err(e) = Data::delete_tags(config.clone(), &vec![tag_data.tag.clone()]) {
+                                            if let Err(e) = data::delete_tag(config.clone(), &tag_data.tag) {
                                                 ui::toast_error(&mut self.toasts, format!("failed to delete tag: {e}"));
                                             } else {
                                                 do_reload_data = true;
@@ -179,7 +177,7 @@ impl TagsUi {
                                                 .button(format!("delete {} to \"{}\"", link_type.to_string(), target_tagstring))
                                                 .clicked()
                                             {
-                                                if let Err(e) = Data::delete_links(Arc::clone(&config), &vec![link.clone()]) {
+                                                if let Err(e) = data::delete_link(Arc::clone(&config), &link) {
                                                     ui::toast_error(&mut self.toasts, format!("failed to delete link: {e}"));
                                                 } else {
                                                     do_reload_data = true;
@@ -219,7 +217,7 @@ impl TagsUi {
             self.all_tags = TagsUi::load_tag_data(config);
         }
     }
-    fn render_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_actions(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         egui::ScrollArea::both().id_source("tag_actions").show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.collapsing("options", |ui| {
@@ -249,18 +247,16 @@ impl TagsUi {
                         });
                         ui.add_enabled_ui(!(self.new_tag.name.is_empty()), |ui| {
                             if ui.button("create").clicked() {
-                                let new_tag = self.new_tag.someified();
-                                let tags = vec![new_tag.clone()];
-                                match Data::filter_to_unknown_tags(self.get_config(), &tags) {
-                                    Ok(unknown_tags) => {
-                                        if unknown_tags.len() == 0 {
+                                match data::does_tag_exist(self.get_config(), &self.new_tag) {
+                                    Ok(does_exist) => {
+                                        if does_exist {
                                             ui::set_default_toast_options(self.toasts.warning(format!("this tag already exists")));
                                         } else {
-                                            if let Err(e) = Data::register_tags(self.get_config(), &tags) {
+                                            if let Err(e) = data::register_tag(self.get_config(), &self.new_tag) {
                                                 ui::set_default_toast_options(self.toasts.error(format!("failed to register tag: {e}")));
                                             } else {
                                                 ui::set_default_toast_options(
-                                                    self.toasts.success(format!("successfully registered \"{}\"", new_tag.to_tagstring())),
+                                                    self.toasts.success(format!("successfully registered \"{}\"", self.new_tag.to_tagstring())),
                                                 );
 
                                                 self.all_tags = Self::load_tag_data(self.get_config());
@@ -301,7 +297,7 @@ impl TagsUi {
                                         let mut do_register_link = true;
 
                                         let mut check_link_tags_exist =
-                                            |tagstring: &String| match Data::does_tagstring_exist(config.clone(), &tagstring) {
+                                            |tagstring: &String| match data::does_tagstring_exist(config.clone(), &tagstring) {
                                                 Ok(does_tag_exist) => {
                                                     if !does_tag_exist && self.register_unknown_tags {
                                                     } else if !does_tag_exist {
@@ -322,14 +318,13 @@ impl TagsUi {
                                         check_link_tags_exist(&link.to_tagstring);
 
                                         if do_register_link {
-                                            match Data::does_link_exist(config.clone(), link) {
+                                            match data::does_link_exist(config.clone(), link) {
                                                 Ok(already_exists) => {
                                                     if already_exists {
                                                         ui::set_default_toast_options(self.toasts.warning(format!("this link already exists")));
                                                     } else {
                                                         // let config = self.get_config();
-                                                        let links = vec![link.clone()];
-                                                        if let Err(e) = Data::register_tag_links(config.clone(), &links) {
+                                                        if let Err(e) = data::register_tag_link(config.clone(), &link) {
                                                             ui::set_default_toast_options(self.toasts.error(format!("failed to register link: {e}")));
                                                         } else {
                                                             ui::set_default_toast_options(
