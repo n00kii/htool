@@ -107,7 +107,7 @@ pub fn scan_directory(
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>
 ) -> Result<Vec<MediaEntry>> {
-    println!("{extension_filter:?}");
+    // println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
     'dir_entries: for (index, dir_entry_res) in dir_entries_iter.enumerate() {
@@ -189,7 +189,7 @@ impl MediaEntry {
                 let mut file = File::open(path)?;
                 let mut bytes: Vec<u8> = vec![];
                 file.read_to_end(&mut bytes)?;
-                println!("loaded {} bytes", bytes.len());
+                // println!("loaded {} bytes", bytes.len());
                 Ok(Arc::new(bytes))
             });
             promise
@@ -268,7 +268,7 @@ impl MediaEntry {
                     // };
 
                     if !(self.is_loading_or_needs_to_load() || self.is_importing()) {
-                        println!("unloaded {} bytes", bytes.len());
+                        // println!("unloaded {} bytes", bytes.len());
                         self.bytes = None;
                     }
                 }
@@ -363,7 +363,7 @@ impl MediaEntry {
         match &self.thumbnail {
             None => match self.get_bytes().ready() {
                 None => {
-                    println!("hmm");
+                    // println!("hmm");
                     None
                 },
                 Some(result) => {
@@ -378,9 +378,9 @@ impl MediaEntry {
                                 // let arc = Arc::new(bytes);
                                 thread::spawn(move || {
                                     let bytes = &bytes as &[u8];
-                                    println!("{:?}", bytes.len());
+                                    // println!("{:?}", bytes.len());
                                     let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                                    println!("{:?}", image_res.is_err());
+                                    // println!("{:?}", image_res.is_err());
                                     sender.send(image_res);
                                 });
                             }

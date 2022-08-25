@@ -1,3 +1,5 @@
+use crate::tags::tags::Tag;
+use crate::ui::FloatingWindowState;
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::UserInterface;
 
@@ -11,54 +13,209 @@ use super::gallery::GalleryEntry;
 use super::gallery::GalleryItem;
 use super::gallery_ui;
 use anyhow::Result;
-use eframe::egui::Direction;
-use eframe::egui::ScrollArea;
+use eframe::egui::Id;
 use eframe::{
     egui::{self, Ui},
     emath::{Align, Vec2},
 };
+use egui::Direction;
+use egui::ScrollArea;
 use egui_extras::RetainedImage;
 use image::DynamicImage;
 use poll_promise::Promise;
 use rand::Rng;
 use std::cell::RefCell;
+use std::cell::RefMut;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 pub struct GalleryUI {
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
-    // pub root_interface: Option<Rc<UserInterface>>,
-    // pub root_interface_floating_windows: Option<&'a mut Vec<Box<dyn ui::FloatingWindow>>>,
+    pub preview_window_state_ids: Vec<Id>,
     pub config: Option<Arc<Config>>,
+    pub toasts: egui_notify::Toasts,
     pub gallery_items: Vec<Box<dyn GalleryItem>>,
 }
 
+pub enum PreviewStatus {
+    None,
+    Closed,
+    Deleted,
+    FailedDelete(anyhow::Error),
+}
+
 pub struct PreviewUI {
+    pub toasts: egui_notify::Toasts,
     pub image: Option<Promise<Result<RetainedImage>>>,
     pub media_info_plural: Option<data::MediaInfoPlural>,
     pub media_info: Option<Promise<Result<data::MediaInfo>>>,
     pub config: Arc<Config>,
+    pub tag_edit_buffer: String,
+    pub id: String,
+
+    pub status: PreviewStatus,
+    pub is_editing_tags: bool,
+    pub is_confirming_delete: Arc<Mutex<bool>>,
 }
+
+//
 
 impl ui::FloatingWindow for PreviewUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.render_image(ui, ctx);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP), |ui| {
+            self.render_options(ui, ctx);
+            self.render_tags(ui, ctx);
+            self.render_image(ui, ctx);
+        });
+        self.toasts.show(ctx);
     }
 }
 
 impl PreviewUI {
-    pub fn new(config: Arc<Config>) -> Box<Self> {
+    pub fn new(config: Arc<Config>, id: String) -> Box<Self> {
         Box::new(PreviewUI {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             image: None,
+            id,
             config,
             media_info: None,
             media_info_plural: None,
+            is_editing_tags: false,
+            is_confirming_delete: Arc::new(Mutex::new(false)),
+            status: PreviewStatus::None,
+            tag_edit_buffer: "".to_string(),
         })
+    }
+
+    pub fn get_media_info(&self) -> Option<&data::MediaInfo> {
+        if let Some(info_promise) = self.media_info.as_ref() {
+            if let Some(info_res) = info_promise.ready() {
+                if let Ok(media_info) = info_res {
+                    return Some(media_info);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_tags(&self) -> Option<&Vec<Tag>> {
+        if let Some(media_info) = self.get_media_info() {
+            return Some(&media_info.tags);
+        }
+        None
+    }
+
+    pub fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        let padding = 15.;
+        ui.add_space(padding);
+        ui.vertical(|ui| {
+            ui.label("options");
+            if self.is_editing_tags {
+                if ui.button("save changes").clicked() {
+                    self.is_editing_tags = false;
+                    if let Some(media_info_promise) = self.media_info.as_ref() {
+                        if let Some(media_info_res) = media_info_promise.ready() {
+                            if let Ok(media_info) = media_info_res {
+                                let mut tagstrings = self.tag_edit_buffer.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>(); //.collect::<Vec<_>>();
+                                tagstrings.sort();
+                                tagstrings.dedup();
+                                let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
+                                if let Ok(tags) = data::Data::set_tags(Arc::clone(&self.config), &media_info.hash, &tags) {
+                                    ui::toast_success(
+                                        &mut self.toasts,
+                                        format!("successfully set {} tag{}", tags.len(), if tags.len() == 1 { "" } else { "s" }),
+                                    )
+                                };
+                                self.load_media_info_by_hash(media_info.hash.clone());
+                            }
+                        }
+                    }
+                }
+                if ui.button("discard changes").clicked() {
+                    self.is_editing_tags = false;
+                }
+            } else {
+                if ui.button("edit tags").clicked() {
+                    self.tag_edit_buffer = self
+                        .get_tags()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .map(|tag| tag.to_tagstring())
+                        .collect::<Vec<String>>()
+                        .join("\n");
+                    self.is_editing_tags = true;
+                };
+            }
+            ui.add_enabled_ui(!self.is_editing_tags, |ui| {
+                if let Ok(mut is_confirming_delete) = self.is_confirming_delete.try_lock() {
+                    if *is_confirming_delete {
+                        if ui.button("are you sure?").clicked() {
+                            if let Some(media_info) = self.get_media_info() {
+                                if let Err(e) = data::Data::delete_media(Arc::clone(&self.config), &media_info.hash) {
+                                    // toasts.success(format!("failed to delete {}: {}", self.id, e), ui::default_toast_options());
+                                    ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
+                                } else {
+                                    // toasts.success(format!("successfully deleted {}", self.id), ui::default_toast_options());
+                                    ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
+                                    self.status = PreviewStatus::Deleted;
+                                    // self.is_deleted = true;
+                                }
+                            }
+                        }
+                    } else {
+                        if ui.button("delete").clicked() {
+                            *is_confirming_delete = true;
+                            let is_confirming_delete = Arc::clone(&self.is_confirming_delete);
+                            thread::spawn(move || {
+                                thread::sleep(Duration::from_secs(3));
+                                if let Ok(mut is_confirming_delete) = is_confirming_delete.lock() {
+                                    *is_confirming_delete = false;
+                                }
+                            });
+                        }
+                    }
+                } else {
+                    ui.label("...");
+                }
+            });
+        });
+        ui.add_space(padding);
+    }
+
+    pub fn render_tags(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        ui.vertical(|ui| {
+            ui.label("tags");
+            if self.is_editing_tags {
+                ui.text_edit_multiline(&mut self.tag_edit_buffer);
+            } else {
+                egui::Grid::new(format!("tags_{}", self.id)).striped(true).show(ui, |ui| {
+                    if let Some(tags) = self.get_tags() {
+                        for tag in tags {
+                            ui.horizontal(|ui| {
+                                let info_label = egui::Label::new("?").sense(egui::Sense::click());
+                                let add_label = egui::Label::new("+").sense(egui::Sense::click());
+                                if ui.add(info_label).clicked() {
+                                    println!("?")
+                                }
+                                if ui.add(add_label).clicked() {
+                                    println!("+")
+                                }
+                                ui.label(&tag.name);
+                            });
+                            ui.end_row();
+                        }
+                    }
+                });
+            }
+        });
     }
 
     pub fn render_image(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut options = RenderLoadingImageOptions::default();
+
         options.widget_size = [500., 500.];
         let response = ui::render_loading_image(ui, ctx, self.get_image(), options);
     }
@@ -92,9 +249,8 @@ impl PreviewUI {
             },
             Some(_promise) => self.image.as_ref(),
         }
-
     }
-    pub fn set_media_info_by_hash(&mut self, hash: String) {
+    pub fn load_media_info_by_hash(&mut self, hash: String) {
         let config = Arc::clone(&self.config);
         self.media_info = Some(Promise::spawn_thread("", move || Data::load_media_info(config, &hash)))
     }
@@ -102,6 +258,70 @@ impl PreviewUI {
 }
 
 impl GalleryUI {
+    fn process_previews(&mut self) {
+        if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
+            floating_windows.borrow_mut().retain(|window_state| {
+                if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
+                    match &preview.status {
+                        PreviewStatus::Deleted => {
+                            if let Some(media_info) = preview.get_media_info() {
+                                self.gallery_items.retain(|gallery_item| {
+                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                                        if gallery_entry.hash == media_info.hash {
+                                            return false;
+                                        }
+                                    }
+                                    true
+                                });
+                            }
+                            ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
+                            return false;
+                        }
+                        PreviewStatus::FailedDelete(e) => {
+                            ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            })
+        }
+    }
+
+    fn launch_preview(hash: String, config: Arc<Config>, floating_windows: Option<&Rc<RefCell<Vec<FloatingWindowState>>>>) {
+        if let Some(floating_windows) = floating_windows {
+            let mut floating_windows = floating_windows.borrow_mut();
+            for window_state in floating_windows.iter_mut() {
+                if let Some(preview_ui) = window_state.window.downcast_ref::<PreviewUI>() {
+                    if let Some(info_promise) = preview_ui.media_info.as_ref() {
+                        if let Some(info_res) = info_promise.ready() {
+                            if let Ok(media_info) = info_res {
+                                if media_info.hash == hash {
+                                    window_state.is_open = true;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config), hash.clone());
+            preview.load_media_info_by_hash(hash.clone());
+            let mut title = hash.clone();
+            let widget_id = Id::new(&title);
+            title.truncate(6);
+            title.insert_str(0, "preview-");
+
+            floating_windows.push(FloatingWindowState {
+                title,
+                widget_id,
+                is_open: true,
+                window: preview,
+            });
+        }
+    }
+
     fn render_options(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.label("info");
@@ -110,7 +330,8 @@ impl GalleryUI {
                 match gallery_items {
                     Ok(gallery_items) => self.gallery_items = gallery_items,
                     Err(error) => {
-                        println!("failed to load items due to {}", error)
+                        // println!("failed to load items due to {}", error);
+                        ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
                     }
                 }
             }
@@ -127,7 +348,8 @@ impl GalleryUI {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
                         let config = self.get_config();
-                        for gallery_item in self.gallery_items.iter_mut() {
+                        let mut gallery_items = self.gallery_items.iter_mut();
+                        for gallery_item in gallery_items {
                             let widget_size = (thumbnail_size + 3) as f32;
                             let widget_size = [widget_size, widget_size];
                             match gallery_item.get_thumbnail(Arc::clone(&config)) {
@@ -167,13 +389,13 @@ impl GalleryUI {
                                         }
 
                                         if response.clicked() {
-                                            if let Some(gallery_entry) = gallery_item.as_gallery_entry() {
-                                                let mut floating_windows = self.root_interface_floating_windows.as_ref().unwrap().borrow_mut();
-                                                ui::UserInterface::launch_preview_by_hash(
+                                            if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                                                // self.launch_preview(ctx, gallery_entry.hash.clone());
+                                                GalleryUI::launch_preview(
+                                                    gallery_entry.hash.clone().clone(),
                                                     Arc::clone(&config),
-                                                    floating_windows,
-                                                    gallery_entry.hash.clone(),
-                                                );
+                                                    self.root_interface_floating_windows.as_ref(),
+                                                )
                                             }
                                         }
                                     }
@@ -190,6 +412,8 @@ impl GalleryUI {
 impl Default for GalleryUI {
     fn default() -> Self {
         Self {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
+            preview_window_state_ids: vec![],
             root_interface_floating_windows: None,
             config: None,
             gallery_items: vec![],
@@ -205,11 +429,13 @@ impl ui::DockedWindow for GalleryUI {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // egui::CentralPanel::default().show(ctx, |ui| {
-        ui.with_layout(egui::Layout::left_to_right(), |ui| {
+        self.process_previews();
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
             self.render_options(ui);
             self.render_thumbnails(ui, ctx, Arc::clone(&self.get_config()));
         });
-        // });
+        let mut s = "".to_string();
+        ui.text_edit_singleline(&mut s);
+        self.toasts.show(ctx);
     }
 }

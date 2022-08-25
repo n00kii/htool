@@ -15,11 +15,13 @@ use rfd::FileDialog;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Condvar;
+use std::time::Duration;
 use std::{fs, path::Path};
 
 use std::sync::{Arc, Mutex};
 const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
 pub struct ImporterUI {
+    toasts: egui_notify::Toasts,
     config: Option<Arc<Config>>,
     media_entries: Option<Vec<MediaEntry>>,
     alternate_scan_dir: Option<PathBuf>,
@@ -37,6 +39,7 @@ impl Default for ImporterUI {
     fn default() -> Self {
         let config = None;
         Self {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             delete_files_on_import: false,
             show_hidden_entries: false,
             hide_errored_entries: true,
@@ -382,9 +385,9 @@ impl ImporterUI {
                                         }
                                     }
 
-                                    if media_entry.are_bytes_loaded() {
-                                        println!("{:?}", media_entry.file_label)
-                                    }
+                                    // if media_entry.are_bytes_loaded() {
+                                    //     println!("{:?}", media_entry.file_label)
+                                    // }
 
                                     // If this entry needs to load bytes for import, get bytes
                                     if media_entry.bytes.is_none() && media_entry.match_importation_status(ImportationStatus::PendingBytes) {
@@ -579,10 +582,16 @@ impl ui::DockedWindow for ImporterUI {
             self.render_scan_directory_selection(ui);
             self.render_progress(ui);
         });
-        ui.with_layout(egui::Layout::left_to_right(), |ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
             self.render_options(ui);
             self.render_files(ui);
+            // ScrollArea::vertical().show(ui, |ui| {
+            //     ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_main_wrap(true), |ui| {
+            //         ctx.inspection_ui(ui)
+            //     });
+            // });
             self.render_previews(ui, ctx);
         });
+        self.toasts.show(ctx);
     }
 }

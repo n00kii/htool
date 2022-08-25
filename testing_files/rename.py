@@ -11,6 +11,7 @@ for path in os.listdir(root):
     path = os.path.join(root, path)
     _, ext = os.path.splitext(path)
     if ext == '.py': continue
+    if ext == '': continue
     
     temp_filename = None
 
