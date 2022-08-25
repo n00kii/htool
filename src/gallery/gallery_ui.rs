@@ -34,10 +34,9 @@ use std::time::Duration;
 
 pub struct GalleryUI {
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
-    // pub root_interface: Option<Rc<UserInterface>>,
-    // pub root_interface_floating_windows: Option<&'a mut Vec<Box<dyn ui::FloatingWindow>>>,
     pub preview_window_state_ids: Vec<Id>,
     pub config: Option<Arc<Config>>,
+    pub toasts: egui_notify::Toasts,
     pub gallery_items: Vec<Box<dyn GalleryItem>>,
 }
 
@@ -45,10 +44,11 @@ pub enum PreviewStatus {
     None,
     Closed,
     Deleted,
-    FailedDelete(anyhow::Error)
+    FailedDelete(anyhow::Error),
 }
 
 pub struct PreviewUI {
+    pub toasts: egui_notify::Toasts,
     pub image: Option<Promise<Result<RetainedImage>>>,
     pub media_info_plural: Option<data::MediaInfoPlural>,
     pub media_info: Option<Promise<Result<data::MediaInfo>>>,
@@ -70,12 +70,14 @@ impl ui::FloatingWindow for PreviewUI {
             self.render_tags(ui, ctx);
             self.render_image(ui, ctx);
         });
+        self.toasts.show(ctx);
     }
 }
 
 impl PreviewUI {
     pub fn new(config: Arc<Config>, id: String) -> Box<Self> {
         Box::new(PreviewUI {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             image: None,
             id,
             config,
@@ -114,13 +116,22 @@ impl PreviewUI {
             if self.is_editing_tags {
                 if ui.button("save changes").clicked() {
                     self.is_editing_tags = false;
-                    if let Some(media_info) = self.get_media_info() {
-                        let mut tagstrings = self.tag_edit_buffer.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>(); //.collect::<Vec<_>>();
-                        tagstrings.sort();
-                        tagstrings.dedup();
-                        let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
-                        println!("{:?}", data::Data::set_tags(Arc::clone(&self.config), &media_info.hash, &tags));
-                        self.set_media_info_by_hash(media_info.hash.clone());
+                    if let Some(media_info_promise) = self.media_info.as_ref() {
+                        if let Some(media_info_res) = media_info_promise.ready() {
+                            if let Ok(media_info) = media_info_res {
+                                let mut tagstrings = self.tag_edit_buffer.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>(); //.collect::<Vec<_>>();
+                                tagstrings.sort();
+                                tagstrings.dedup();
+                                let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
+                                if let Ok(tags) = data::Data::set_tags(Arc::clone(&self.config), &media_info.hash, &tags) {
+                                    ui::toast_success(
+                                        &mut self.toasts,
+                                        format!("successfully set {} tag{}", tags.len(), if tags.len() == 1 { "" } else { "s" }),
+                                    )
+                                };
+                                self.load_media_info_by_hash(media_info.hash.clone());
+                            }
+                        }
                     }
                 }
                 if ui.button("discard changes").clicked() {
@@ -128,7 +139,13 @@ impl PreviewUI {
                 }
             } else {
                 if ui.button("edit tags").clicked() {
-                    self.tag_edit_buffer = self.get_tags().unwrap_or(&vec![]).iter().map(|tag| tag.to_tagstring()).collect::<Vec<String>>().join("\n");
+                    self.tag_edit_buffer = self
+                        .get_tags()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .map(|tag| tag.to_tagstring())
+                        .collect::<Vec<String>>()
+                        .join("\n");
                     self.is_editing_tags = true;
                 };
             }
@@ -139,10 +156,12 @@ impl PreviewUI {
                             if let Some(media_info) = self.get_media_info() {
                                 if let Err(e) = data::Data::delete_media(Arc::clone(&self.config), &media_info.hash) {
                                     // toasts.success(format!("failed to delete {}: {}", self.id, e), ui::default_toast_options());
+                                    ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
                                 } else {
                                     // toasts.success(format!("successfully deleted {}", self.id), ui::default_toast_options());
-                                    // self.is_deleted = true;
+                                    ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
                                     self.status = PreviewStatus::Deleted;
+                                    // self.is_deleted = true;
                                 }
                             }
                         }
@@ -167,14 +186,6 @@ impl PreviewUI {
     }
 
     pub fn render_tags(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        // let tags = vec![
-        //     "artist;pumpkinspicelatte",
-        //     "character;oshino_shinobu",
-        //     "ref;shading",
-        //     "absurd_res",
-        //     "happy",
-        //     "yellow_hair",
-        // ];
         ui.vertical(|ui| {
             ui.label("tags");
             if self.is_editing_tags {
@@ -239,7 +250,7 @@ impl PreviewUI {
             Some(_promise) => self.image.as_ref(),
         }
     }
-    pub fn set_media_info_by_hash(&mut self, hash: String) {
+    pub fn load_media_info_by_hash(&mut self, hash: String) {
         let config = Arc::clone(&self.config);
         self.media_info = Some(Promise::spawn_thread("", move || Data::load_media_info(config, &hash)))
     }
@@ -247,7 +258,7 @@ impl PreviewUI {
 }
 
 impl GalleryUI {
-    fn process_previews(&mut self, toasts: &mut egui_toast::Toasts) {
+    fn process_previews(&mut self) {
         if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
             floating_windows.borrow_mut().retain(|window_state| {
                 if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
@@ -263,15 +274,14 @@ impl GalleryUI {
                                     true
                                 });
                             }
-                            toasts.success(format!("successfully deleted {}", preview.id), ui::default_toast_options());
+                            ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
                             return false;
                         }
                         PreviewStatus::FailedDelete(e) => {
-                            toasts.error(format!("failed to delete {}: {}", preview.id, e), ui::default_toast_options());
+                            ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
                         }
                         _ => {}
                     }
-
                 }
                 true
             })
@@ -297,7 +307,7 @@ impl GalleryUI {
             }
 
             let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config), hash.clone());
-            preview.set_media_info_by_hash(hash.clone());
+            preview.load_media_info_by_hash(hash.clone());
             let mut title = hash.clone();
             let widget_id = Id::new(&title);
             title.truncate(6);
@@ -401,6 +411,7 @@ impl GalleryUI {
 impl Default for GalleryUI {
     fn default() -> Self {
         Self {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             preview_window_state_ids: vec![],
             root_interface_floating_windows: None,
             config: None,
@@ -417,12 +428,13 @@ impl ui::DockedWindow for GalleryUI {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut toasts = ui::initialize_toasts(ctx);
-        self.process_previews(&mut toasts);
+        self.process_previews();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
             self.render_options(ui);
             self.render_thumbnails(ui, ctx, Arc::clone(&self.get_config()));
         });
-        toasts.show();
+        let mut s = "".to_string();
+        ui.text_edit_singleline(&mut s);
+        self.toasts.show(ctx);
     }
 }

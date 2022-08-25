@@ -7,9 +7,6 @@ use super::import::scan_directory;
 use super::import::{import_media, MediaEntry};
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
-use egui_toast::Toast;
-use egui_toast::ToastKind;
-use egui_toast::Toasts;
 use rfd::FileDialog;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,6 +17,7 @@ use std::{fs, path::Path};
 use std::sync::{Arc, Mutex};
 
 pub struct ImporterUI {
+    toasts: egui_notify::Toasts,
     config: Option<Arc<Config>>,
     scanned_dir_entries: Option<Vec<MediaEntry>>,
     alternate_scan_dir: Option<PathBuf>,
@@ -37,6 +35,7 @@ impl Default for ImporterUI {
         let config = None;
         let scan_chunk_size: u16 = 1000;
         Self {
+            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             scan_chunk_indices: (0, scan_chunk_size as i32),
             scan_chunk_size,
             delete_files_on_import: false,
@@ -79,7 +78,7 @@ impl ImporterUI {
         });
     }
 
-    fn render_options(&mut self, ui: &mut Ui, toasts: &mut Toasts) {
+    fn render_options(&mut self, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.label("options");
             if ui.button(if self.scanned_dir_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
@@ -232,7 +231,8 @@ impl ImporterUI {
                     .filter(|media_entry| media_entry.is_selected)
                     .collect::<Vec<&mut MediaEntry>>();
                     
-                    toasts.info(format!("importing {} media...", media_entries.len()), Duration::from_secs(5));
+                    ui::toast_info(&mut self.toasts, format!("importing {} media...", media_entries.len()));
+                    // toasts.info(format!("importing {} media...", media_entries.len()), Duration::from_secs(5));
                     let dir_link_map = Arc::clone(&self.dir_link_map);
                     import_media(media_entries, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
 
@@ -489,17 +489,12 @@ impl ui::DockedWindow for ImporterUI {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let toast_padding = 10.;
-        let mut toasts = Toasts::new(ctx)
-            .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
-            .direction(egui::Direction::BottomUp);
-
         ui.horizontal(|ui| {
             self.render_scan_directory_selection(ui);
             self.render_progress(ui);
         });
         ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
-            self.render_options(ui, &mut toasts);
+            self.render_options(ui);
             self.render_files(ui);
             // ScrollArea::vertical().show(ui, |ui| {
             //     ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_main_wrap(true), |ui| {
@@ -508,6 +503,6 @@ impl ui::DockedWindow for ImporterUI {
             // });
             self.render_previews(ui, ctx);
         });
-        toasts.show();
+        self.toasts.show(ctx);
     }
 }

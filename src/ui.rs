@@ -1,7 +1,7 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use downcast_rs as downcast;
-use egui_toast::Toasts;
+use egui_notify::Toasts;
 use std::{
     cell::{RefCell, RefMut},
     rc::Rc,
@@ -65,19 +65,36 @@ impl Default for RenderLoadingImageOptions {
     }
 }
 
-pub fn initialize_toasts(ctx: &egui::Context) -> egui_toast::Toasts {
-    let toast_padding = 10.;
-    let toasts = egui_toast::Toasts::new(ctx)
-        .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
-        .direction(egui::Direction::BottomUp);
-    toasts
+// pub fn initialize_toasts(ctx: &egui::Context) -> egui_toast::Toasts {
+//     let toast_padding = 10.;
+//     let toasts = egui_toast::Toasts::new(ctx)
+//         .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
+//         .direction(egui::Direction::BottomUp);
+//     toasts
+// }
+
+// pub fn default_toast_options() -> egui_toast::ToastOptions {
+//     egui_toast::ToastOptions {
+//         show_icon: true,
+//         ..egui_toast::ToastOptions::with_duration(Duration::from_secs(3))
+//     }
+// }
+
+pub fn toast_info(toasts: &mut Toasts, caption: impl Into<String>) {
+    set_default_toast_options(toasts.info(caption));
+}
+pub fn toast_success(toasts: &mut Toasts, caption: impl Into<String>) {
+    set_default_toast_options(toasts.success(caption));
+}
+pub fn toast_warning(toasts: &mut Toasts, caption: impl Into<String>) {
+    set_default_toast_options(toasts.warning(caption));
+}
+pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) {
+    set_default_toast_options(toasts.error(caption));
 }
 
-pub fn default_toast_options() -> egui_toast::ToastOptions {
-    egui_toast::ToastOptions {
-        show_icon: true,
-        ..egui_toast::ToastOptions::with_duration(Duration::from_secs(3))
-    }
+pub fn set_default_toast_options(toast: &mut egui_notify::Toast) {
+    toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true);
 }
 
 pub fn render_loading_image(
