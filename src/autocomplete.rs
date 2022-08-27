@@ -15,8 +15,41 @@
 /// toggle_ui(ui, &mut my_bool);
 /// ```
 ///
+/// 
+
+struct Autocomplete {
+    id: Option<Id>,
+}
+
+
+#[derive(Clone)]
+struct AutocompleteState {
+    selected_index: Option<i32>,
+    option_matches: Vec<String>,
+    are_matches_dirty: bool
+}
+
+impl Default for AutocompleteState {
+    fn default() -> Self {
+       Self {
+        selected_index: None,
+            option_matches: vec![],
+            are_matches_dirty: false,
+       }
+
+    }
+}
+
+impl Autocomplete {
+    fn new() -> Self {
+        Self {
+            id: None,
+        }
+    }
+}
+
 use eframe::{
-    egui::{self, Response},
+    egui::{self, Response, Id},
     epaint::{pos2, vec2, Color32, FontId, Pos2, Rect},
 };
 
@@ -24,12 +57,42 @@ pub fn create<'a>(search: &'a mut String, options: &'a Vec<String>) -> impl egui
     move |ui: &mut egui::Ui| autocomplete_ui(ui, search, options)
 }
 
+// impl egui::Widget for &mut Autocomplete {
+//     fn ui(self, ui: &mut egui::Ui) -> Response {
+//         let text_edit = ui.text_edit_singleline(search);
+//         todo!()
+//     }
+// }
+
 pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<String>) -> Response {
+
     let response = ui.text_edit_singleline(search);
 
     if response.has_focus() {
         let ac_matches = autocomplete(search, options);
         if ac_matches.len() > 0 {
+            
+            let id = ui.make_persistent_id(format!("{:?}_autocomplete", response.id));
+            let mut state: AutocompleteState = ui.ctx().memory().data.get_persisted(id).unwrap_or_default();
+    
+            if ui.ctx().input().key_pressed(egui::Key::ArrowUp) {
+                if let Some(selected_index) = state.selected_index.as_mut() {
+                    *selected_index = (*selected_index - 1).max(0);
+                } else {
+                    state.selected_index = Some(0);
+                }
+            } else if ui.ctx().input().key_pressed(egui::Key::ArrowDown) {
+                if let Some(selected_index) = state.selected_index.as_mut() {
+                    *selected_index = (*selected_index + 1).min(ac_matches.len() as i32 - 1);
+                } else {
+                    state.selected_index = Some(0);
+                }
+            } else if ui.ctx().input().key_pressed(egui::Key::Tab) {
+                println!("tab!");
+            }
+
+            dbg!(state.selected_index);
+
             let mut ac_rect = response.rect;
             let ac_rect_margin = 3.;
             let ac_rect_padding = 3.;
@@ -74,7 +137,16 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
                     .hover_pos()
                     .map(|p| interaction_rect.contains(p))
                     .unwrap_or(false);
-                if text_hovered {
+                let text_selected = if let Some(selected_index) = state.selected_index.as_ref() {
+                    *selected_index == index
+                } else {
+                    false
+                };
+                if text_selected {
+                    text_galley = ui
+                        .painter()
+                        .layout_no_wrap(text_galley.text().to_string(), icon_font.clone(), Color32::BLUE);
+                } else if text_hovered {
                     text_galley = ui
                         .painter()
                         .layout_no_wrap(text_galley.text().to_string(), icon_font.clone(), Color32::RED);
@@ -82,6 +154,8 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
                 ui.painter().galley(text_pos, text_galley);
                 index += 1;
             }
+
+            ui.ctx().memory().data.insert_persisted(id, state);
         }
     }
 
