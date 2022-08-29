@@ -229,15 +229,16 @@ impl TagsUi {
                 ui.collapsing("new tag", |ui| {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
                         egui::Grid::new("new_tag").max_col_width(1000.).show(ui, |ui| {
-                            ui.label("name");
-                            ui.text_edit_singleline(&mut self.new_tag.name);
-                            ui.end_row();
-
                             if let Some(space) = self.new_tag.namespace.as_mut() {
                                 ui.label("namespace");
                                 ui.text_edit_singleline(space);
                                 ui.end_row();
                             }
+                            
+                            ui.label("name");
+                            ui.text_edit_singleline(&mut self.new_tag.name);
+                            ui.end_row();
+
 
                             if let Some(desc) = self.new_tag.description.as_mut() {
                                 ui.label("description");

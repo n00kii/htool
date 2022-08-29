@@ -415,14 +415,14 @@ impl GalleryUI {
             "to", 
             "two", 
             "yellow", 
-            "deoxyribonucleic acid"]
+            "deoxyribonucleic_acid"]
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
         ui.horizontal(|ui| {
             ui.label("search");
         });
-        let autocomplete = autocomplete::create(&mut self.search_string, &options);
+        let autocomplete = autocomplete::create(&mut self.search_string, &options, None);
         ui.add(autocomplete);
     }
 }
