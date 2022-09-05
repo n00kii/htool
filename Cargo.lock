@@ -605,7 +605,7 @@ dependencies = [
 [[package]]
 name = "egui-notify"
 version = "0.2.0"
-source = "git+https://github.com/n00kii/egui-notify#5c3d7e3615ffab16e3265d2ef36cf4fda4c6aaa6"
+source = "git+https://github.com/n00kii/egui-notify#952ace752e02efe3ff7ccc29b09460db754cda92"
 dependencies = [
  "egui",
 ]

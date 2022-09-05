@@ -25,7 +25,6 @@ pub struct TagsUi {
     new_implication: TagLink,
     new_alias: TagLink,
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
-    tags: Vec<Tag>,
 }
 
 impl Default for TagsUi {
@@ -39,22 +38,6 @@ impl Default for TagsUi {
             new_alias: TagLink::empty_alias(),
             toasts: Toasts::default().with_anchor(Anchor::BottomLeft),
             config: None,
-            tags: vec![
-                Tag::new("blue_eyes".to_string(), None, None),
-                Tag::new("red_eyes".to_string(), Some("The character has red eyes".to_string()), None),
-                Tag::new("red_hair".to_string(), None, None),
-                Tag::new(
-                    "pumpkin_spice_latte".to_string(),
-                    Some("artist".to_string()),
-                    Some("A great artist".to_string()),
-                ),
-                Tag::new(
-                    "henreader".to_string(),
-                    Some("artist".to_string()),
-                    Some("My favorite artist".to_string()),
-                ),
-                Tag::new("oshino_shinobu".to_string(), Some("character".to_string()), None),
-            ],
         }
     }
 }
@@ -85,7 +68,6 @@ impl TagsUi {
         self.all_tags.as_ref()
     }
     fn load_tag_data(config: Arc<Config>) -> Option<Promise<Result<Vec<TagData>>>> {
-        // let config = self.get_config();
         Some(Promise::spawn_thread("", || data::get_all_tag_data(config)))
     }
     fn render_tags(&mut self, ui: &mut egui::Ui) {

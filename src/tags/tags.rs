@@ -15,6 +15,13 @@ pub struct Tag {
     pub description: Option<String>,
 }
 
+impl PartialEq for Tag {
+    fn eq(&self, other: &Self) -> bool {
+        let (self_noneified, other_noneified) = (self.noneified(), other.noneified());
+        self_noneified.name == other_noneified.name && self_noneified.namespace == other_noneified.namespace
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TagLinkType {
     Implication,

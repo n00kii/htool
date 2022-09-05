@@ -128,6 +128,10 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
                     tedit_output.state.store(ui.ctx(), tedit_response.id);
                 };
 
+                if ac_state.selected_index as usize > ac_matches.len() {
+                    ac_state.selected_index = ac_matches.len() as i32 - 1;
+                }
+
                 if ui.ctx().input().key_pressed(egui::Key::ArrowUp) {
                     ac_state.selected_index = (ac_state.selected_index - 1).max(0);
                     set_ccursor_range(ac_state.last_ccursor_range);

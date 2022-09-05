@@ -214,7 +214,7 @@ impl PreviewUI {
     pub fn render_image(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut options = RenderLoadingImageOptions::default();
 
-        options.widget_size = [500., 500.];
+        options.thumbnail_size = [500., 500.];
         let _response = ui::render_loading_image(ui, ctx, self.get_image(), options);
     }
 
@@ -286,6 +286,16 @@ impl GalleryUI {
         }
     }
 
+    fn load_gallery_entries(&mut self) {
+        let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
+        match gallery_items {
+            Ok(gallery_items) => self.gallery_items = gallery_items,
+            Err(error) => {
+                ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
+            }
+        }
+    }
+
     fn launch_preview(hash: String, config: Arc<Config>, floating_windows: Option<&Rc<RefCell<Vec<FloatingWindowState>>>>) {
         if let Some(floating_windows) = floating_windows {
             let mut floating_windows = floating_windows.borrow_mut();
@@ -324,14 +334,15 @@ impl GalleryUI {
         ui.vertical(|ui| {
             ui.label("info");
             if ui.button("load").clicked() {
-                let gallery_items = load_gallery_items(self.get_config());
-                match gallery_items {
-                    Ok(gallery_items) => self.gallery_items = gallery_items,
-                    Err(error) => {
-                        // println!("failed to load items due to {}", error);
-                        ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
-                    }
-                }
+                self.load_gallery_entries();
+                // let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
+                // match gallery_items {
+                //     Ok(gallery_items) => self.gallery_items = gallery_items,
+                //     Err(error) => {
+                //         // println!("failed to load items due to {}", error);
+                //         ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
+                //     }
+                // }
             }
         });
     }
@@ -339,7 +350,7 @@ impl GalleryUI {
     fn render_thumbnails(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         ui.vertical(|ui| {
             ui.label("media");
-            let thumbnail_size = self.get_config().ui.import.thumbnail_size;
+            let thumbnail_size = self.get_config().ui.import.thumbnail_size as f32;
             ScrollArea::vertical().id_source("previews_col").show(ui, |ui| {
                 let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                 ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
@@ -348,57 +359,74 @@ impl GalleryUI {
                         let config = self.get_config();
                         let gallery_items = self.gallery_items.iter_mut();
                         for gallery_item in gallery_items {
-                            let widget_size = (thumbnail_size + 3) as f32;
-                            let widget_size = [widget_size, widget_size];
-                            match gallery_item.get_thumbnail(Arc::clone(&config)) {
-                                None => {
-                                    // nothing, bytes havent been loaded yet
-                                    let spinner = egui::Spinner::new();
-                                    ui.add_sized(widget_size, spinner)
-                                        .on_hover_text(format!("(loading bytes for thumbnail...)"));
+                            let status_label = gallery_item.get_status_label().map(|label| label.into());
+                            let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
+                            let mut options = RenderLoadingImageOptions::default();
+                            options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
+                            options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
+                            options.hover_text = status_label;
+                            options.thumbnail_size = [thumbnail_size, thumbnail_size];
+                            let response = ui::render_loading_image(ui, ctx, thumbnail, options);
+                            if let Some(response) = response {
+                                if response.clicked() {
+                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                                        GalleryUI::launch_preview(
+                                            gallery_entry.hash.clone().clone(),
+                                            Arc::clone(&config),
+                                            self.root_interface_floating_windows.as_ref(),
+                                        )
+                                    }
                                 }
-                                Some(promise) => match promise.ready() {
-                                    // thumbail has started loading
-                                    None => {
-                                        // thumbnail still loading
-                                        let spinner = egui::Spinner::new();
-                                        ui.add_sized(widget_size, spinner).on_hover_text(format!("(loading thumbnail...)"));
-                                    }
-                                    Some(result) => {
-                                        let mut response = match result {
-                                            Ok(image) => {
-                                                let image =
-                                                    egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2()).sense(egui::Sense::click());
-
-                                                ui.add_sized(widget_size, image)
-                                            }
-                                            Err(_error) => {
-                                                // couldn't make thumbnail
-                                                let text = egui::RichText::new("?").size(48.0);
-                                                let label = egui::Label::new(text).sense(egui::Sense::click());
-                                                ui.add_sized(widget_size, label)
-                                            }
-                                        };
-
-                                        if let Some(status_label) = gallery_item.get_status_label() {
-                                            response = response.on_hover_text(format!("({status_label})"));
-                                        } else {
-                                            // response.on_hover_text(format!("{file_label} [{mime_type}]"));
-                                        }
-
-                                        if response.clicked() {
-                                            if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                                // self.launch_preview(ctx, gallery_entry.hash.clone());
-                                                GalleryUI::launch_preview(
-                                                    gallery_entry.hash.clone().clone(),
-                                                    Arc::clone(&config),
-                                                    self.root_interface_floating_windows.as_ref(),
-                                                )
-                                            }
-                                        }
-                                    }
-                                },
                             }
+                            // match gallery_item.get_thumbnail(Arc::clone(&config)) {
+                            //     None => {
+                            //         // nothing, bytes havent been loaded yet
+                            //         let spinner = egui::Spinner::new();
+                            //         ui.add_sized(widget_size, spinner)
+                            //             .on_hover_text(format!("(loading bytes for thumbnail...)"));
+                            //     }
+                            //     Some(promise) => match promise.ready() {
+                            //         // thumbail has started loading
+                            //         None => {
+                            //             // thumbnail still loading
+                            //             let spinner = egui::Spinner::new();
+                            //             ui.add_sized(widget_size, spinner).on_hover_text(format!("(loading thumbnail...)"));
+                            //         }
+                            //         Some(result) => {
+                            //             let mut response = match result {
+                            //                 Ok(image) => {
+                            //                     let image =
+                            //                         egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2()).sense(egui::Sense::click());
+
+                            //                     ui.add_sized(widget_size, image)
+                            //                 }
+                            //                 Err(_error) => {
+                            //                     // couldn't make thumbnail
+                            //                     let text = egui::RichText::new("?").size(48.0);
+                            //                     let label = egui::Label::new(text).sense(egui::Sense::click());
+                            //                     ui.add_sized(widget_size, label)
+                            //                 }
+                            //             };
+
+                            //             if let Some(status_label) = gallery_item.get_status_label() {
+                            //                 response = response.on_hover_text(format!("({status_label})"));
+                            //             } else {
+                            //                 // response.on_hover_text(format!("{file_label} [{mime_type}]"));
+                            //             }
+
+                            //             if response.clicked() {
+                            //                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                            //                     // self.launch_preview(ctx, gallery_entry.hash.clone());
+                            //                     GalleryUI::launch_preview(
+                            //                         gallery_entry.hash.clone().clone(),
+                            //                         Arc::clone(&config),
+                            //                         self.root_interface_floating_windows.as_ref(),
+                            //                     )
+                            //                 }
+                            //             }
+                            //         }
+                            //     },
+                            // }
                         }
                     });
                 });
@@ -407,15 +435,7 @@ impl GalleryUI {
     }
 
     fn render_search(&mut self, ui: &mut Ui) {
-        let options = vec![
-            "bruh", 
-            "moment", 
-            "red", 
-            "green", 
-            "to", 
-            "two", 
-            "yellow", 
-            "deoxyribonucleic_acid"]
+        let options = vec!["bruh", "moment", "red", "green", "to", "two", "yellow", "deoxyribonucleic_acid"]
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
@@ -423,7 +443,12 @@ impl GalleryUI {
             ui.label("search");
         });
         let autocomplete = autocomplete::create(&mut self.search_string, &options, None);
-        ui.add(autocomplete);
+        let response = ui.add(autocomplete);
+
+        if response.changed() {
+            // dbg!(&self.search_string);
+            self.load_gallery_entries();
+        }
     }
 }
 

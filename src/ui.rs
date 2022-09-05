@@ -19,7 +19,7 @@ use super::gallery::gallery_ui;
 use super::import::import_ui;
 use anyhow::Result;
 use eframe::{
-    egui::{self, Id, Response, ScrollArea, Style, Ui, Visuals, WidgetText},
+    egui::{self, Id, Response, ScrollArea, Sense, Style, Ui, Visuals, Widget, WidgetText},
     emath::Vec2,
     epaint::Color32,
 };
@@ -38,47 +38,47 @@ pub enum ImageResizeMethod {
     Contain,
 }
 pub struct RenderLoadingImageOptions {
-    pub widget_size: [f32; 2],
+    pub thumbnail_size: [f32; 2],
+    pub widget_margin: [f32; 2],
     pub is_button: bool,
     pub is_button_selected: Option<bool>,
     pub hover_text_on_none_image: Option<WidgetText>,
     pub hover_text_on_loading_image: Option<WidgetText>,
+    pub hover_text_on_error_image: Option<Box<dyn Fn(&anyhow::Error) -> WidgetText>>,
     pub hover_text: Option<WidgetText>,
     pub image_tint: Option<Color32>,
     pub error_label_text: String,
     pub resize_method: ImageResizeMethod,
+    pub sense: Vec<Sense>,
+}
+
+impl RenderLoadingImageOptions {
+    fn widget_size(&self) -> [f32; 2] {
+        [
+            self.thumbnail_size[0] + self.widget_margin[0],
+            self.thumbnail_size[1] + self.widget_margin[1],
+        ]
+    }
 }
 
 impl Default for RenderLoadingImageOptions {
     fn default() -> Self {
         RenderLoadingImageOptions {
             resize_method: ImageResizeMethod::Contain,
-            widget_size: [100., 100.],
+            thumbnail_size: [100., 100.],
+            widget_margin: [5., 5.],
             is_button: false,
             is_button_selected: None,
             hover_text_on_none_image: None,
+            hover_text_on_error_image: None,
             hover_text_on_loading_image: None,
             hover_text: None,
             image_tint: None,
             error_label_text: "?".into(),
+            sense: vec![egui::Sense::click()],
         }
     }
 }
-
-// pub fn initialize_toasts(ctx: &egui::Context) -> egui_toast::Toasts {
-//     let toast_padding = 10.;
-//     let toasts = egui_toast::Toasts::new(ctx)
-//         .anchor((0. + toast_padding, ctx.used_rect().bottom() - 10. - toast_padding))
-//         .direction(egui::Direction::BottomUp);
-//     toasts
-// }
-
-// pub fn default_toast_options() -> egui_toast::ToastOptions {
-//     egui_toast::ToastOptions {
-//         show_icon: true,
-//         ..egui_toast::ToastOptions::with_duration(Duration::from_secs(3))
-//     }
-// }
 
 pub fn toast_info(toasts: &mut Toasts, caption: impl Into<String>) {
     set_default_toast_options(toasts.info(caption));
@@ -113,28 +113,33 @@ pub fn render_loading_image(
     match image {
         None => {
             let spinner = egui::Spinner::new();
-            let mut response = ui.add_sized(options.widget_size, spinner);
+            let mut response = ui.add_sized(options.widget_size(), spinner);
             response = bind_hover_text(response, &options.hover_text_on_none_image);
             Some(response)
         }
         Some(image_promise) => match image_promise.ready() {
             None => {
                 let spinner = egui::Spinner::new();
-                let mut response = ui.add_sized(options.widget_size, spinner);
+                let mut response = ui.add_sized(options.widget_size(), spinner);
                 response = bind_hover_text(response, &options.hover_text_on_loading_image);
                 Some(response)
             }
-            Some(Err(_image_error)) => {
-                let text = egui::RichText::new(options.error_label_text).size(48.0);
+            Some(Err(image_error)) => {
+                let text = egui::RichText::new(&options.error_label_text).size(48.0);
 
                 let mut response = if options.is_button {
                     let button = egui::Button::new(text);
-                    ui.add_sized(options.widget_size, button)
+                    ui.add_sized(options.widget_size(), button)
                 } else {
                     let label = egui::Label::new(text).sense(egui::Sense::hover());
-                    ui.add_sized(options.widget_size, label)
+                    ui.add_sized(options.widget_size(), label)
                 };
-                response = bind_hover_text(response, &options.hover_text);
+                let hover_text = if let Some(format_error) = options.hover_text_on_error_image {
+                    Some(format_error(image_error))
+                } else {
+                    options.hover_text
+                };
+                response = bind_hover_text(response, &hover_text);
                 Some(response)
             }
 
@@ -143,35 +148,40 @@ pub fn render_loading_image(
                     ImageResizeMethod::Contain => {
                         let image_size = image.size_vec2();
                         if image_size.x > image_size.y {
-                            let scaling_ratio = options.widget_size[0] / image_size.x;
-                            [options.widget_size[0], scaling_ratio * image_size.y]
+                            let scaling_ratio = options.thumbnail_size[0] / image_size.x;
+                            [options.thumbnail_size[0], scaling_ratio * image_size.y]
                         } else {
-                            let scaling_ratio = options.widget_size[1] / image_size.y;
-                            [scaling_ratio * image_size.x, options.widget_size[1]]
+                            let scaling_ratio = options.thumbnail_size[1] / image_size.y;
+                            [scaling_ratio * image_size.x, options.thumbnail_size[1]]
                         }
                     }
-                    ImageResizeMethod::Stretch => options.widget_size,
+                    ImageResizeMethod::Stretch => options.thumbnail_size,
                 };
 
                 let mut response = if options.is_button {
                     let mut image_button = egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap());
+                    for sense in &options.sense {
+                        image_button = image_button.sense(*sense);
+                    }
                     if let Some(tint) = options.image_tint {
                         image_button = image_button.tint(tint);
                     }
-                    ui.add_sized(options.widget_size, image_button)
+                    ui.add_sized(options.widget_size(), image_button)
                 } else {
                     let mut image_widget = egui::widgets::Image::new(image.texture_id(ctx), image_size);
+                    for sense in &options.sense {
+                        image_widget = image_widget.sense(*sense);
+                    }
                     if let Some(tint) = options.image_tint {
                         image_widget = image_widget.tint(tint);
                     }
-                    ui.add_sized(options.widget_size, image_widget)
+                    ui.add_sized(options.widget_size(), image_widget)
                 };
                 response = bind_hover_text(response, &options.hover_text);
                 Some(response)
             }
         },
     }
-    // todo!();
 }
 
 pub trait DockedWindow: downcast::Downcast {
@@ -232,13 +242,7 @@ impl UserInterface {
     pub fn start(app: UserInterface) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
-        eframe::run_native(
-            "htool2",
-            options,
-            Box::new(|_creation_context| {
-                Box::new(app)
-            }),
-        );
+        eframe::run_native("htool2", options, Box::new(|_creation_context| Box::new(app)));
     }
 
     pub fn load_docked_windows(&mut self) {

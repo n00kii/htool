@@ -1,3 +1,5 @@
+use crate::tags::tags::Tag;
+
 use super::super::data;
 use super::super::Config;
 use super::super::ui;
@@ -42,10 +44,12 @@ pub trait GalleryItem: downcast::Downcast {
             None
         }
     }
+    fn includes_tags_and(&self) {
+
+    }
 }
 
 downcast::impl_downcast!(GalleryItem);
-
 
 impl GalleryItem for GalleryEntry {
     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
@@ -107,8 +111,10 @@ impl GalleryItem for GalleryEntryPlural {
     }
 }
 
-pub fn load_gallery_items(config: Arc<Config>) -> Result<Vec<Box<dyn GalleryItem>>> {
+pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result<Vec<Box<dyn GalleryItem>>> {
     // TODO: this seems really inefficient
+    let search_tags = search_string.split_whitespace().map(|tagstring| Tag::from_tagstring(&tagstring.to_string())).collect::<Vec<_>>();
+    
     let all_hashes = data::get_all_hashes(Arc::clone(&config))?;
     let mut gallery_entries: Vec<GalleryEntry> = Vec::new();
     let mut gallery_entries_plural: Vec<GalleryEntryPlural> = Vec::new();
@@ -135,6 +141,12 @@ pub fn load_gallery_items(config: Arc<Config>) -> Result<Vec<Box<dyn GalleryItem
 
     let mut gallery_items: Vec<Box<dyn GalleryItem>> = Vec::new();
     for gallery_entry in gallery_entries {
+        let media_info = data::load_media_info(Arc::clone(&config), &gallery_entry.hash)?;
+        if search_tags.len() > 0 {
+            if !media_info.includes_tags_and(&search_tags) {
+                continue;
+            }
+        }
         gallery_items.push(Box::new(gallery_entry));
     }
     for gallery_entry_plural in gallery_entries_plural {
@@ -142,7 +154,5 @@ pub fn load_gallery_items(config: Arc<Config>) -> Result<Vec<Box<dyn GalleryItem
     }
 
     Ok(gallery_items)
-
-
     // todo!()
 }
