@@ -10,6 +10,8 @@ use egui_extras::RetainedImage;
 use image::{imageops, EncodableLayout, FlatSamples, ImageBuffer, Rgba};
 use image_hasher::{HashAlg, HasherConfig};
 use infer;
+use poll_promise::Promise;
+use poll_promise::Sender;
 use rusqlite::{named_params, params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::hash;
@@ -17,6 +19,21 @@ use std::io::Cursor;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
+
+// config: Arc<Config>,
+// bytes: &[u8],
+// filekind: Option<infer::Type>,
+// linking_dir: Option<String>,
+// dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
+
+pub struct RegistrationForm {
+    pub bytes: Arc<Vec<u8>>,
+    pub filekind: Option<infer::Type>,
+    // pub importation_result: Option<Promise<ImportationStatus>>,
+    pub importation_result_sender: Sender<ImportationStatus>,
+    pub linking_dir: Option<String>,
+    pub dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
+}
 
 #[derive(Debug)]
 pub enum ImportationStatus {
@@ -66,7 +83,7 @@ impl MediaInfo {
         for tag in tags {
             let includes_tag = self.tags.iter().any(|included_tag| included_tag == tag);
             if !includes_tag {
-                return false
+                return false;
             }
         }
         true
@@ -650,6 +667,106 @@ pub fn register_media(
     }
 
     match register(config, bytes, filekind, linking_dir, dir_link_map) {
+        Ok(status) => return status,
+        Err(error) => return ImportationStatus::Fail(error),
+    };
+}
+
+fn register_media2(config: Arc<Config>, reg_forms: Vec<RegistrationForm>) -> Result<()> {
+    let mut conn = initialize_database_connection(&config.path.database()?)?;
+    let trans = conn.transaction()?;
+
+    for reg_form in reg_forms {
+        let status = register_media_with_conn(&trans, &reg_form);
+        reg_form.importation_result_sender.send(status);
+    }
+
+    trans.commit()?;
+    Ok(())
+}
+
+fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> ImportationStatus {
+    let register = || -> Result<ImportationStatus> {
+        // println!("got {} kB for register", bytes.len() / 1000);
+        let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
+        let hasher = hasher_config.to_hasher();
+
+        let sha_hash = sha256::digest_bytes(&reg_form.bytes);
+        let mut perceptual_hash: Option<String> = None;
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let mime_type = match reg_form.filekind {
+            Some(kind) => kind.mime_type(),
+            None => "",
+        };
+
+        if let Some(filekind) = reg_form.filekind {
+            if filekind.matcher_type() == infer::MatcherType::Image {
+                let image = image::load_from_memory(&reg_form.bytes)?;
+                perceptual_hash = Some(hex::encode(hasher.hash_image(&image).as_bytes()));
+            }
+        }
+
+        let mut statement = conn.prepare("SELECT 1 FROM media_info WHERE hash = ?")?;
+        let exists = statement.exists(params![sha_hash])?;
+        if exists {
+            return Ok(ImportationStatus::Duplicate);
+        }
+
+        let insert_result = if perceptual_hash.is_some() {
+            conn.execute(
+                "INSERT INTO media_info (hash, perceptual_hash, mime, date_registered, size)
+                    VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![sha_hash, perceptual_hash.unwrap(), mime_type, timestamp, reg_form.bytes.len()],
+            )
+        } else {
+            conn.execute(
+                "INSERT INTO media_info (hash, mime, date_registered, size)
+                    VALUES (?1, ?2, ?3, ?4)",
+                params![sha_hash, mime_type, timestamp, reg_form.bytes.len()],
+            )
+        };
+
+        match insert_result {
+            Ok(_) => {
+                conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, reg_form.bytes])?;
+                // conn.execute(sql, params);
+                if let Some(linking_dir) = &reg_form.linking_dir {
+                    if let Ok(mut dir_link_map) = reg_form.dir_link_map.lock() {
+                        if let Some(link_id) = dir_link_map.get(linking_dir) {
+                            conn.execute(
+                                "INSERT INTO media_links (id, hash)
+                                    VALUES (?1, ?2)",
+                                params![link_id, sha_hash],
+                            )?;
+                        } else {
+                            // new link_id
+                            let next_id: i32 = conn.query_row("SELECT IFNULL(MAX(id), 0) + 1 FROM media_links ", [], |row| row.get(0))?;
+                            conn.execute(
+                                "INSERT INTO media_links (id, hash)
+                                    VALUES (?1, ?2)",
+                                params![next_id, sha_hash],
+                            )?;
+
+                            dir_link_map.insert(linking_dir.clone(), next_id);
+                        }
+                    }
+                }
+
+                return Ok(ImportationStatus::Success);
+            }
+            Err(error) => {
+                // if (let rusqlite::Error::SqliteFailure(e, _) = error) && e.code == rusqlite::ErrorCode::ConstraintViolation { waiting for rust 1.62 :(
+                if let rusqlite::Error::SqliteFailure(e, _) = error {
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation {
+                        return Ok(ImportationStatus::Duplicate);
+                    }
+                }
+                return Ok(ImportationStatus::Fail(error.into()));
+            }
+        }
+    };
+
+    match register() {
         Ok(status) => return status,
         Err(error) => return ImportationStatus::Fail(error),
     };

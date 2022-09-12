@@ -3,6 +3,7 @@ use super::super::Config;
 use crate::config::Import;
 use crate::data;
 use crate::data::ImportationStatus;
+use crate::data::RegistrationForm;
 use anyhow::{Context, Error, Result};
 use eframe::egui;
 use egui_extras::RetainedImage;
@@ -39,48 +40,48 @@ pub struct MediaEntry {
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
     pub modified_thumbnail: Option<RetainedImage>,
 
-    pub importation_status: Option<Promise<Arc<ImportationStatus>>>,
+    pub importation_status: Option<Promise<ImportationStatus>>,
 }
 
-pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
-        let bytes = media_entry.bytes.as_ref();
-        let mut fail = |message: String| {
-            let (sender, promise) = Promise::new();
-            media_entry.importation_status = Some(promise);
-            sender.send(Arc::new(ImportationStatus::Fail(anyhow::Error::msg(message))));
-        };
-        match bytes {
-            None => {
-                fail("bytes not loaded".into());
-            }
-            Some(promise) => match promise.ready() {
-                None => {
-                    fail("bytes are still loading".into());
-                }
-                Some(Err(_error)) => {
-                    fail("failed to load bytes".into());
-                }
-                Some(Ok(bytes)) => {
-                    let filekind = match &media_entry.mime_type {
-                        Some(Ok(kind)) => Some(kind.clone()),
-                        Some(Err(_error)) => None,
-                        None => None,
-                    };
+// pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
+//     let bytes = media_entry.bytes.as_ref();
+//     let mut fail = |message: String| {
+//         let (sender, promise) = Promise::new();
+//         media_entry.importation_status = Some(promise);
+//         sender.send(ImportationStatus::Fail(anyhow::Error::msg(message)));
+//     };
+//     match bytes {
+//         None => {
+//             fail("bytes not loaded".into());
+//         }
+//         Some(promise) => match promise.ready() {
+//             None => {
+//                 fail("bytes are still loading".into());
+//             }
+//             Some(Err(_error)) => {
+//                 fail("failed to load bytes".into());
+//             }
+//             Some(Ok(bytes)) => {
+//                 let filekind = match &media_entry.mime_type {
+//                     Some(Ok(kind)) => Some(kind.clone()),
+//                     Some(Err(_error)) => None,
+//                     None => None,
+//                 };
 
-                    let bytes = Arc::clone(bytes);
-                    let config = Arc::clone(&config);
-                    let dir_link_map = Arc::clone(&dir_link_map);
-                    let linking_dir = media_entry.linking_dir.clone();
-                    media_entry.importation_status = Some(Promise::spawn_thread("", move || {
-                        let bytes = &*bytes as &[u8];
-                        let result = data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
-                        Arc::new(result)
-                    }))
-                }
-            },
-        }
-    // Ok(())
-}
+//                 let bytes = Arc::clone(bytes);
+//                 let config = Arc::clone(&config);
+//                 let dir_link_map = Arc::clone(&dir_link_map);
+//                 let linking_dir = media_entry.linking_dir.clone();
+//                 media_entry.importation_status = Some(Promise::spawn_thread("", move || {
+//                     let bytes = &*bytes as &[u8];
+//                     let result = data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
+//                     Arc::new(result)
+//                 }))
+//             }
+//         },
+//     }
+//     // Ok(())
+// }
 
 fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
     let mut reverse_components = path.components().rev();
@@ -105,7 +106,7 @@ pub fn scan_directory(
     directory_path: PathBuf,
     directory_level: u8,
     linking_dir: Option<String>,
-    extension_filter: &Vec<&String>
+    extension_filter: &Vec<&String>,
 ) -> Result<Vec<MediaEntry>> {
     // println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
@@ -141,13 +142,12 @@ pub fn scan_directory(
                         }
                     }
                 }
-                
+
                 let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
                     .to_str()
                     .unwrap_or("")
                     .to_string()
                     .replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
-
 
                 // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(MediaEntry {
@@ -174,6 +174,51 @@ pub fn scan_directory(
 }
 
 impl MediaEntry {
+    pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) -> Result<RegistrationForm> {
+        let bytes = self.bytes.as_ref();
+        let mut fail = |message: String| -> Result<_, Error> {
+            let (sender, promise) = Promise::new();
+            self.importation_status = Some(promise);
+            sender.send(ImportationStatus::Fail(anyhow::Error::msg(message)));
+            Err(anyhow::Error::msg("bytes not loaded"))
+        };
+        match bytes {
+            None => {
+                fail("bytes not loaded".into())
+            }
+            Some(promise) => match promise.ready() {
+                None => {
+                    fail("bytes are still loading".into())
+                }
+                Some(Err(_error)) => {
+                    fail("failed to load bytes".into())
+                }
+                Some(Ok(bytes)) => {
+                    let filekind = match &self.mime_type {
+                        Some(Ok(kind)) => Some(kind.clone()),
+                        Some(Err(_error)) => None,
+                        None => None,
+                    };
+
+                    let bytes = Arc::clone(bytes);
+                    let config = Arc::clone(&config);
+                    let dir_link_map = Arc::clone(&dir_link_map);
+                    let linking_dir = self.linking_dir.clone();
+                    let (sender, promise) = Promise::new();
+                    self.importation_status = Some(promise);
+                    Ok(RegistrationForm {
+                        bytes,
+                        filekind,
+                        importation_result_sender: sender,
+                        linking_dir,
+                        dir_link_map,
+                    })
+                }
+            },
+        }
+
+        // todo!()
+    }
     pub fn get_bytes(&mut self) -> &Promise<Result<Arc<Vec<u8>>, Error>> {
         self.bytes.get_or_insert_with(|| {
             let path = self.dir_entry.path().clone();
@@ -207,7 +252,7 @@ impl MediaEntry {
         if let Some(bytes_promise) = self.bytes.as_ref() {
             if let Some(bytes_res) = bytes_promise.ready() {
                 if let Ok(_bytes) = bytes_res {
-                    return true
+                    return true;
                 }
             }
         }
@@ -238,7 +283,7 @@ impl MediaEntry {
     pub fn match_importation_status(&self, comparison_status: ImportationStatus) -> bool {
         match &self.importation_status {
             Some(promise) => match promise.ready() {
-                Some(importation_result) => return *importation_result.as_ref() == comparison_status,
+                Some(importation_result) => return *importation_result == comparison_status,
                 None => {}
             },
             _ => {}
@@ -251,7 +296,6 @@ impl MediaEntry {
             self.match_importation_status(ImportationStatus::Duplicate) || self.match_importation_status(ImportationStatus::Success);
 
         return !self.is_unloadable && !self.is_imported && !cannot_be_reimported;
-
     }
 
     pub fn unload_bytes_if_unnecessary(&mut self) {
@@ -293,7 +337,7 @@ impl MediaEntry {
             let error_message = {
                 let error = match &self.importation_status {
                     Some(promise) => match promise.ready() {
-                        Some(result) => match result.as_ref() {
+                        Some(result) => match result {
                             ImportationStatus::Fail(error) => Some(format!("{error}")),
                             _ => None,
                         },
@@ -328,22 +372,22 @@ impl MediaEntry {
                 None => {
                     // todo!();
                 }
-                    Some(bytes_result) => match bytes_result {
-                        Err(_error) => {
-                            self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
+                Some(bytes_result) => match bytes_result {
+                    Err(_error) => {
+                        self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
+                        self.is_unloadable = true;
+                    }
+                    Ok(bytes) => match infer::get(&bytes) {
+                        Some(kind) => {
+                            self.mime_type = Some(Ok(kind));
+                        }
+                        None => {
+                            self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
                             self.is_unloadable = true;
                         }
-                        Ok(bytes) => match infer::get(&bytes) {
-                            Some(kind) => {
-                                self.mime_type = Some(Ok(kind));
-                            }
-                            None => {
-                                self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
-                                self.is_unloadable = true;
-                            }
-                        },
                     },
                 },
+            },
             Some(_result) => {
                 // todo!();
             }
@@ -357,7 +401,7 @@ impl MediaEntry {
                 None => {
                     // println!("hmm");
                     None
-                },
+                }
                 Some(result) => {
                     let (sender, promise) = Promise::new();
                     match result {
@@ -366,20 +410,20 @@ impl MediaEntry {
                             sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
                         }
                         Ok(bytes) => {
-                                let bytes = Arc::clone(bytes);
-                                // let arc = Arc::new(bytes);
-                                thread::spawn(move || {
-                                    let bytes = &bytes as &[u8];
-                                    // println!("{:?}", bytes.len());
-                                    let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                                    // println!("{:?}", image_res.is_err());
-                                    sender.send(image_res);
-                                });
-                            }
+                            let bytes = Arc::clone(bytes);
+                            // let arc = Arc::new(bytes);
+                            thread::spawn(move || {
+                                let bytes = &bytes as &[u8];
+                                // println!("{:?}", bytes.len());
+                                let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
+                                // println!("{:?}", image_res.is_err());
+                                sender.send(image_res);
+                            });
                         }
-                        self.thumbnail = Some(promise);
-                        self.thumbnail.as_ref()
                     }
+                    self.thumbnail = Some(promise);
+                    self.thumbnail.as_ref()
+                }
             },
             Some(_promise) => self.thumbnail.as_ref(),
         }

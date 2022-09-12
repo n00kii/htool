@@ -7,7 +7,8 @@ use super::super::ui;
 use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::import::scan_directory;
-use super::import::{import_media, MediaEntry};
+// use super::import::{import_media, MediaEntry};
+use super::import::MediaEntry;
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
 use poll_promise::Promise;
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::Condvar;
 use std::time::Duration;
 use std::{fs, path::Path};
+use anyhow::Result;
 
 use std::sync::{Arc, Mutex};
 const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
@@ -29,6 +31,7 @@ pub struct ImporterUI {
     show_hidden_entries: bool,
     hide_errored_entries: bool,
     import_hidden_entries: bool,
+    current_import_res: Option<Promise<Result<()>>>,
     page_count: usize,
     page_index: usize,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
@@ -46,6 +49,7 @@ impl Default for ImporterUI {
             import_hidden_entries: true,
             media_entries: None,
             alternate_scan_dir: None,
+            current_import_res: None,
             config,
             page_count: 1000,
             page_index: 0,
@@ -292,7 +296,7 @@ impl ImporterUI {
         
                             for media_entry in media_entries {
                                 let (sender, promise) = Promise::new();
-                                sender.send(Arc::new(ImportationStatus::PendingBytes));
+                                sender.send(ImportationStatus::PendingBytes);
                                 media_entry.importation_status = Some(promise);
                             }
         
@@ -385,9 +389,12 @@ impl ImporterUI {
                                         }
                                     }
 
-                                    // if media_entry.are_bytes_loaded() {
-                                    //     println!("{:?}", media_entry.file_label)
-                                    // }
+                                    // TODO: need to be able to buffer all media entries that wanna load in some sorta global buffer, which has a max bytes capacity
+                                    // if needs to load thumbnail/info, it will go into the bytes loading buffer, load, then exit and finish loading
+                                    // move buffer stuff out of ui function?
+                                    // if needs to import, still use bytes loading buffer
+                                    // import ALSO uses import buffer; collect all media entries with in byte buffer that wanna import every frame and load them
+                                    // while importing, a promise is held, resolves with error or success of import
 
                                     // If this entry needs to load bytes for import, get bytes
                                     if media_entry.bytes.is_none() && media_entry.match_importation_status(ImportationStatus::PendingBytes) {
@@ -396,7 +403,7 @@ impl ImporterUI {
                                     {
                                         // Otherwise if bytes are loaded, start the import
                                         let dir_link_map = Arc::clone(&self.dir_link_map);
-                                        import_media(media_entry, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
+                                        //HERE1 import_media(media_entry, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
                                     }
 
                                     let widget_size = (thumbnail_size + 10) as f32;
