@@ -27,7 +27,7 @@ use std::{
 pub struct MediaEntryBuffer<'a, T: Send + 'static> {
     pub entries: Vec<(&'a MediaEntry, &'a Promise<T>)>,
     pub size_limit: usize,
-    pub on_add: fn(&mut MediaEntry)
+    pub on_add: fn(&mut MediaEntry),
 }
 
 impl<'a, T: Send + 'static> MediaEntryBuffer<'a, T> {
@@ -50,9 +50,7 @@ impl<'a, T: Send + 'static> MediaEntryBuffer<'a, T> {
         }
     }
     fn poll(&mut self) {
-        self.entries.retain(|(media_entry, promise)| {
-            promise.ready().is_none()
-        })
+        self.entries.retain(|(media_entry, promise)| promise.ready().is_none())
     }
 }
 
@@ -242,7 +240,7 @@ impl MediaEntry {
                     };
 
                     let bytes = Arc::clone(bytes);
-                    let config = Arc::clone(&config);
+                    // let config = Arc::clone(&config);
                     let dir_link_map = Arc::clone(&dir_link_map);
                     let linking_dir = self.linking_dir.clone();
                     let (sender, promise) = Promise::new();
@@ -257,9 +255,26 @@ impl MediaEntry {
                 }
             },
         }
-
-        // todo!()
     }
+
+    pub fn load_bytes(&mut self) {
+        let path = self.dir_entry.path().clone();
+        let load_condition = Arc::clone(&self.is_to_be_loaded);
+        let promise = Promise::spawn_thread("", move || {
+            let (lock, cond_var) = &*load_condition;
+            let mut start_loading = lock.lock().unwrap();
+            while !*start_loading {
+                start_loading = cond_var.wait(start_loading).unwrap()
+            }
+
+            let mut file = File::open(path)?;
+            let mut bytes: Vec<u8> = vec![];
+            file.read_to_end(&mut bytes)?;
+            Ok(Arc::new(bytes))
+        });
+        self.bytes = Some(promise)
+    }
+
     pub fn get_bytes(&mut self) -> &Promise<Result<Arc<Vec<u8>>, Error>> {
         self.bytes.get_or_insert_with(|| {
             let path = self.dir_entry.path().clone();
@@ -407,6 +422,28 @@ impl MediaEntry {
         }
     }
 
+    pub fn load_mime_type(&mut self) {
+        if let Some(bytes_promise) = self.bytes.as_ref() {
+            if let Some(bytes_res) = bytes_promise.ready() {
+                match bytes_res {
+                    Err(_error) => {
+                        self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
+                        self.is_unloadable = true;
+                    }
+                    Ok(bytes) => match infer::get(&bytes) {
+                        Some(kind) => {
+                            self.mime_type = Some(Ok(kind));
+                        }
+                        None => {
+                            self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
+                            self.is_unloadable = true;
+                        }
+                    },
+                }
+            }
+        }
+    }
+
     pub fn get_mime_type(&mut self) -> Option<&Result<Type, Error>> {
         match &self.mime_type {
             None => match self.get_bytes().ready() {
@@ -434,6 +471,28 @@ impl MediaEntry {
             }
         }
         self.mime_type.as_ref()
+    }
+
+    pub fn load_thumbnail2(&mut self, thumbnail_size: u8) {
+        if let Some(bytes_promise) = self.bytes.as_ref() {
+            if let Some(bytes_res) = bytes_promise.ready() {
+                let (sender, promise) = Promise::new();
+
+                match bytes_res {
+                    Err(_error) => sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail"))),
+                    Ok(bytes) => {
+                        let bytes = Arc::clone(bytes);
+                        thread::spawn(move || {
+                            let bytes = &bytes as &[u8];
+                            let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
+                            sender.send(image_res);
+                        });
+                    }
+                }
+
+                self.thumbnail = Some(promise);
+            }
+        }
     }
 
     pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
