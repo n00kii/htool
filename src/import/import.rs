@@ -24,6 +24,38 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+pub struct MediaEntryBuffer<'a, T: Send + 'static> {
+    pub entries: Vec<(&'a MediaEntry, &'a Promise<T>)>,
+    pub size_limit: usize,
+    pub on_add: fn(&mut MediaEntry)
+}
+
+impl<'a, T: Send + 'static> MediaEntryBuffer<'a, T> {
+    fn contains_media_entry(&self, media_entry: &MediaEntry) -> bool {
+        self.entries
+            .iter()
+            .map(|(media_entry, promise)| media_entry)
+            .any(|other_entry| media_entry == *other_entry)
+    }
+    fn current_size(&self) -> usize {
+        self.entries.iter().map(|(media_entry, promise)| media_entry.file_size).sum()
+    }
+    fn try_add_entry(&mut self, media_entry: &'a mut MediaEntry, removal_promise: &'a Promise<T>) -> Result<()> {
+        if self.current_size() + media_entry.file_size < self.size_limit {
+            (self.on_add)(media_entry);
+            self.entries.push((media_entry, removal_promise));
+            Ok(())
+        } else {
+            Err(anyhow::Error::msg("buffer full"))
+        }
+    }
+    fn poll(&mut self) {
+        self.entries.retain(|(media_entry, promise)| {
+            promise.ready().is_none()
+        })
+    }
+}
+
 pub struct MediaEntry {
     pub is_unloadable: bool,
     pub is_hidden: bool,
@@ -35,12 +67,20 @@ pub struct MediaEntry {
     pub dir_entry: DirEntry,
     pub mime_type: Option<Result<Type>>,
     pub file_label: String,
+    pub file_size: usize,
+
     pub linking_dir: Option<String>,
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
     pub modified_thumbnail: Option<RetainedImage>,
 
     pub importation_status: Option<Promise<ImportationStatus>>,
+}
+
+impl PartialEq for MediaEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.dir_entry.path() == other.dir_entry.path()
+    }
 }
 
 // pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
@@ -149,6 +189,12 @@ pub fn scan_directory(
                     .to_string()
                     .replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
 
+                let file_size = if let Ok(metadata) = dir_entry.metadata() {
+                    metadata.len()
+                } else {
+                    500_000
+                };
+                // dir_entry.metadata().unwrap().len();
                 // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(MediaEntry {
                     is_hidden: false,
@@ -156,6 +202,7 @@ pub fn scan_directory(
                     is_unloadable: false,
                     is_imported: false,
                     thumbnail: None,
+                    file_size: file_size as usize,
                     mime_type: None,
                     dir_entry,
                     file_label,
@@ -183,16 +230,10 @@ impl MediaEntry {
             Err(anyhow::Error::msg("bytes not loaded"))
         };
         match bytes {
-            None => {
-                fail("bytes not loaded".into())
-            }
+            None => fail("bytes not loaded".into()),
             Some(promise) => match promise.ready() {
-                None => {
-                    fail("bytes are still loading".into())
-                }
-                Some(Err(_error)) => {
-                    fail("failed to load bytes".into())
-                }
+                None => fail("bytes are still loading".into()),
+                Some(Err(_error)) => fail("failed to load bytes".into()),
                 Some(Ok(bytes)) => {
                     let filekind = match &self.mime_type {
                         Some(Ok(kind)) => Some(kind.clone()),
