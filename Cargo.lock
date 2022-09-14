@@ -604,8 +604,8 @@ dependencies = [
 
 [[package]]
 name = "egui-notify"
-version = "0.2.0"
-source = "git+https://github.com/n00kii/egui-notify#952ace752e02efe3ff7ccc29b09460db754cda92"
+version = "0.4.0"
+source = "git+https://github.com/n00kii/egui-notify#6691369677aefd133a21335314f2611f7131c781"
 dependencies = [
  "egui",
 ]
@@ -2738,9 +2738,9 @@ checksum = "f4dd6dc7df2d84cf7b33822ed5b86318fb1781948e9663bacd047fc9dd52259d"
 
 [[package]]
 name = "winit"
-version = "0.27.2"
+version = "0.27.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83a8f3e9d742401efcfe833b8f84960397482ff049cb7bf59a112e14a4be97f7"
+checksum = "a22e94ba35ca3ff11820044bfa0dc48b95a3a15569c0068555566a12ef41c9e5"
 dependencies = [
  "bitflags",
  "cocoa",

@@ -13,9 +13,11 @@ use image_hasher::{HashAlg, HasherConfig};
 use infer::Type;
 use poll_promise::Promise;
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
+use std::rc::Rc;
 use std::{
     fs::{self, DirEntry, File, ReadDir},
     io::Read,
@@ -24,33 +26,34 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub struct MediaEntryBuffer<'a, T: Send + 'static> {
-    pub entries: Vec<(&'a MediaEntry, &'a Promise<T>)>,
+pub struct MediaEntryBuffer {
+    pub entries: Vec<Rc<RefCell<MediaEntry>>>,
     pub size_limit: usize,
-    pub on_add: fn(&mut MediaEntry),
+    pub on_add: fn(&Rc<RefCell<MediaEntry>>),
+    pub poll_check: fn(&Rc<RefCell<MediaEntry>>) -> bool,
 }
 
-impl<'a, T: Send + 'static> MediaEntryBuffer<'a, T> {
-    fn contains_media_entry(&self, media_entry: &MediaEntry) -> bool {
-        self.entries
-            .iter()
-            .map(|(media_entry, promise)| media_entry)
-            .any(|other_entry| media_entry == *other_entry)
+impl MediaEntryBuffer {
+    fn contains_media_entry(&self, media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+        self.entries.contains(media_entry)
     }
     fn current_size(&self) -> usize {
-        self.entries.iter().map(|(media_entry, promise)| media_entry.file_size).sum()
+        self.entries.iter().map(|media_entry| media_entry.borrow().file_size).sum()
     }
-    fn try_add_entry(&mut self, media_entry: &'a mut MediaEntry, removal_promise: &'a Promise<T>) -> Result<()> {
-        if self.current_size() + media_entry.file_size < self.size_limit {
-            (self.on_add)(media_entry);
-            self.entries.push((media_entry, removal_promise));
-            Ok(())
-        } else {
+    pub fn try_add_entry(&mut self, media_entry: Rc<RefCell<MediaEntry>>) -> Result<()> {
+        if self.contains_media_entry(&media_entry) {
+            Err(anyhow::Error::msg("already added"))
+        } else if self.current_size() + media_entry.borrow().file_size > self.size_limit {
             Err(anyhow::Error::msg("buffer full"))
+        } else {
+            (self.on_add)(&media_entry);
+            self.entries.push(media_entry);
+            Ok(())
         }
     }
-    fn poll(&mut self) {
-        self.entries.retain(|(media_entry, promise)| promise.ready().is_none())
+    pub fn poll(&mut self) {
+        println!("{}", self.entries.len());
+        self.entries.retain_mut(|media_entry| !(self.poll_check)(media_entry))
     }
 }
 
@@ -145,7 +148,7 @@ pub fn scan_directory(
     directory_level: u8,
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>,
-) -> Result<Vec<MediaEntry>> {
+) -> Result<Vec<Rc<RefCell<MediaEntry>>>> {
     // println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
@@ -194,7 +197,7 @@ pub fn scan_directory(
                 };
                 // dir_entry.metadata().unwrap().len();
                 // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
-                scanned_dir_entries.push(MediaEntry {
+                scanned_dir_entries.push(Rc::new(RefCell::new(MediaEntry {
                     is_hidden: false,
                     is_to_be_loaded: Arc::new((Mutex::new(false), Condvar::new())),
                     is_unloadable: false,
@@ -210,7 +213,7 @@ pub fn scan_directory(
                     importation_status: None,
                     linking_dir: linking_dir.clone(),
                     disable_bytes_loading: false,
-                });
+                })));
             }
         }
     }

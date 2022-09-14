@@ -7,25 +7,28 @@ use super::super::ui;
 use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::import::scan_directory;
+use super::import::MediaEntryBuffer;
 // use super::import::{import_media, MediaEntry};
 use super::import::MediaEntry;
+use anyhow::Result;
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
 use poll_promise::Promise;
 use rfd::FileDialog;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Condvar;
 use std::time::Duration;
 use std::{fs, path::Path};
-use anyhow::Result;
 
 use std::sync::{Arc, Mutex};
 const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
     config: Option<Arc<Config>>,
-    media_entries: Option<Vec<MediaEntry>>,
+    media_entries: Option<Vec<Rc<RefCell<MediaEntry>>>>,
     alternate_scan_dir: Option<PathBuf>,
     delete_files_on_import: bool,
     show_hidden_entries: bool,
@@ -36,15 +39,24 @@ pub struct ImporterUI {
     page_index: usize,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
+    load_buffer: MediaEntryBuffer,
+    // import_buffer: MediaEntryBuffer<'static>
 }
 
 impl Default for ImporterUI {
     fn default() -> Self {
         let config = None;
+        let load_buffer = MediaEntryBuffer {
+            entries: vec![],
+            size_limit: 100_000_000,
+            on_add: ImporterUI::on_add_to_load_buffer,
+            poll_check: ImporterUI::load_buffer_poll_check,
+        };
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             delete_files_on_import: false,
             show_hidden_entries: false,
+            load_buffer,
             hide_errored_entries: true,
             import_hidden_entries: true,
             media_entries: None,
@@ -71,6 +83,23 @@ impl Default for ImporterUI {
 }
 
 impl ImporterUI {
+    fn on_add_to_load_buffer(media_entry: &Rc<RefCell<MediaEntry>>) {
+        media_entry.borrow_mut().load_bytes();
+    }
+    fn load_buffer_poll_check(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+        let mut media_entry = media_entry.borrow_mut();
+        if media_entry.are_bytes_loaded() {
+            if media_entry.thumbnail.is_none() {
+                media_entry.load_thumbnail2(100);
+            }
+            if media_entry.mime_type.is_none() {
+                media_entry.load_mime_type();
+            }
+        }
+
+        !media_entry.is_loading_or_needs_to_load()
+    }
+
     fn get_scan_dir(&self) -> PathBuf {
         let landing_result = self.get_config().path.landing();
         let landing = landing_result.unwrap_or_else(|_| PathBuf::from(""));
@@ -79,6 +108,38 @@ impl ImporterUI {
         } else {
             landing
         }
+    }
+
+    fn is_any_entry_selected(&self) -> bool {
+        self.get_selected_media_entries().len() > 0
+    }
+
+    fn is_any_entry_hidden(&self) -> bool {
+        self.get_hidden_media_entries().len() > 0
+    }
+
+    fn filter_media_entries(&self, predicate: impl Fn(&Rc<RefCell<MediaEntry>>) -> bool) -> Vec<Rc<RefCell<MediaEntry>>> {
+        if let Some(media_entries) = self.media_entries.as_ref() {
+            media_entries
+                .iter()
+                .filter(|media_entry| predicate(media_entry))
+                .map(|media_entry| Rc::clone(&media_entry))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        }
+    }
+
+    fn get_importable_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
+        self.filter_media_entries(|media_entry| media_entry.borrow().is_importable())
+    }
+
+    fn get_selected_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
+        self.filter_media_entries(|media_entry| media_entry.borrow().is_selected)
+    }
+
+    fn get_hidden_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
+        self.filter_media_entries(|media_entry| media_entry.borrow().is_hidden)
     }
 
     fn get_number_of_loading_bytes(media_entries: &Vec<MediaEntry>) -> u32 {
@@ -113,7 +174,6 @@ impl ImporterUI {
         ui.vertical(|ui| {
             ui.label("options");
             ScrollArea::vertical().id_source("options").show(ui, |ui| {
-
                 if ui.button(if self.media_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
                     let mut extension_filter = vec![];
                     for (_extension_group, extensions) in &self.scan_extension_filter {
@@ -131,13 +191,13 @@ impl ImporterUI {
                         // }
                     }
                 }
-    
+
                 ui.collapsing("filters", |ui| {
-                    if self.media_entries.is_some() { 
+                    if self.media_entries.is_some() {
                         let text = egui::RichText::new("rescan to apply filters").color(egui::Color32::RED);
                         ui.label(text);
-                    } 
-    
+                    }
+
                     egui::Grid::new("filters").max_col_width(100.).show(ui, |ui| {
                         for (extension_group, extensions) in self.scan_extension_filter.iter_mut() {
                             let mut any_selected = extensions.values().any(|&x| x);
@@ -146,7 +206,7 @@ impl ImporterUI {
                                     *do_include = any_selected;
                                 }
                             }
-                            
+
                             ui.vertical(|ui| {
                                 for (extension, do_include) in extensions.iter_mut() {
                                     ui.checkbox(do_include, extension);
@@ -156,14 +216,14 @@ impl ImporterUI {
                         }
                     });
                 });
-    
+
                 ui.collapsing("page", |ui| {
                     ui.horizontal(|ui| {
                         if ui.add_enabled(self.page_index > 0, Button::new("<")).clicked() {
                             self.page_index -= 1;
                         }
                         ui.label(format!("{}", self.page_index));
-        
+
                         if ui
                             .add_enabled(
                                 !(((self.page_index + 1) * self.page_count)
@@ -186,125 +246,78 @@ impl ImporterUI {
                             .prefix("page count: "),
                     );
                 });
-    
+
                 ui.collapsing("selection", |ui| {
                     if ui.add_enabled(self.media_entries.is_some(), Button::new("select all")).clicked() {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_importable()) {
-                                media_entry.is_selected = true;
-                            }
+                        for media_entry in self.get_importable_media_entries() {
+                            media_entry.borrow_mut().is_selected = true;
                         }
+                        // if let Some(scanned_dirs) = &mut self.media_entries {
+                        // }
                     }
-        
+
                     if ui.add_enabled(self.media_entries.is_some(), Button::new("deselect all")).clicked() {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_importable()) {
-                                media_entry.is_selected = false;
-                            }
+                        for media_entry in self.get_importable_media_entries() {
+                            media_entry.borrow_mut().is_selected = false;
                         }
                     }
-        
+
                     if ui.add_enabled(self.media_entries.is_some(), Button::new("invert")).clicked() {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_importable()) {
-                                media_entry.is_selected = !media_entry.is_selected;
-                            }
+                        for media_entry in self.get_importable_media_entries() {
+                            media_entry.borrow_mut().is_selected = !media_entry.borrow().is_selected;
                         }
                     }
                 });
-    
+
                 ui.collapsing("view", |ui| {
                     ui.checkbox(&mut self.hide_errored_entries, "hide errored");
                     ui.checkbox(&mut self.show_hidden_entries, "show hidden");
                 });
-    
-    
+
                 ui.collapsing("hide", |ui| {
-                    if ui
-                        .add_enabled(
-                            self.media_entries.is_some() && self.media_entries.as_ref().unwrap().iter().any(|media_entry| media_entry.is_selected),
-                            Button::new("hide selected"),
-                        )
-                        .clicked()
-                    {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                                media_entry.is_hidden = true;
-                            }
+                    if ui.add_enabled(self.is_any_entry_selected(), Button::new("hide selected")).clicked() {
+                        for media_entry in self.get_selected_media_entries() {
+                            media_entry.borrow_mut().is_hidden = true;
                         }
                     }
-        
-                    if ui
-                        .add_enabled(
-                            self.media_entries.is_some() && self.media_entries.as_ref().unwrap().iter().any(|media_entry| media_entry.is_selected),
-                            Button::new("unhide selected"),
-                        )
-                        .clicked()
-                    {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                                media_entry.is_hidden = false;
-                            }
+
+                    if ui.add_enabled(self.is_any_entry_selected(), Button::new("unhide selected")).clicked() {
+                        for media_entry in self.get_selected_media_entries() {
+                            media_entry.borrow_mut().is_hidden = false;
                         }
                     }
-        
-                    if ui
-                        .add_enabled(
-                            self.media_entries.is_some() && self.media_entries.as_ref().unwrap().iter().any(|media_entry| media_entry.is_hidden),
-                            Button::new("select hidden"),
-                        )
-                        .clicked()
-                    {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_hidden) {
-                                media_entry.is_selected = true;
-                            }
+
+                    if ui.add_enabled(self.is_any_entry_hidden(), Button::new("select hidden")).clicked() {
+                        for media_entry in self.get_selected_media_entries() {
+                            media_entry.borrow_mut().is_selected = true;
                         }
                     }
-        
-                    if ui
-                        .add_enabled(
-                            self.media_entries.is_some() && self.media_entries.as_ref().unwrap().iter().any(|media_entry| media_entry.is_hidden),
-                            Button::new("deselect hidden"),
-                        )
-                        .clicked()
-                    {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_hidden) {
-                                media_entry.is_selected = false;
-                            }
+
+                    if ui.add_enabled(self.is_any_entry_hidden(), Button::new("deselect hidden")).clicked() {
+                        for media_entry in self.get_hidden_media_entries() {
+                            media_entry.borrow_mut().is_selected = false;
                         }
                     }
                 });
-    
+
                 ui.collapsing("import", |ui| {
                     ui.checkbox(&mut self.import_hidden_entries, "don't import hidden");
                     ui.checkbox(&mut self.delete_files_on_import, "delete files on import");
-        
-                    if ui
-                        .add_enabled(
-                            self.media_entries.is_some() && self.media_entries.as_ref().unwrap().iter().any(|media_entry| media_entry.is_selected),
-                            Button::new("import selected"),
-                        )
-                        .clicked()
-                    {
-                        if let Some(scanned_dirs) = &mut self.media_entries {
-                            let media_entries = scanned_dirs
-                                .iter_mut()
-                                .filter(|media_entry| media_entry.is_selected)
-                                .collect::<Vec<&mut MediaEntry>>();
-        
-                            for media_entry in media_entries {
-                                let (sender, promise) = Promise::new();
-                                sender.send(ImportationStatus::PendingBytes);
-                                media_entry.importation_status = Some(promise);
-                            }
-        
-                            for media_entry in scanned_dirs.iter_mut().filter(|media_entry| media_entry.is_selected) {
-                                media_entry.is_hidden = false;
-                                media_entry.is_selected = false;
-                            }
+
+                    if ui.add_enabled(self.is_any_entry_selected(), Button::new("import selected")).clicked() {
+                        // if let Some(scanned_dirs) = &mut self.media_entries {
+
+                        for media_entry in self.get_selected_media_entries() {
+                            let (sender, promise) = Promise::new();
+                            sender.send(ImportationStatus::PendingBytes);
+                            media_entry.borrow_mut().importation_status = Some(promise);
                         }
+
+                        for media_entry in self.get_selected_media_entries() {
+                            media_entry.borrow_mut().is_hidden = false;
+                            media_entry.borrow_mut().is_selected = false;
+                        }
+                        // }
                     }
                 });
             });
@@ -317,13 +330,13 @@ impl ImporterUI {
             if let Some(scanned_dirs) = &mut self.media_entries {
                 ScrollArea::vertical().id_source("files_col").show(files_col, |files_col_scroll| {
                     for media_entry in scanned_dirs.iter_mut() {
-                        if media_entry.is_hidden && !self.show_hidden_entries {
+                        if media_entry.borrow().is_hidden && !self.show_hidden_entries {
                             continue;
                         }
 
                         // display label stuff
-                        files_col_scroll.add_enabled_ui(media_entry.is_importable(), |files_col_scroll| {
-                            let mut label = media_entry.file_label.clone();
+                        files_col_scroll.add_enabled_ui(media_entry.borrow().is_importable(), |files_col_scroll| {
+                            let mut label = media_entry.borrow().file_label.clone();
                             let max_len = 30;
                             if label.len() > max_len {
                                 label = match label.char_indices().nth(max_len) {
@@ -333,15 +346,15 @@ impl ImporterUI {
                                 label.push_str("...");
                             }
                             let mut text = egui::RichText::new(format!("{}", label));
-                            if media_entry.is_hidden {
+                            if media_entry.borrow().is_hidden {
                                 text = text.color(egui::Color32::from_rgb(255, 150, 150));
                             }
-                            let mut response = files_col_scroll.selectable_label(media_entry.is_selected, text);
+                            let mut response = files_col_scroll.selectable_label(media_entry.borrow().is_selected, text);
                             if response.clicked() {
-                                media_entry.is_selected = !media_entry.is_selected;
+                                media_entry.borrow_mut().is_selected = !media_entry.borrow().is_selected;
                             };
-                            let disabled_reason = media_entry.get_status_label();
-                            if media_entry.is_hidden {
+                            let disabled_reason = media_entry.borrow().get_status_label();
+                            if media_entry.borrow().is_hidden {
                                 response = response.on_hover_text("(hidden)");
                             }
                             response.on_disabled_hover_text(format!("({})", disabled_reason.unwrap_or("unknown error".to_string())));
@@ -350,6 +363,17 @@ impl ImporterUI {
                 });
             }
         });
+    }
+
+    fn process_media(&mut self) {
+        if let Some(media_entries) = self.media_entries.as_ref() {
+            for media_entry in media_entries {
+                if media_entry.borrow().is_loading_or_needs_to_load() {
+                    self.load_buffer.try_add_entry(Rc::clone(&media_entry));
+                }
+            }
+        }
+        self.load_buffer.poll();
     }
 
     fn render_previews(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -367,54 +391,55 @@ impl ImporterUI {
                         let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                         previews_col_scroll.allocate_ui(Vec2::new(previews_col_scroll.available_size_before_wrap().x, 0.0), |scroll_wrap| {
                             scroll_wrap.with_layout(layout, |scroll_wrap| {
-                                scroll_wrap.ctx().request_repaint();
-                                let mut num_loading = ImporterUI::get_number_of_loading_bytes(scanned_dirs);
+                                // scroll_wrap.ctx().request_repaint();
+                                // let mut num_loading = ImporterUI::get_number_of_loading_bytes(scanned_dirs);
                                 for (index, media_entry) in scanned_dirs.iter_mut().enumerate() {
-                                    media_entry.unload_bytes_if_unnecessary();
+                                    // media_entry.unload_bytes_if_unnecessary();
 
-                                    if media_entry.is_hidden && !self.show_hidden_entries {
-                                        continue;
-                                    }
+                                    // if media_entry.is_hidden && !self.show_hidden_entries {
+                                    //     continue;
+                                    // }
 
-                                    // Only render previews for this current page
-                                    if index < self.page_count * self.page_index || index >= self.page_count * (self.page_index + 1) {
-                                        continue;
-                                    }
+                                    // // Only render previews for this current page
+                                    // if index < self.page_count * self.page_index || index >= self.page_count * (self.page_index + 1) {
+                                    //     continue;
+                                    // }
 
-                                    // If this entry still needs to load, let it if possible
-                                    if media_entry.is_loading_or_needs_to_load() && !media_entry.are_bytes_loaded() {
-                                        if num_loading < MAX_CONCURRENT_BYTE_LOADING {
-                                            num_loading += 1;
-                                            media_entry.set_load_status(true);
-                                        }
-                                    }
+                                    // // If this entry still needs to load, let it if possible
+                                    // if media_entry.is_loading_or_needs_to_load() && !media_entry.are_bytes_loaded() {
+                                    //     if num_loading < MAX_CONCURRENT_BYTE_LOADING {
+                                    //         num_loading += 1;
+                                    //         media_entry.set_load_status(true);
+                                    //     }
+                                    // }
 
-                                    // TODO: need to be able to buffer all media entries that wanna load in some sorta global buffer, which has a max bytes capacity
-                                    // if needs to load thumbnail/info, it will go into the bytes loading buffer, load, then exit and finish loading
-                                    // move buffer stuff out of ui function?
-                                    // if needs to import, still use bytes loading buffer
-                                    // import ALSO uses import buffer; collect all media entries with in byte buffer that wanna import every frame and load them
-                                    // while importing, a promise is held, resolves with error or success of import
+                                    // // TODO: need to be able to buffer all media entries that wanna load in some sorta global buffer, which has a max bytes capacity
+                                    // // if needs to load thumbnail/info, it will go into the bytes loading buffer, load, then exit and finish loading
+                                    // // move buffer stuff out of ui function?
+                                    // // if needs to import, still use bytes loading buffer
+                                    // // import ALSO uses import buffer; collect all media entries with in byte buffer that wanna import every frame and load them
+                                    // // while importing, a promise is held, resolves with error or success of import
 
-                                    // If this entry needs to load bytes for import, get bytes
-                                    if media_entry.bytes.is_none() && media_entry.match_importation_status(ImportationStatus::PendingBytes) {
-                                        media_entry.get_bytes();
-                                    } else if media_entry.are_bytes_loaded() && media_entry.match_importation_status(ImportationStatus::PendingBytes)
-                                    {
-                                        // Otherwise if bytes are loaded, start the import
-                                        let dir_link_map = Arc::clone(&self.dir_link_map);
-                                        //HERE1 import_media(media_entry, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
-                                    }
+                                    // // If this entry needs to load bytes for import, get bytes
+                                    // if media_entry.bytes.is_none() && media_entry.match_importation_status(ImportationStatus::PendingBytes) {
+                                    //     media_entry.get_bytes();
+                                    // } else if media_entry.are_bytes_loaded() && media_entry.match_importation_status(ImportationStatus::PendingBytes)
+                                    // {
+                                    //     // Otherwise if bytes are loaded, start the import
+                                    //     let dir_link_map = Arc::clone(&self.dir_link_map);
+                                    //     //HERE1 import_media(media_entry, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
+                                    // }
 
                                     let widget_size = (thumbnail_size + 10) as f32;
                                     let widget_size = [widget_size, widget_size];
+                                    let mut media_entry = media_entry.borrow_mut();
                                     let file_label = media_entry.file_label.clone();
                                     let is_importable = media_entry.is_importable();
-                                    let mime_type = media_entry.get_mime_type();
+                                    let mime_type = media_entry.mime_type.as_ref();
                                     if let Some(Ok(mime_type)) = mime_type {
                                         // mime type is known, file loaded
                                         let mime_type = mime_type.clone();
-                                        match media_entry.get_thumbnail(thumbnail_size) {
+                                        match media_entry.thumbnail.as_ref() {
                                             None => {
                                                 // nothing, bytes havent been loaded yet
                                                 let spinner = egui::Spinner::new();
@@ -558,7 +583,7 @@ impl ImporterUI {
             let mut loaded_count: f32 = 0.0;
             let total_count = scanned_dirs.len() as f32;
             for media_entry in scanned_dirs.iter_mut() {
-                if media_entry.get_mime_type().is_some() {
+                if media_entry.borrow().mime_type.is_some() {
                     loaded_count += 1.0;
                 }
             }
@@ -585,6 +610,8 @@ impl ui::DockedWindow for ImporterUI {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.process_media();
+
         ui.horizontal(|ui| {
             self.render_scan_directory_selection(ui);
             self.render_progress(ui);
