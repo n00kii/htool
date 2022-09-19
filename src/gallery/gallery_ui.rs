@@ -60,7 +60,7 @@ pub struct PreviewUI {
 
     pub status: PreviewStatus,
     pub is_editing_tags: bool,
-    pub is_confirming_delete: Arc<Mutex<bool>>,
+    // pub is_confirming_delete: Arc<Mutex<bool>>,
 }
 
 //
@@ -86,7 +86,7 @@ impl PreviewUI {
             media_info: None,
             media_info_plural: None,
             is_editing_tags: false,
-            is_confirming_delete: Arc::new(Mutex::new(false)),
+            // is_confirming_delete: Arc::new(Mutex::new(false)),
             status: PreviewStatus::None,
             tag_edit_buffer: "".to_string(),
         })
@@ -115,33 +115,6 @@ impl PreviewUI {
         ui.add_space(padding);
         ui.vertical(|ui| {
             ui.label("options");
-            let m = modal::Modal::new("hello world").close_on_outside_click(true);
-            let m2 = modal::Modal::new("hello 2");
-            m2.show(ctx, |ui| {
-                ui.label("fr??");
-                if ui.button("bruh").clicked() {
-                    m2.close(ctx);
-                }
-            });
-            m.show(ctx, |ui: &mut Ui| {
-                m.title(ui, "delete confirmation");
-                m.body(ui, "are you sure you want to delete blah blah blah");
-                ui.horizontal(|ui| {
-
-                    ui.centered_and_justified(|ui| {
-                        if ui.button("Yes").clicked() {
-                            m.close(ctx);
-                            m2.open(ctx);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            m.close(ctx);
-                        }
-                    })
-                })
-            });
-            if ui.button("modal").clicked() {
-                m.open(ctx);
-            }
             if self.is_editing_tags {
                 if ui.button("save changes").clicked() {
                     self.is_editing_tags = false;
@@ -179,9 +152,14 @@ impl PreviewUI {
                 };
             }
             ui.add_enabled_ui(!self.is_editing_tags, |ui| {
-                if let Ok(mut is_confirming_delete) = self.is_confirming_delete.try_lock() {
-                    if *is_confirming_delete {
-                        if ui.button("are you sure?").clicked() {
+                let delete_modal = modal::Modal::new("delete_modal");
+                delete_modal.show(ctx, |ui| {
+                    delete_modal.title(ui, format!("delete {}?", self.id));
+                    delete_modal.body(ui, format!("are you sure you want to delete {}?", self.id));
+                    delete_modal.buttons(ui, |ui| {
+                        delete_modal.button(ui, "cancel");
+                        if delete_modal.caution_button(ui, "delete").clicked() {
+                            // delete logic below
                             if let Some(media_info) = self.get_media_info() {
                                 if let Err(e) = data::delete_media(Arc::clone(&self.config), &media_info.hash) {
                                     ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
@@ -191,20 +169,10 @@ impl PreviewUI {
                                 }
                             }
                         }
-                    } else {
-                        if ui.button("delete").clicked() {
-                            *is_confirming_delete = true;
-                            let is_confirming_delete = Arc::clone(&self.is_confirming_delete);
-                            thread::spawn(move || {
-                                thread::sleep(Duration::from_secs(3));
-                                if let Ok(mut is_confirming_delete) = is_confirming_delete.lock() {
-                                    *is_confirming_delete = false;
-                                }
-                            });
-                        }
-                    }
-                } else {
-                    ui.label("...");
+                    })
+                });
+                if ui.button("delete").clicked() {
+                    delete_modal.open(ctx);
                 }
             });
         });
