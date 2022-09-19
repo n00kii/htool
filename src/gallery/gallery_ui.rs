@@ -1,3 +1,4 @@
+use crate::modal;
 use crate::tags::tags::Tag;
 use crate::ui::FloatingWindowState;
 use crate::ui::RenderLoadingImageOptions;
@@ -109,11 +110,38 @@ impl PreviewUI {
         None
     }
 
-    pub fn render_options(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
+    pub fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let padding = 15.;
         ui.add_space(padding);
         ui.vertical(|ui| {
             ui.label("options");
+            let m = modal::Modal::new("hello world").close_on_outside_click(true);
+            let m2 = modal::Modal::new("hello 2");
+            m2.show(ctx, |ui| {
+                ui.label("fr??");
+                if ui.button("bruh").clicked() {
+                    m2.close(ctx);
+                }
+            });
+            m.show(ctx, |ui: &mut Ui| {
+                m.title(ui, "delete confirmation");
+                m.body(ui, "are you sure you want to delete blah blah blah");
+                ui.horizontal(|ui| {
+
+                    ui.centered_and_justified(|ui| {
+                        if ui.button("Yes").clicked() {
+                            m.close(ctx);
+                            m2.open(ctx);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            m.close(ctx);
+                        }
+                    })
+                })
+            });
+            if ui.button("modal").clicked() {
+                m.open(ctx);
+            }
             if self.is_editing_tags {
                 if ui.button("save changes").clicked() {
                     self.is_editing_tags = false;
