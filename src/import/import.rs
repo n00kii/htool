@@ -29,8 +29,9 @@ use std::{
 pub struct MediaEntryBuffer {
     pub entries: Vec<Rc<RefCell<MediaEntry>>>,
     pub size_limit: usize,
+    pub count_limit: i32,
     pub on_add: fn(&Rc<RefCell<MediaEntry>>),
-    pub poll_check: fn(&Rc<RefCell<MediaEntry>>) -> bool,
+    pub on_poll: fn(&Rc<RefCell<MediaEntry>>) -> bool,
 }
 
 impl MediaEntryBuffer {
@@ -40,11 +41,16 @@ impl MediaEntryBuffer {
     fn current_size(&self) -> usize {
         self.entries.iter().map(|media_entry| media_entry.borrow().file_size).sum()
     }
+    pub fn is_full(&self) -> bool {
+        self.current_size() >= self.size_limit || self.entries.len() as i32 == self.count_limit
+    }
     pub fn try_add_entry(&mut self, media_entry: Rc<RefCell<MediaEntry>>) -> Result<()> {
         if self.contains_media_entry(&media_entry) {
             Err(anyhow::Error::msg("already added"))
-        } else if self.current_size() + media_entry.borrow().file_size > self.size_limit {
-            Err(anyhow::Error::msg("buffer full"))
+        } else if (self.current_size() + media_entry.borrow().file_size > self.size_limit) && !self.entries.is_empty() {
+            Err(anyhow::Error::msg("buffer full (size)"))
+        } else if self.entries.len() as i32 == self.count_limit {
+            Err(anyhow::Error::msg("buffer full (count)"))
         } else {
             (self.on_add)(&media_entry);
             self.entries.push(media_entry);
@@ -52,8 +58,7 @@ impl MediaEntryBuffer {
         }
     }
     pub fn poll(&mut self) {
-        println!("{}", self.entries.len());
-        self.entries.retain_mut(|media_entry| !(self.poll_check)(media_entry))
+        self.entries.retain_mut(|media_entry| (self.on_poll)(media_entry))
     }
 }
 
@@ -193,10 +198,8 @@ pub fn scan_directory(
                 let file_size = if let Ok(metadata) = dir_entry.metadata() {
                     metadata.len()
                 } else {
-                    500_000
+                    1_000_000 // assume 1 MB
                 };
-                // dir_entry.metadata().unwrap().len();
-                // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(Rc::new(RefCell::new(MediaEntry {
                     is_hidden: false,
                     is_to_be_loaded: Arc::new((Mutex::new(false), Condvar::new())),
@@ -224,12 +227,7 @@ pub fn scan_directory(
 impl MediaEntry {
     pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) -> Result<RegistrationForm> {
         let bytes = self.bytes.as_ref();
-        let mut fail = |message: String| -> Result<_, Error> {
-            let (sender, promise) = Promise::new();
-            self.importation_status = Some(promise);
-            sender.send(ImportationStatus::Fail(anyhow::Error::msg(message)));
-            Err(anyhow::Error::msg("bytes not loaded"))
-        };
+        let mut fail = |message: String| -> Result<_, Error> { Err(anyhow::Error::msg("bytes not loaded")) };
         match bytes {
             None => fail("bytes not loaded".into()),
             Some(promise) => match promise.ready() {
@@ -243,7 +241,6 @@ impl MediaEntry {
                     };
 
                     let bytes = Arc::clone(bytes);
-                    // let config = Arc::clone(&config);
                     let dir_link_map = Arc::clone(&dir_link_map);
                     let linking_dir = self.linking_dir.clone();
                     let (sender, promise) = Promise::new();
@@ -262,14 +259,7 @@ impl MediaEntry {
 
     pub fn load_bytes(&mut self) {
         let path = self.dir_entry.path().clone();
-        let load_condition = Arc::clone(&self.is_to_be_loaded);
         let promise = Promise::spawn_thread("", move || {
-            let (lock, cond_var) = &*load_condition;
-            let mut start_loading = lock.lock().unwrap();
-            while !*start_loading {
-                start_loading = cond_var.wait(start_loading).unwrap()
-            }
-
             let mut file = File::open(path)?;
             let mut bytes: Vec<u8> = vec![];
             file.read_to_end(&mut bytes)?;
@@ -278,33 +268,33 @@ impl MediaEntry {
         self.bytes = Some(promise)
     }
 
-    pub fn get_bytes(&mut self) -> &Promise<Result<Arc<Vec<u8>>, Error>> {
-        self.bytes.get_or_insert_with(|| {
-            let path = self.dir_entry.path().clone();
-            let load_condition = Arc::clone(&self.is_to_be_loaded);
-            let promise = Promise::spawn_thread("", move || {
-                let (lock, cond_var) = &*load_condition;
-                let mut start_loading = lock.lock().unwrap();
-                while !*start_loading {
-                    start_loading = cond_var.wait(start_loading).unwrap()
-                }
+    // pub fn get_bytes(&mut self) -> &Promise<Result<Arc<Vec<u8>>, Error>> {
+    //     self.bytes.get_or_insert_with(|| {
+    //         let path = self.dir_entry.path().clone();
+    //         let load_condition = Arc::clone(&self.is_to_be_loaded);
+    //         let promise = Promise::spawn_thread("", move || {
+    //             let (lock, cond_var) = &*load_condition;
+    //             let mut start_loading = lock.lock().unwrap();
+    //             while !*start_loading {
+    //                 start_loading = cond_var.wait(start_loading).unwrap()
+    //             }
 
-                let mut file = File::open(path)?;
-                let mut bytes: Vec<u8> = vec![];
-                file.read_to_end(&mut bytes)?;
-                // println!("loaded {} bytes", bytes.len());
-                Ok(Arc::new(bytes))
-            });
-            promise
-        })
-    }
+    //             let mut file = File::open(path)?;
+    //             let mut bytes: Vec<u8> = vec![];
+    //             file.read_to_end(&mut bytes)?;
+    //             Ok(Arc::new(bytes))
+    //         });
+    //         promise
+    //     })
+    // }
 
     pub fn is_importing(&self) -> bool {
-        if let Some(promise) = self.importation_status.as_ref() {
-            promise.ready().is_none() || self.match_importation_status(ImportationStatus::PendingBytes)
-        } else {
-            false
-        }
+        self.match_importation_status(ImportationStatus::Pending)
+            || if let Some(promise) = self.importation_status.as_ref() {
+                promise.ready().is_none()
+            } else {
+                false
+            }
     }
 
     pub fn are_bytes_loaded(&self) -> bool {
@@ -340,21 +330,20 @@ impl MediaEntry {
     }
 
     pub fn match_importation_status(&self, comparison_status: ImportationStatus) -> bool {
-        match &self.importation_status {
+        match self.importation_status.as_ref() {
             Some(promise) => match promise.ready() {
-                Some(importation_result) => return *importation_result == comparison_status,
-                None => {}
+                Some(importation_status) => return importation_status == &comparison_status,
+                None => false,
             },
-            _ => {}
+            None => false,
         }
-        false
     }
 
     pub fn is_importable(&self) -> bool {
-        let cannot_be_reimported =
-            self.match_importation_status(ImportationStatus::Duplicate) || self.match_importation_status(ImportationStatus::Success);
+        let is_duplicate = self.match_importation_status(ImportationStatus::Duplicate);
+        let was_success = self.match_importation_status(ImportationStatus::Success);
 
-        return !self.is_unloadable && !self.is_imported && !cannot_be_reimported;
+        return !self.is_unloadable && !self.is_imported && !(was_success || is_duplicate);
     }
 
     pub fn unload_bytes_if_unnecessary(&mut self) {
@@ -383,9 +372,9 @@ impl MediaEntry {
         if self.is_unloadable {
             add("unable to load")
         };
-        if !self.try_check_if_is_to_be_loaded() {
-            add("not yet loaded")
-        };
+        // if !self.try_check_if_is_to_be_loaded() {
+        //     add("not yet loaded")
+        // };
         if self.match_importation_status(ImportationStatus::Success) {
             add("imported")
         }
@@ -447,36 +436,36 @@ impl MediaEntry {
         }
     }
 
-    pub fn get_mime_type(&mut self) -> Option<&Result<Type, Error>> {
-        match &self.mime_type {
-            None => match self.get_bytes().ready() {
-                None => {
-                    // todo!();
-                }
-                Some(bytes_result) => match bytes_result {
-                    Err(_error) => {
-                        self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
-                        self.is_unloadable = true;
-                    }
-                    Ok(bytes) => match infer::get(&bytes) {
-                        Some(kind) => {
-                            self.mime_type = Some(Ok(kind));
-                        }
-                        None => {
-                            self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
-                            self.is_unloadable = true;
-                        }
-                    },
-                },
-            },
-            Some(_result) => {
-                // todo!();
-            }
-        }
-        self.mime_type.as_ref()
-    }
+    // pub fn get_mime_type(&mut self) -> Option<&Result<Type, Error>> {
+    //     match &self.mime_type {
+    //         None => match self.get_bytes().ready() {
+    //             None => {
+    //                 // todo!();
+    //             }
+    //             Some(bytes_result) => match bytes_result {
+    //                 Err(_error) => {
+    //                     self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
+    //                     self.is_unloadable = true;
+    //                 }
+    //                 Ok(bytes) => match infer::get(&bytes) {
+    //                     Some(kind) => {
+    //                         self.mime_type = Some(Ok(kind));
+    //                     }
+    //                     None => {
+    //                         self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
+    //                         self.is_unloadable = true;
+    //                     }
+    //                 },
+    //             },
+    //         },
+    //         Some(_result) => {
+    //             // todo!();
+    //         }
+    //     }
+    //     self.mime_type.as_ref()
+    // }
 
-    pub fn load_thumbnail2(&mut self, thumbnail_size: u8) {
+    pub fn load_thumbnail(&mut self, thumbnail_size: u8) {
         if let Some(bytes_promise) = self.bytes.as_ref() {
             if let Some(bytes_res) = bytes_promise.ready() {
                 let (sender, promise) = Promise::new();
@@ -487,8 +476,11 @@ impl MediaEntry {
                         let bytes = Arc::clone(bytes);
                         thread::spawn(move || {
                             let bytes = &bytes as &[u8];
-                            let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                            sender.send(image_res);
+                            let generate_image = || -> Result<RetainedImage> {
+                                let pixels = data::generate_thumbnail(bytes, thumbnail_size)?;
+                                ui::generate_retained_image(&pixels)
+                            };
+                            sender.send(generate_image());
                         });
                     }
                 }
@@ -498,67 +490,67 @@ impl MediaEntry {
         }
     }
 
-    pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
-        match &self.thumbnail {
-            None => match self.get_bytes().ready() {
-                None => {
-                    // println!("hmm");
-                    None
-                }
-                Some(result) => {
-                    let (sender, promise) = Promise::new();
-                    match result {
-                        Err(_error) => {
-                            // self.is_disabled = true;
-                            sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
-                        }
-                        Ok(bytes) => {
-                            let bytes = Arc::clone(bytes);
-                            // let arc = Arc::new(bytes);
-                            thread::spawn(move || {
-                                let bytes = &bytes as &[u8];
-                                // println!("{:?}", bytes.len());
-                                let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                                // println!("{:?}", image_res.is_err());
-                                sender.send(image_res);
-                            });
-                        }
-                    }
-                    self.thumbnail = Some(promise);
-                    self.thumbnail.as_ref()
-                }
-            },
-            Some(_promise) => self.thumbnail.as_ref(),
-        }
-    }
+    // pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
+    //     match &self.thumbnail {
+    //         None => match self.get_bytes().ready() {
+    //             None => {
+    //                 // println!("hmm");
+    //                 None
+    //             }
+    //             Some(result) => {
+    //                 let (sender, promise) = Promise::new();
+    //                 match result {
+    //                     Err(_error) => {
+    //                         // self.is_disabled = true;
+    //                         sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
+    //                     }
+    //                     Ok(bytes) => {
+    //                         let bytes = Arc::clone(bytes);
+    //                         // let arc = Arc::new(bytes);
+    //                         thread::spawn(move || {
+    //                             let bytes = &bytes as &[u8];
+    //                             // println!("{:?}", bytes.len());
+    //                             let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
+    //                             // println!("{:?}", image_res.is_err());
+    //                             sender.send(image_res);
+    //                         });
+    //                     }
+    //                 }
+    //                 self.thumbnail = Some(promise);
+    //                 self.thumbnail.as_ref()
+    //             }
+    //         },
+    //         Some(_promise) => self.thumbnail.as_ref(),
+    //     }
+    // }
 
-    pub fn try_check_if_is_to_be_loaded(&self) -> bool {
-        let (lock, _cond_var) = &*self.is_to_be_loaded;
-        let is_to_be_loaded = lock.try_lock();
-        match is_to_be_loaded {
-            Err(_error) => {
-                // lock being aquired by something else
-                false
-            }
-            Ok(is_to_be_loaded) => *is_to_be_loaded,
-        }
-    }
+    // pub fn try_check_if_is_to_be_loaded(&self) -> bool {
+    //     let (lock, _cond_var) = &*self.is_to_be_loaded;
+    //     let is_to_be_loaded = lock.try_lock();
+    //     match is_to_be_loaded {
+    //         Err(_error) => {
+    //             // lock being aquired by something else
+    //             false
+    //         }
+    //         Ok(is_to_be_loaded) => *is_to_be_loaded,
+    //     }
+    // }
 
-    pub fn set_load_status(&mut self, load_status: bool) {
-        // if !load_status {
-        //     self.unload_bytes();
-        // } else {
-        //     // self.get_bytes();
-        // }
-        let (lock, cond_var) = &*self.is_to_be_loaded;
-        let mut is_to_be_loaded = lock.lock().unwrap();
-        *is_to_be_loaded = load_status;
-        cond_var.notify_all();
-    }
+    // pub fn set_load_status(&mut self, load_status: bool) {
+    //     // if !load_status {
+    //     //     self.unload_bytes();
+    //     // } else {
+    //     //     // self.get_bytes();
+    //     // }
+    //     let (lock, cond_var) = &*self.is_to_be_loaded;
+    //     let mut is_to_be_loaded = lock.lock().unwrap();
+    //     *is_to_be_loaded = load_status;
+    //     cond_var.notify_all();
+    // }
 
-    pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
-        let pixels = data::generate_thumbnail(image_data, thumbnail_size)?;
-        let img = ui::generate_retained_image(&pixels)?;
-        Ok(img)
-    }
+    // pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
+    //     let pixels = data::generate_thumbnail(image_data, thumbnail_size)?;
+    //     let img = ui::generate_retained_image(&pixels)?;
+    //     Ok(img)
+    // }
 }

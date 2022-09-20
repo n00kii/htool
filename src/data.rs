@@ -19,6 +19,7 @@ use std::io::Cursor;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
+use std::mem::discriminant;
 
 // config: Arc<Config>,
 // bytes: &[u8],
@@ -37,7 +38,7 @@ pub struct RegistrationForm {
 
 #[derive(Debug)]
 pub enum ImportationStatus {
-    PendingBytes,
+    Pending,
     Success,
     Duplicate,
     Fail(anyhow::Error),
@@ -45,14 +46,7 @@ pub enum ImportationStatus {
 
 impl PartialEq for ImportationStatus {
     fn eq(&self, other: &Self) -> bool {
-        use ImportationStatus::*;
-        match (self, other) {
-            (PendingBytes, PendingBytes) => true,
-            (Success, Success) => true,
-            (Duplicate, Duplicate) => true,
-            (Fail(_e1), Fail(_e2)) => true,
-            _ => false,
-        }
+        discriminant(self) == discriminant(other)
     }
 }
 
@@ -672,7 +666,7 @@ pub fn register_media(
     };
 }
 
-fn register_media2(config: Arc<Config>, reg_forms: Vec<RegistrationForm>) -> Result<()> {
+pub fn register_media_with_form(config: Arc<Config>, reg_forms: Vec<RegistrationForm>) -> Result<()> {
     let mut conn = initialize_database_connection(&config.path.database()?)?;
     let trans = conn.transaction()?;
 
@@ -687,7 +681,6 @@ fn register_media2(config: Arc<Config>, reg_forms: Vec<RegistrationForm>) -> Res
 
 fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> ImportationStatus {
     let register = || -> Result<ImportationStatus> {
-        // println!("got {} kB for register", bytes.len() / 1000);
         let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
         let hasher = hasher_config.to_hasher();
 
@@ -729,7 +722,6 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
         match insert_result {
             Ok(_) => {
                 conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, reg_form.bytes])?;
-                // conn.execute(sql, params);
                 if let Some(linking_dir) = &reg_form.linking_dir {
                     if let Ok(mut dir_link_map) = reg_form.dir_link_map.lock() {
                         if let Some(link_id) = dir_link_map.get(linking_dir) {

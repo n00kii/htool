@@ -38,9 +38,10 @@ pub struct ImporterUI {
     page_count: usize,
     page_index: usize,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
+    batch_import_status: Option<Promise<Arc<Result<()>>>>,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
     load_buffer: MediaEntryBuffer,
-    // import_buffer: MediaEntryBuffer<'static>
+    import_buffer: MediaEntryBuffer,
 }
 
 impl Default for ImporterUI {
@@ -48,17 +49,27 @@ impl Default for ImporterUI {
         let config = None;
         let load_buffer = MediaEntryBuffer {
             entries: vec![],
-            size_limit: 100_000_000,
-            on_add: ImporterUI::on_add_to_load_buffer,
-            poll_check: ImporterUI::load_buffer_poll_check,
+            count_limit: -1,
+            size_limit: 5_000_000, // 5 MB
+            on_add: ImporterUI::buffer_add,
+            on_poll: ImporterUI::load_buffer_poll,
+        };
+        let import_buffer = MediaEntryBuffer {
+            entries: vec![],
+            count_limit: 10,
+            size_limit: 10_000_000, // 10 MB
+            on_add: ImporterUI::buffer_add,
+            on_poll: ImporterUI::import_buffer_poll,
         };
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             delete_files_on_import: false,
             show_hidden_entries: false,
             load_buffer,
+            import_buffer,
             hide_errored_entries: true,
             import_hidden_entries: true,
+            batch_import_status: None,
             media_entries: None,
             alternate_scan_dir: None,
             current_import_res: None,
@@ -83,21 +94,28 @@ impl Default for ImporterUI {
 }
 
 impl ImporterUI {
-    fn on_add_to_load_buffer(media_entry: &Rc<RefCell<MediaEntry>>) {
-        media_entry.borrow_mut().load_bytes();
+    fn buffer_add(media_entry: &Rc<RefCell<MediaEntry>>) {
+        if media_entry.borrow().bytes.is_none() {
+            media_entry.borrow_mut().load_bytes();
+        }
     }
-    fn load_buffer_poll_check(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+
+    fn load_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
         if media_entry.are_bytes_loaded() {
             if media_entry.thumbnail.is_none() {
-                media_entry.load_thumbnail2(100);
+                media_entry.load_thumbnail(100); //FIXME: replace w config
             }
             if media_entry.mime_type.is_none() {
                 media_entry.load_mime_type();
             }
         }
+        media_entry.is_loading_or_needs_to_load()
+    }
 
-        !media_entry.is_loading_or_needs_to_load()
+    fn import_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+        media_entry.borrow().is_importing()
+        // true
     }
 
     fn get_scan_dir(&self) -> PathBuf {
@@ -107,6 +125,16 @@ impl ImporterUI {
             self.alternate_scan_dir.as_ref().unwrap().clone()
         } else {
             landing
+        }
+    }
+
+    fn is_importing(&self) -> bool {
+        match self.batch_import_status.as_ref() {
+            None => false,
+            Some(import_promise) => match import_promise.ready() {
+                Some(import_res) => false,
+                None => true,
+            },
         }
     }
 
@@ -159,7 +187,9 @@ impl ImporterUI {
             if ui.button("change").clicked() {
                 if let Some(path) = FileDialog::new().pick_folder() {
                     self.alternate_scan_dir = Some(path);
-                    self.media_entries = None
+                    self.media_entries = None;
+                    self.load_buffer.entries.clear();
+                    self.import_buffer.entries.clear();
                 }
             }
             if self.alternate_scan_dir.as_ref().is_some() && ui.button("remove").clicked() {
@@ -306,18 +336,12 @@ impl ImporterUI {
 
                     if ui.add_enabled(self.is_any_entry_selected(), Button::new("import selected")).clicked() {
                         // if let Some(scanned_dirs) = &mut self.media_entries {
-
+                        // IMPORT HERE
                         for media_entry in self.get_selected_media_entries() {
-                            let (sender, promise) = Promise::new();
-                            sender.send(ImportationStatus::PendingBytes);
-                            media_entry.borrow_mut().importation_status = Some(promise);
-                        }
-
-                        for media_entry in self.get_selected_media_entries() {
+                            media_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
                             media_entry.borrow_mut().is_hidden = false;
                             media_entry.borrow_mut().is_selected = false;
                         }
-                        // }
                     }
                 });
             });
@@ -333,9 +357,8 @@ impl ImporterUI {
                         if media_entry.borrow().is_hidden && !self.show_hidden_entries {
                             continue;
                         }
-
                         // display label stuff
-                        files_col_scroll.add_enabled_ui(media_entry.borrow().is_importable(), |files_col_scroll| {
+                        files_col_scroll.add_enabled_ui(true, |files_col_scroll| {
                             let mut label = media_entry.borrow().file_label.clone();
                             let max_len = 30;
                             if label.len() > max_len {
@@ -367,13 +390,41 @@ impl ImporterUI {
 
     fn process_media(&mut self) {
         if let Some(media_entries) = self.media_entries.as_ref() {
+            let mut no_more_pending_imports = true;
             for media_entry in media_entries {
                 if media_entry.borrow().is_loading_or_needs_to_load() {
-                    self.load_buffer.try_add_entry(Rc::clone(&media_entry));
+                    let _ = self.load_buffer.try_add_entry(Rc::clone(&media_entry));
+                }
+                if media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
+                    // if something didn't get added to the buffer (buffer full), there are still pending imports
+                    if let Err(e) = self.import_buffer.try_add_entry(Rc::clone(media_entry)) {
+                        if self.import_buffer.is_full() {
+                            no_more_pending_imports = false;
+                        }
+                    }
                 }
             }
+
+            let should_start_batch_import = !self.import_buffer.entries.is_empty() && (self.import_buffer.is_full() || no_more_pending_imports);
+            if !self.is_importing() && should_start_batch_import {
+                let reg_forms = self
+                    .import_buffer
+                    .entries
+                    .iter()
+                    .filter_map(|media_entry| {
+                        media_entry
+                            .borrow_mut()
+                            .generate_reg_form(Arc::clone(&self.dir_link_map), self.get_config())
+                            .ok()
+                    })
+                    .collect::<Vec<_>>();
+
+                let config = self.get_config();
+                self.batch_import_status = Some(Promise::spawn_thread("", || Arc::new(data::register_media_with_form(config, reg_forms))));
+            }
+            self.load_buffer.poll();
+            self.import_buffer.poll();
         }
-        self.load_buffer.poll();
     }
 
     fn render_previews(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -395,7 +446,6 @@ impl ImporterUI {
                                 // let mut num_loading = ImporterUI::get_number_of_loading_bytes(scanned_dirs);
                                 for (index, media_entry) in scanned_dirs.iter_mut().enumerate() {
                                     // media_entry.unload_bytes_if_unnecessary();
-
                                     // if media_entry.is_hidden && !self.show_hidden_entries {
                                     //     continue;
                                     // }
@@ -494,13 +544,13 @@ impl ImporterUI {
                                                                 // label, unselectable
                                                                 let mut image = egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2());
 
-                                                                if !media_entry.try_check_if_is_to_be_loaded() {
-                                                                    image = image.tint(egui::Color32::from_rgb(
-                                                                        unloaded_tint.0,
-                                                                        unloaded_tint.1,
-                                                                        unloaded_tint.2,
-                                                                    ));
-                                                                } else if media_entry.match_importation_status(data::ImportationStatus::Success) {
+                                                                // if !media_entry.try_check_if_is_to_be_loaded() {
+                                                                //     image = image.tint(egui::Color32::from_rgb(
+                                                                //         unloaded_tint.0,
+                                                                //         unloaded_tint.1,
+                                                                //         unloaded_tint.2,
+                                                                //     ));
+                                                                if media_entry.match_importation_status(data::ImportationStatus::Success) {
                                                                     image = image.tint(egui::Color32::from_rgb(
                                                                         import_success_tint.0,
                                                                         import_success_tint.1,
@@ -554,20 +604,12 @@ impl ImporterUI {
                                             .on_hover_text(format!("{file_label} ({error})",));
                                     } else if mime_type.is_none() {
                                         // bytes not yet loaded
-                                        let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
+                                        // let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
 
-                                        if is_to_be_loaded {
-                                            let spinner = egui::Spinner::new();
-                                            scroll_wrap
-                                                .add_sized(widget_size, spinner)
-                                                .on_hover_text(format!("{file_label} [?] (loading bytes for reading...)"));
-                                        } else {
-                                            let text = egui::RichText::new("...").color(egui::Color32::from_rgb(252, 229, 124)).size(48.0);
-                                            let label = egui::Label::new(text).sense(egui::Sense::hover());
-                                            scroll_wrap
-                                                .add_sized(widget_size, label)
-                                                .on_hover_text(format!("{file_label} [?] (not yet scanned)"));
-                                        }
+                                        let spinner = egui::Spinner::new();
+                                        scroll_wrap
+                                            .add_sized(widget_size, spinner)
+                                            .on_hover_text(format!("{file_label} [?] (loading bytes for reading...)"));
                                     }
                                 }
                             });
@@ -619,6 +661,7 @@ impl ui::DockedWindow for ImporterUI {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
             self.render_options(ui);
             self.render_files(ui);
+
             // ScrollArea::vertical().show(ui, |ui| {
             //     ui.with_layout(egui::Layout::top_down(egui::Align::Center).with_main_wrap(true), |ui| {
             //         ctx.inspection_ui(ui)
