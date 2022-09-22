@@ -7,11 +7,14 @@ use crate::{
     ui::{self, DockedWindow},
 };
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use eframe::{
-    egui::{self, Response, RichText},
+    egui::{self, Layout, Response, RichText},
+    emath::Align,
     App,
 };
-use egui_extras::{Size, TableBuilder};
+use egui_extras::{Size, StripBuilder, TableBuilder};
+use egui_modal::Modal;
 use egui_notify::{Anchor, Toasts};
 use poll_promise::Promise;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration, vec};
@@ -50,12 +53,17 @@ impl ui::DockedWindow for TagsUi {
         Arc::clone(self.config.as_ref().unwrap())
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.columns(2, |columns| {
-            columns[0].label("actions");
-            columns[1].label("tags");
-            self.render_actions(&mut columns[0], ctx);
-            self.render_tags(&mut columns[1]);
-        });
+        StripBuilder::new(ui)
+            .size(Size::relative(0.35))
+            .size(Size::remainder())
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    self.render_actions(ui, ctx);
+                });
+                strip.cell(|ui| {
+                    self.render_tags(ui);
+                });
+            });
         self.toasts.show(ctx);
     }
 }
@@ -70,35 +78,62 @@ impl TagsUi {
     fn load_tag_data(config: Arc<Config>) -> Option<Promise<Result<Vec<TagData>>>> {
         Some(Promise::spawn_thread("", || data::get_all_tag_data(config)))
     }
+    fn register_tag(new_tag: &Tag, toasts: &mut Toasts, config: Arc<Config>, all_tags: &mut Option<Promise<Result<Vec<TagData>>>>) -> Result<()> {
+        if let Err(e) = data::register_tag(Arc::clone(&config), new_tag) {
+            ui::toast_error(toasts, format!("failed to register tag: {e}"));
+            return Err(e);
+        } else {
+            ui::toast_success(toasts, format!("successfully registered \"{}\"", new_tag.to_tagstring()));
+            *all_tags = Self::load_tag_data(config);
+            Ok(())
+        }
+    }
     fn render_tags(&mut self, ui: &mut egui::Ui) {
         let config = self.get_config();
         self.get_all_tags();
         let mut do_reload_data = false;
-        // let all_tags = self.all_tags.as_ref();
         egui::ScrollArea::both().id_source("tags_info_scroll").show(ui, |ui| {
             if let Some(data_promise) = self.all_tags.as_ref() {
                 match data_promise.ready() {
                     Some(Ok(all_tag_data)) => {
-                        egui::Grid::new("tags_info").striped(true).max_col_width(400.).show(ui, |ui| {
+                        egui::Grid::new("tags_info").striped(true).num_columns(8).show(ui, |ui| {
+                            // let mut grow_column = |label: &str| {
+                            //     ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
+                            //         ui.label(label);
+                            //     });
+                            // };
+                            // ui.label("count");
                             ui.label("count");
                             ui.label("name");
                             ui.label("space");
-
                             ui.label("implies");
                             ui.label("implied by");
                             ui.label("aliased to");
                             ui.label("aliased from");
+                            // ui.label("name");
+                            // ui.label("space");
+
+                            // ui.label("implies");
+                            // ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
+                            //     ui.label("implied by");
+                            // });
+                            // ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
+                            //     ui.label("aliased to");
+                            // });
+                            ui.with_layout(egui::Layout::left_to_right(Align::Min).with_main_justify(true), |ui| {
+                                ui.label("description");
+                            });
                             ui.end_row();
 
                             for tag_data in all_tag_data {
                                 ui.label(tag_data.occurances.to_string());
                                 let tag_label = egui::Label::new(&tag_data.tag.name).sense(egui::Sense::click());
                                 ui.add(tag_label)
-                                    .on_hover_text(if let Some(desc) = tag_data.tag.description.as_ref() {
-                                        desc
-                                    } else {
-                                        "no description"
-                                    })
+                                    // .on_hover_text(if let Some(desc) = tag_data.tag.description.as_ref() {
+                                    //     desc
+                                    // } else {
+                                    //     "no description"
+                                    // })
                                     .context_menu(|ui| {
                                         if ui.button(format!("delete tag \"{}\"", tag_data.tag.to_tagstring())).clicked() {
                                             if let Err(e) = data::delete_tag(config.clone(), &tag_data.tag) {
@@ -118,6 +153,7 @@ impl TagsUi {
 
                                 let tagstring = tag_data.tag.to_tagstring();
                                 let none_text = "none";
+
                                 let mut create_label = |link_type: TagLinkType, target_from_tagstring: bool| {
                                     let iter = tag_data.links.iter().filter(|link| {
                                         (link.link_type == link_type)
@@ -181,7 +217,14 @@ impl TagsUi {
                                 create_label(TagLinkType::Implication, true);
                                 create_label(TagLinkType::Alias, false);
                                 create_label(TagLinkType::Alias, true);
-
+                                ui.with_layout(egui::Layout::top_down(Align::Center).with_main_justify(true), |ui| {
+                                    let desc = if let Some(desc) = tag_data.tag.description.as_ref() {
+                                        desc
+                                    } else {
+                                        "(( no description ))"
+                                    };
+                                    ui.label(desc);
+                                });
                                 ui.end_row();
                             }
                         });
@@ -199,28 +242,24 @@ impl TagsUi {
             self.all_tags = TagsUi::load_tag_data(config);
         }
     }
-    fn render_actions(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+    fn render_actions(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::ScrollArea::both().id_source("tag_actions").show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.collapsing("options", |ui| {
                     ui.checkbox(&mut self.register_unknown_tags, "register unknown tags");
-                    // if ui.button("flush") {
-
-                    // }
                 });
                 ui.collapsing("new tag", |ui| {
                     ui.with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
                         egui::Grid::new("new_tag").max_col_width(1000.).show(ui, |ui| {
+                            ui.label("name");
+                            ui.text_edit_singleline(&mut self.new_tag.name);
+                            ui.end_row();
+
                             if let Some(space) = self.new_tag.namespace.as_mut() {
                                 ui.label("namespace");
                                 ui.text_edit_singleline(space);
                                 ui.end_row();
                             }
-                            
-                            ui.label("name");
-                            ui.text_edit_singleline(&mut self.new_tag.name);
-                            ui.end_row();
-
 
                             if let Some(desc) = self.new_tag.description.as_mut() {
                                 ui.label("description");
@@ -230,30 +269,15 @@ impl TagsUi {
                         });
                         ui.add_enabled_ui(!(self.new_tag.name.is_empty()), |ui| {
                             if ui.button("create").clicked() {
-                                match data::does_tag_exist(self.get_config(), &self.new_tag) {
-                                    Ok(does_exist) => {
-                                        if does_exist {
-                                            ui::set_default_toast_options(self.toasts.warning(format!("this tag already exists")));
-                                        } else {
-                                            if let Err(e) = data::register_tag(self.get_config(), &self.new_tag) {
-                                                ui::set_default_toast_options(self.toasts.error(format!("failed to register tag: {e}")));
-                                            } else {
-                                                ui::set_default_toast_options(
-                                                    self.toasts.success(format!("successfully registered \"{}\"", self.new_tag.to_tagstring())),
-                                                );
-
-                                                self.all_tags = Self::load_tag_data(self.get_config());
-                                            };
-                                        }
-                                    }
-                                    Err(e) => {
-                                        ui::set_default_toast_options(self.toasts.error(format!("error checking if tag already exists: {e}")));
-                                    }
-                                }
+                                let config = self.get_config();
+                                TagsUi::register_tag(&self.new_tag, &mut self.toasts, config, &mut self.all_tags);
                             }
                         });
                     });
                 });
+
+                let create_tag_modal = Modal::new(ctx, "create_tag");
+                create_tag_modal.show(|ui| {});
 
                 let config = self.get_config();
                 let mut new_link_edit = |link: &mut TagLink, header_label: &str, middle_label: &str, config: Arc<Config>| {
@@ -264,8 +288,9 @@ impl TagsUi {
                                     ui.label("from");
                                     ui.text_edit_singleline(&mut link.from_tagstring);
                                 });
-                                columns[1].vertical_centered_justified(|ui| {
-                                    let text = RichText::from(format!(">>   {middle_label}   >>")).size(18.);
+                                // FIXME: Align::Center causes weird ghost button
+                                columns[1].with_layout(Layout::top_down(Align::Center), |ui| {
+                                    let text = RichText::from(format!("{middle_label}")).size(20.);
                                     ui.label(text);
                                 });
                                 columns[2].vertical(|ui| {
@@ -278,21 +303,25 @@ impl TagsUi {
                                 |ui| {
                                     if ui.button("create").clicked() {
                                         let mut do_register_link = true;
-
                                         let mut check_link_tags_exist =
                                             |tagstring: &String| match data::does_tagstring_exist(config.clone(), &tagstring) {
                                                 Ok(does_tag_exist) => {
                                                     if !does_tag_exist && self.register_unknown_tags {
+                                                        if let Err(_) = TagsUi::register_tag(
+                                                            &Tag::from_tagstring(tagstring),
+                                                            &mut self.toasts,
+                                                            Arc::clone(&config),
+                                                            &mut self.all_tags,
+                                                        ) {
+                                                            do_register_link = false;
+                                                        }
                                                     } else if !does_tag_exist {
-                                                        ui::set_default_toast_options(self.toasts.error(format!("tag \"{}\" does not exist", tagstring)));
+                                                        ui::toast_error(&mut self.toasts, format!("tag \"{}\" does not exist", tagstring));
                                                         do_register_link = false;
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    ui::set_default_toast_options(
-                                                        self.toasts.error(format!("failed to check if \"{}\" exists: {}", tagstring, e)),
-                                                    );
-
+                                                    ui::toast_error(&mut self.toasts, format!("failed to check if \"{}\" exists: {}", tagstring, e));
                                                     do_register_link = false;
                                                 }
                                             };
@@ -304,25 +333,21 @@ impl TagsUi {
                                             match data::does_link_exist(config.clone(), link) {
                                                 Ok(already_exists) => {
                                                     if already_exists {
-                                                        ui::set_default_toast_options(self.toasts.warning(format!("this link already exists")));
+                                                        ui::toast_warning(&mut self.toasts, format!("this link already exists"));
                                                     } else {
-                                                        // let config = self.get_config();
                                                         if let Err(e) = data::register_tag_link(config.clone(), &link) {
-                                                            ui::set_default_toast_options(self.toasts.error(format!("failed to register link: {e}")));
+                                                            ui::toast_error(&mut self.toasts, format!("failed to register link: {e}"));
                                                         } else {
-                                                            ui::set_default_toast_options(
-                                                                self.toasts
-                                                                    .success(format!("successfully registered new {}", link.link_type.to_string())),
+                                                            ui::toast_success(
+                                                                &mut self.toasts,
+                                                                format!("successfully registered new {}", link.link_type.to_string()),
                                                             );
-
                                                             self.all_tags = Self::load_tag_data(config);
                                                         }
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    ui::set_default_toast_options(
-                                                        self.toasts.error(format!("error checking if link already exists: {e}")),
-                                                    );
+                                                    ui::toast_error(&mut self.toasts, format!("error checking if link already exists: {e}"));
                                                 }
                                             }
                                         }

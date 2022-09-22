@@ -1,8 +1,13 @@
-use crate::modal;
+use chrono::TimeZone;
+use chrono::Utc;
+use eframe::egui::Layout;
+use eframe::egui::RichText;
+// use crate::modal;
 use crate::tags::tags::Tag;
 use crate::ui::FloatingWindowState;
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::UserInterface;
+use egui_modal::Modal;
 
 use super::super::autocomplete;
 use super::super::data;
@@ -32,13 +37,14 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
+use std::time::SystemTime;
 
 pub struct GalleryUI {
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
     pub preview_window_state_ids: Vec<Id>,
     pub config: Option<Arc<Config>>,
     pub toasts: egui_notify::Toasts,
-    pub gallery_items: Vec<Box<dyn GalleryItem>>,
+    pub gallery_items: Option<Vec<Box<dyn GalleryItem>>>,
     pub search_string: String,
 }
 
@@ -60,18 +66,18 @@ pub struct PreviewUI {
 
     pub status: PreviewStatus,
     pub is_editing_tags: bool,
-    // pub is_confirming_delete: Arc<Mutex<bool>>,
 }
-
-//
 
 impl ui::FloatingWindow for PreviewUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT).with_cross_align(egui::Align::TOP), |ui| {
-            self.render_options(ui, ctx);
-            self.render_tags(ui, ctx);
-            self.render_image(ui, ctx);
-        });
+        egui::Grid::new(format!("preview_ui_{}", self.id))
+            .num_columns(3)
+            .min_col_width(100.)
+            .show(ui, |ui| {
+                self.render_options(ui, ctx);
+                self.render_info(ui, ctx);
+                self.render_image(ui, ctx);
+            });
         self.toasts.show(ctx);
     }
 }
@@ -86,7 +92,6 @@ impl PreviewUI {
             media_info: None,
             media_info_plural: None,
             is_editing_tags: false,
-            // is_confirming_delete: Arc::new(Mutex::new(false)),
             status: PreviewStatus::None,
             tag_edit_buffer: "".to_string(),
         })
@@ -111,9 +116,30 @@ impl PreviewUI {
     }
 
     pub fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let padding = 15.;
+        let padding = 10.;
+        let delete_modal = Modal::new(ctx, "delete_modal");
+        delete_modal.show(|ui| {
+            delete_modal.frame(ui, |ui| {
+                delete_modal.body(ui, format!("are you sure you want to delete {}?", self.id));
+            });
+            delete_modal.buttons(ui, |ui| {
+                delete_modal.button(ui, "cancel");
+                if delete_modal.caution_button(ui, "delete").clicked() {
+                    // delete logic below
+                    if let Some(media_info) = self.get_media_info() {
+                        if let Err(e) = data::delete_media(Arc::clone(&self.config), &media_info.hash) {
+                            ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
+                        } else {
+                            ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
+                            self.status = PreviewStatus::Deleted;
+                        }
+                    }
+                }
+            })
+        });
+
         ui.add_space(padding);
-        ui.vertical(|ui| {
+        ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("options");
             if self.is_editing_tags {
                 if ui.button("save changes").clicked() {
@@ -151,65 +177,69 @@ impl PreviewUI {
                     self.is_editing_tags = true;
                 };
             }
+            ui.add_space(padding);
             ui.add_enabled_ui(!self.is_editing_tags, |ui| {
-                let delete_modal = modal::Modal::new("delete_modal");
-                delete_modal.show(ctx, |ui| {
-                    delete_modal.title(ui, format!("delete {}?", self.id));
-                    delete_modal.body(ui, format!("are you sure you want to delete {}?", self.id));
-                    delete_modal.buttons(ui, |ui| {
-                        delete_modal.button(ui, "cancel");
-                        if delete_modal.caution_button(ui, "delete").clicked() {
-                            // delete logic below
-                            if let Some(media_info) = self.get_media_info() {
-                                if let Err(e) = data::delete_media(Arc::clone(&self.config), &media_info.hash) {
-                                    ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
-                                } else {
-                                    ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
-                                    self.status = PreviewStatus::Deleted;
-                                }
-                            }
-                        }
-                    })
-                });
-                if ui.button("delete").clicked() {
-                    delete_modal.open(ctx);
+                if ui.add(ui::caution_button("delete")).clicked() {
+                    delete_modal.open();
                 }
             });
         });
         ui.add_space(padding);
     }
 
-    pub fn render_tags(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
+    pub fn render_info(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
         ui.vertical(|ui| {
+            ui.label("info");
+            if let Some(media_info) = self.get_media_info() {
+                egui::Grid::new(format!("info_{}", self.id)).num_columns(2).show(ui, |ui| {
+                    let datetime = Utc.timestamp(media_info.date_registered, 0);
+                    ui.label("registered");
+                    ui.label(datetime.format("%B %e, %Y @%l:%M%P").to_string());
+                    ui.end_row();
+
+                    ui.label("size");
+                    ui.label(ui::readable_byte_size(media_info.size, 2, ui::NumericBase::Two).to_string());
+                    ui.end_row();
+                });
+            }
+            ui.separator();
             ui.label("tags");
             if self.is_editing_tags {
                 ui.text_edit_multiline(&mut self.tag_edit_buffer);
             } else {
-                egui::Grid::new(format!("tags_{}", self.id)).striped(true).show(ui, |ui| {
-                    if let Some(tags) = self.get_tags() {
-                        for tag in tags {
-                            ui.horizontal(|ui| {
-                                let info_label = egui::Label::new("?").sense(egui::Sense::click());
-                                let add_label = egui::Label::new("+").sense(egui::Sense::click());
-                                if ui.add(info_label).clicked() {
-                                    println!("?")
-                                }
-                                if ui.add(add_label).clicked() {
-                                    println!("+")
-                                }
-                                ui.label(&tag.name);
-                            });
-                            ui.end_row();
-                        }
+                if let Some(tags) = self.get_tags() {
+                    if tags.is_empty() {
+                        ui.vertical_centered_justified(|ui| {
+                            ui.label("({ no tags ))");
+                        });
+                    } else {
+                        egui::Grid::new(format!("tags_{}", self.id)).num_columns(2).striped(true).show(ui, |ui| {
+                            for tag in tags {
+                                ui.horizontal(|ui| {
+                                    let info_label = egui::Label::new("?").sense(egui::Sense::click());
+                                    let add_label = egui::Label::new("+").sense(egui::Sense::click());
+                                    if ui.add(info_label).clicked() {
+                                        println!("?")
+                                    }
+                                    if ui.add(add_label).clicked() {
+                                        println!("+")
+                                    }
+                                });
+                                ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
+                                    ui.label(&tag.name);
+                                });
+                                ui.end_row();
+                            }
+                        });
                     }
-                });
+                }
             }
         });
     }
 
     pub fn render_image(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut options = RenderLoadingImageOptions::default();
-
+        options.shrink_to_image = true;
         options.thumbnail_size = [500., 500.];
         let _response = ui::render_loading_image(ui, ctx, self.get_image(), options);
     }
@@ -253,20 +283,25 @@ impl PreviewUI {
 
 impl GalleryUI {
     fn process_previews(&mut self) {
+        if self.gallery_items.is_none() {
+            self.load_gallery_entries();
+        }
         if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
             floating_windows.borrow_mut().retain(|window_state| {
                 if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
                     match &preview.status {
                         PreviewStatus::Deleted => {
                             if let Some(media_info) = preview.get_media_info() {
-                                self.gallery_items.retain(|gallery_item| {
-                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                        if gallery_entry.hash == media_info.hash {
-                                            return false;
+                                if let Some(gallery_items) = self.gallery_items.as_mut() {
+                                    gallery_items.retain(|gallery_item| {
+                                        if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                                            if gallery_entry.hash == media_info.hash {
+                                                return false;
+                                            }
                                         }
-                                    }
-                                    true
-                                });
+                                        true
+                                    });
+                                }
                             }
                             ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
                             return false;
@@ -285,7 +320,7 @@ impl GalleryUI {
     fn load_gallery_entries(&mut self) {
         let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
         match gallery_items {
-            Ok(gallery_items) => self.gallery_items = gallery_items,
+            Ok(gallery_items) => self.gallery_items = Some(gallery_items),
             Err(error) => {
                 ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
             }
@@ -331,14 +366,6 @@ impl GalleryUI {
             ui.label("info");
             if ui.button("load").clicked() {
                 self.load_gallery_entries();
-                // let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
-                // match gallery_items {
-                //     Ok(gallery_items) => self.gallery_items = gallery_items,
-                //     Err(error) => {
-                //         // println!("failed to load items due to {}", error);
-                //         ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
-                //     }
-                // }
             }
         });
     }
@@ -353,76 +380,29 @@ impl GalleryUI {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
                         let config = self.get_config();
-                        let gallery_items = self.gallery_items.iter_mut();
-                        for gallery_item in gallery_items {
-                            let status_label = gallery_item.get_status_label().map(|label| label.into());
-                            let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
-                            let mut options = RenderLoadingImageOptions::default();
-                            options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
-                            options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
-                            options.hover_text = status_label;
-                            options.thumbnail_size = [thumbnail_size, thumbnail_size];
-                            let response = ui::render_loading_image(ui, ctx, thumbnail, options);
-                            if let Some(response) = response {
-                                if response.clicked() {
-                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                        GalleryUI::launch_preview(
-                                            gallery_entry.hash.clone().clone(),
-                                            Arc::clone(&config),
-                                            self.root_interface_floating_windows.as_ref(),
-                                        )
+                        // let gallery_items = self.gallery_items.iter_mut();
+                        if let Some(gallery_items) = self.gallery_items.as_mut() {
+                            for gallery_item in gallery_items {
+                                let status_label = gallery_item.get_status_label().map(|label| label.into());
+                                let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
+                                let mut options = RenderLoadingImageOptions::default();
+                                options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
+                                options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
+                                options.hover_text = status_label;
+                                options.thumbnail_size = [thumbnail_size, thumbnail_size];
+                                let response = ui::render_loading_image(ui, ctx, thumbnail, options);
+                                if let Some(response) = response {
+                                    if response.clicked() {
+                                        if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+                                            GalleryUI::launch_preview(
+                                                gallery_entry.hash.clone().clone(),
+                                                Arc::clone(&config),
+                                                self.root_interface_floating_windows.as_ref(),
+                                            )
+                                        }
                                     }
                                 }
                             }
-                            // match gallery_item.get_thumbnail(Arc::clone(&config)) {
-                            //     None => {
-                            //         // nothing, bytes havent been loaded yet
-                            //         let spinner = egui::Spinner::new();
-                            //         ui.add_sized(widget_size, spinner)
-                            //             .on_hover_text(format!("(loading bytes for thumbnail...)"));
-                            //     }
-                            //     Some(promise) => match promise.ready() {
-                            //         // thumbail has started loading
-                            //         None => {
-                            //             // thumbnail still loading
-                            //             let spinner = egui::Spinner::new();
-                            //             ui.add_sized(widget_size, spinner).on_hover_text(format!("(loading thumbnail...)"));
-                            //         }
-                            //         Some(result) => {
-                            //             let mut response = match result {
-                            //                 Ok(image) => {
-                            //                     let image =
-                            //                         egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2()).sense(egui::Sense::click());
-
-                            //                     ui.add_sized(widget_size, image)
-                            //                 }
-                            //                 Err(_error) => {
-                            //                     // couldn't make thumbnail
-                            //                     let text = egui::RichText::new("?").size(48.0);
-                            //                     let label = egui::Label::new(text).sense(egui::Sense::click());
-                            //                     ui.add_sized(widget_size, label)
-                            //                 }
-                            //             };
-
-                            //             if let Some(status_label) = gallery_item.get_status_label() {
-                            //                 response = response.on_hover_text(format!("({status_label})"));
-                            //             } else {
-                            //                 // response.on_hover_text(format!("{file_label} [{mime_type}]"));
-                            //             }
-
-                            //             if response.clicked() {
-                            //                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                            //                     // self.launch_preview(ctx, gallery_entry.hash.clone());
-                            //                     GalleryUI::launch_preview(
-                            //                         gallery_entry.hash.clone().clone(),
-                            //                         Arc::clone(&config),
-                            //                         self.root_interface_floating_windows.as_ref(),
-                            //                     )
-                            //                 }
-                            //             }
-                            //         }
-                            //     },
-                            // }
                         }
                     });
                 });
@@ -437,14 +417,16 @@ impl GalleryUI {
             .collect::<Vec<_>>();
         ui.horizontal(|ui| {
             ui.label("search");
-        });
-        let autocomplete = autocomplete::create(&mut self.search_string, &options, None);
-        let response = ui.add(autocomplete);
 
-        if response.changed() {
-            // dbg!(&self.search_string);
-            self.load_gallery_entries();
-        }
+            ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
+                let autocomplete = autocomplete::create(&mut self.search_string, &options, None);
+
+                let response = ui.add(autocomplete);
+                if response.changed() {
+                    self.load_gallery_entries();
+                }
+            });
+        });
     }
 }
 
@@ -456,7 +438,7 @@ impl Default for GalleryUI {
             preview_window_state_ids: vec![],
             root_interface_floating_windows: None,
             config: None,
-            gallery_items: vec![],
+            gallery_items: None,
         }
     }
 }
@@ -470,7 +452,6 @@ impl ui::DockedWindow for GalleryUI {
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_previews();
-        // let mut s = "".to_string();
         ui.vertical(|ui| {
             self.render_search(ui);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {

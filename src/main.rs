@@ -7,7 +7,7 @@ mod import;
 mod tags;
 mod ui;
 mod autocomplete;
-mod modal;
+// mod modal;
 
 use anyhow::Result;
 use config::Config;

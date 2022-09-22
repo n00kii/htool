@@ -122,9 +122,6 @@ impl ImporterUI {
                     let media_entries = scan_directory(self.get_scan_dir(), 0, None, &extension_filter);
                     if let Ok(media_entries) = media_entries {
                         self.media_entries = Some(media_entries);
-                        // for media_entry in self.media_entries.as_ref().unwrap() {
-                        //     if let Some(linking_dir) = &media_entry.linking_dir {}
-                        // }
                     }
                 }
     

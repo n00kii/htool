@@ -146,10 +146,8 @@ pub fn scan_directory(
                     .to_str()
                     .unwrap_or("")
                     .to_string()
-                    .replace("\\", "/"); //format!("{dir_entry_parent}/{dir_entry_filename}");
+                    .replace("\\", "/"); 
 
-
-                // println!("{}, {:?}", file_label, linking_dir); // TODO look at linking dir during import, assign id
                 scanned_dir_entries.push(MediaEntry {
                     is_hidden: false,
                     is_to_be_loaded: Arc::new((Mutex::new(false), Condvar::new())),
@@ -188,7 +186,6 @@ impl MediaEntry {
                 let mut file = File::open(path)?;
                 let mut bytes: Vec<u8> = vec![];
                 file.read_to_end(&mut bytes)?;
-                // println!("loaded {} bytes", bytes.len());
                 Ok(Arc::new(bytes))
             });
             promise

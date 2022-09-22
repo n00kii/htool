@@ -7,6 +7,7 @@ use std::{
     rc::Rc,
     sync::Arc,
     time::Duration,
+    vec,
 };
 
 use crate::tags::tags_ui;
@@ -19,13 +20,24 @@ use super::gallery::gallery_ui;
 use super::import::import_ui;
 use anyhow::Result;
 use eframe::{
-    egui::{self, Id, Response, ScrollArea, Sense, Style, Ui, Visuals, Widget, WidgetText},
+    egui::{self, Button, Id, Response, RichText, ScrollArea, Sense, Style, Ui, Visuals, Widget, WidgetText},
     emath::Vec2,
     epaint::Color32,
 };
 use egui_extras::RetainedImage;
 use image::{FlatSamples, ImageBuffer, Rgba};
 use poll_promise::Promise;
+
+pub mod constants {
+    use eframe::epaint::Color32;
+
+    pub const IMPORT_THUMBNAIL_SIZE: f64 = 100.;
+
+    pub const CAUTION_BUTTON_FILL: Color32 = Color32::from_rgb(87, 38, 34);
+    pub const SUGGESTED_BUTTON_FILL: Color32 = Color32::from_rgb(33, 54, 84);
+    pub const CAUTION_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(242, 148, 148);
+    pub const SUGGESTED_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
+}
 
 pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<RetainedImage> {
     let pixels = image_buffer.as_flat_samples();
@@ -41,6 +53,7 @@ pub struct RenderLoadingImageOptions {
     pub thumbnail_size: [f32; 2],
     pub widget_margin: [f32; 2],
     pub is_button: bool,
+    pub shrink_to_image: bool,
     pub is_button_selected: Option<bool>,
     pub hover_text_on_none_image: Option<WidgetText>,
     pub hover_text_on_loading_image: Option<WidgetText>,
@@ -53,10 +66,18 @@ pub struct RenderLoadingImageOptions {
 }
 
 impl RenderLoadingImageOptions {
-    fn widget_size(&self) -> [f32; 2] {
+    fn widget_size(&self, image_size: Option<[f32; 2]>) -> [f32; 2] {
         [
-            self.thumbnail_size[0] + self.widget_margin[0],
-            self.thumbnail_size[1] + self.widget_margin[1],
+            (if self.shrink_to_image && image_size.is_some() {
+                image_size.unwrap()[0]
+            } else {
+                self.thumbnail_size[0]
+            }) + self.widget_margin[0],
+            (if self.shrink_to_image && image_size.is_some() {
+                image_size.unwrap()[1]
+            } else {
+                self.thumbnail_size[1]
+            }) + self.widget_margin[1],
         ]
     }
 }
@@ -65,6 +86,7 @@ impl Default for RenderLoadingImageOptions {
     fn default() -> Self {
         RenderLoadingImageOptions {
             resize_method: ImageResizeMethod::Contain,
+            shrink_to_image: false,
             thumbnail_size: [100., 100.],
             widget_margin: [5., 5.],
             is_button: false,
@@ -97,6 +119,31 @@ pub fn set_default_toast_options(toast: &mut egui_notify::Toast) {
     toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true);
 }
 
+pub fn caution_button(text: impl std::fmt::Display) -> Button {
+    let richtext = RichText::new("delete").color(constants::CAUTION_BUTTON_TEXT_COLOR);
+    let button = Button::new(richtext).fill(constants::CAUTION_BUTTON_FILL);
+    button
+}
+
+pub enum NumericBase {
+    Ten,
+    Two,
+}
+pub fn readable_byte_size(byte_size: i64, precision: usize, base: NumericBase) -> String {
+    let byte_size = byte_size as f64;
+    let unit_symbols = ["B", "KB", "MB", "GB"];
+    let byte_factor: f64 = match base {
+        NumericBase::Ten => 1000.,
+        NumericBase::Two => 1024.,
+    };
+    let exponent = (((byte_size.ln() / byte_factor.ln()).floor()) as f64).min((unit_symbols.len() - 1) as f64);
+    format!(
+        "{number:.precision$} {unit_symbol}",
+        number = byte_size / byte_factor.powf(exponent),
+        unit_symbol = unit_symbols[exponent as usize]
+    )
+}
+
 pub fn render_loading_image(
     ui: &mut Ui,
     ctx: &egui::Context,
@@ -113,14 +160,14 @@ pub fn render_loading_image(
     match image {
         None => {
             let spinner = egui::Spinner::new();
-            let mut response = ui.add_sized(options.widget_size(), spinner);
+            let mut response = ui.add_sized(options.widget_size(None), spinner);
             response = bind_hover_text(response, &options.hover_text_on_none_image);
             Some(response)
         }
         Some(image_promise) => match image_promise.ready() {
             None => {
                 let spinner = egui::Spinner::new();
-                let mut response = ui.add_sized(options.widget_size(), spinner);
+                let mut response = ui.add_sized(options.widget_size(None), spinner);
                 response = bind_hover_text(response, &options.hover_text_on_loading_image);
                 Some(response)
             }
@@ -128,11 +175,17 @@ pub fn render_loading_image(
                 let text = egui::RichText::new(&options.error_label_text).size(48.0);
 
                 let mut response = if options.is_button {
-                    let button = egui::Button::new(text);
-                    ui.add_sized(options.widget_size(), button)
+                    let mut button = egui::Button::new(text);
+                    for sense in &options.sense {
+                        button = button.sense(*sense);
+                    }
+                    ui.add_sized(options.widget_size(None), button)
                 } else {
-                    let label = egui::Label::new(text).sense(egui::Sense::hover());
-                    ui.add_sized(options.widget_size(), label)
+                    let mut label = egui::Label::new(text);
+                    for sense in &options.sense {
+                        label = label.sense(*sense);
+                    }
+                    ui.add_sized(options.widget_size(None), label)
                 };
                 let hover_text = if let Some(format_error) = options.hover_text_on_error_image {
                     Some(format_error(image_error))
@@ -166,7 +219,7 @@ pub fn render_loading_image(
                     if let Some(tint) = options.image_tint {
                         image_button = image_button.tint(tint);
                     }
-                    ui.add_sized(options.widget_size(), image_button)
+                    ui.add_sized(options.widget_size(Some(image_size)), image_button)
                 } else {
                     let mut image_widget = egui::widgets::Image::new(image.texture_id(ctx), image_size);
                     for sense in &options.sense {
@@ -175,7 +228,7 @@ pub fn render_loading_image(
                     if let Some(tint) = options.image_tint {
                         image_widget = image_widget.tint(tint);
                     }
-                    ui.add_sized(options.widget_size(), image_widget)
+                    ui.add_sized(options.widget_size(Some(image_size)), image_widget)
                 };
                 response = bind_hover_text(response, &options.hover_text);
                 Some(response)
@@ -270,36 +323,6 @@ impl UserInterface {
         self.docked_windows = window_states;
     }
 
-    // pub fn launch_preview_by_hash(config: Arc<Config>, mut floating_windows: RefMut<Vec<FloatingWindowState>>, hash: String) {
-    //     for window_state in floating_windows.iter_mut() {
-    //         if let Some(preview_ui) = window_state.window.downcast_ref::<PreviewUI>() {
-    //             if let Some(info_promise) = preview_ui.media_info.as_ref() {
-    //                 if let Some(info_res) = info_promise.ready() {
-    //                     if let Ok(media_info) = info_res {
-    //                         if media_info.hash == hash {
-    //                             window_state.is_open = true;
-    //                             return;
-    //                         }
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-
-    //     let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config), hash.clone());
-    //     preview.set_media_info_by_hash(hash.clone());
-    //     let mut title = hash.clone();
-    //     let widget_id = Id::new(&title);
-    //     title.truncate(6);
-    //     title.insert_str(0, "preview-");
-    //     floating_windows.push(FloatingWindowState {
-    //         title,
-    //         widget_id,
-    //         is_open: true,
-    //         window: preview,
-    //     });
-    // }
-
     pub fn render_floating_windows(&mut self, ctx: &egui::Context) {
         for window_state in self.floating_windows.borrow_mut().iter_mut() {
             // window_state.window.show(ctx, &mut window_state.is_open);
@@ -308,7 +331,7 @@ impl UserInterface {
                 .open(&mut window_state.is_open)
                 .default_size([800.0, 400.0])
                 .vscroll(false)
-                .hscroll(true)
+                .hscroll(false)
                 .show(ctx, |ui| {
                     window_state.window.ui(ui, ctx);
                 });
