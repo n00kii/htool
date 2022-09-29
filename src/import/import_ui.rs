@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use data::ImportationStatus;
 
+use crate::util::SizedEntryBuffer;
+
 // hide console window on Windows in release
 use super::super::data;
 use super::super::ui;
 use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::import::scan_directory;
-use super::import::MediaEntryBuffer;
 // use super::import::{import_media, MediaEntry};
 use super::import::MediaEntry;
 use anyhow::Result;
@@ -40,27 +41,29 @@ pub struct ImporterUI {
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
     batch_import_status: Option<Promise<Arc<Result<()>>>>,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-    load_buffer: MediaEntryBuffer,
-    import_buffer: MediaEntryBuffer,
+    load_buffer: SizedEntryBuffer<MediaEntry>,
+    import_buffer: SizedEntryBuffer<MediaEntry>,
 }
 
 impl Default for ImporterUI {
     fn default() -> Self {
         let config = None;
-        let load_buffer = MediaEntryBuffer {
-            entries: vec![],
-            count_limit: -1,
-            size_limit: 5_000_000, // 5 MB
-            on_add: ImporterUI::buffer_add,
-            on_poll: ImporterUI::load_buffer_poll,
-        };
-        let import_buffer = MediaEntryBuffer {
-            entries: vec![],
-            count_limit: 10,
-            size_limit: 10_000_000, // 10 MB
-            on_add: ImporterUI::buffer_add,
-            on_poll: ImporterUI::import_buffer_poll,
-        };
+        let load_buffer = SizedEntryBuffer::new(
+            Some(5_000_000),
+            None,
+            Some(ImporterUI::buffer_add),
+            Some(ImporterUI::load_buffer_poll),
+            Some(ImporterUI::buffer_entry_size),
+        );
+
+        let import_buffer = SizedEntryBuffer::new(
+            Some(10_000_000),
+            Some(10),
+            Some(ImporterUI::buffer_add),
+            Some(ImporterUI::import_buffer_poll),
+            Some(ImporterUI::buffer_entry_size),
+        );
+
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             delete_files_on_import: false,
@@ -111,6 +114,9 @@ impl ImporterUI {
             }
         }
         media_entry.is_loading_or_needs_to_load()
+    }
+    fn buffer_entry_size(media_entry: &Rc<RefCell<MediaEntry>>) -> usize {
+        media_entry.borrow().file_size
     }
 
     fn import_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {

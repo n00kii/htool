@@ -1,7 +1,9 @@
+use crate::data::EntryId;
 use crate::tags::tags::Tag;
 use crate::ui::FloatingWindowState;
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::UserInterface;
+use crate::util::SizedEntryBuffer;
 
 use super::super::autocomplete;
 use super::super::data;
@@ -9,8 +11,9 @@ use super::super::ui;
 use super::super::ui::DockedWindow;
 use super::super::Config;
 use super::gallery::load_gallery_items;
+// use super::gallery::GalleryEntry;
 use super::gallery::GalleryEntry;
-use super::gallery::GalleryItem;
+// use super::gallery::GalleryItem;
 use super::gallery_ui;
 use anyhow::Result;
 use eframe::egui::Id;
@@ -33,11 +36,12 @@ use std::thread;
 use std::time::Duration;
 
 pub struct GalleryUI {
+    pub load_buffer: SizedEntryBuffer<GalleryEntry>,
     pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
     pub preview_window_state_ids: Vec<Id>,
     pub config: Option<Arc<Config>>,
     pub toasts: egui_notify::Toasts,
-    pub gallery_items: Vec<Box<dyn GalleryItem>>,
+    pub gallery_entries: Vec<Rc<RefCell<GalleryEntry>>>,
     pub search_string: String,
 }
 
@@ -51,7 +55,7 @@ pub enum PreviewStatus {
 pub struct PreviewUI {
     pub toasts: egui_notify::Toasts,
     pub image: Option<Promise<Result<RetainedImage>>>,
-    pub media_info_plural: Option<data::MediaInfoPlural>,
+    pub media_info_plural: Option<data::PoolInfo>,
     pub media_info: Option<Promise<Result<data::MediaInfo>>>,
     pub config: Arc<Config>,
     pub tag_edit_buffer: String,
@@ -257,15 +261,16 @@ impl PreviewUI {
 
 impl GalleryUI {
     fn process_previews(&mut self) {
+
         if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
             floating_windows.borrow_mut().retain(|window_state| {
                 if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
                     match &preview.status {
                         PreviewStatus::Deleted => {
                             if let Some(media_info) = preview.get_media_info() {
-                                self.gallery_items.retain(|gallery_item| {
-                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                        if gallery_entry.hash == media_info.hash {
+                                self.gallery_entries.retain(|gallery_entry| {
+                                    if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_id {
+                                        if *hash == media_info.hash {
                                             return false;
                                         }
                                     }
@@ -286,17 +291,35 @@ impl GalleryUI {
         }
     }
 
+    fn process_gallery_entries(&mut self) {
+        // FIXME: Make the buffering here better. right now it can still fail on some entries
+        // if an item takes >5 sec to load. you should make a data::load_thumbnails that results in one
+        // db access at a time, instead of how it is rn where #data accesses is limited by count 
+        // of buffer
+        for gallery_entry in self.gallery_entries.iter() {
+            if !gallery_entry.borrow().is_loaded() {
+                let _ = self.load_buffer.try_add_entry(Rc::clone(gallery_entry));
+            }
+        }
+        self.load_buffer.poll();
+    }
+
     fn load_gallery_entries(&mut self) {
-        let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
-        match gallery_items {
-            Ok(gallery_items) => self.gallery_items = gallery_items,
+        let gallery_entries = load_gallery_items(self.get_config(), &self.search_string);
+        match gallery_entries {
+            Ok(gallery_items) => {
+                self.gallery_entries = gallery_items
+                    .into_iter()
+                    .map(|gallery_entry| Rc::new(RefCell::new(gallery_entry)))
+                    .collect::<Vec<_>>()
+            }
             Err(error) => {
                 ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
             }
         }
     }
 
-    fn launch_preview(hash: String, config: Arc<Config>, floating_windows: Option<&Rc<RefCell<Vec<FloatingWindowState>>>>) {
+    fn launch_preview(hash: &String, config: Arc<Config>, floating_windows: Option<&Rc<RefCell<Vec<FloatingWindowState>>>>) {
         if let Some(floating_windows) = floating_windows {
             let mut floating_windows = floating_windows.borrow_mut();
             for window_state in floating_windows.iter_mut() {
@@ -304,7 +327,7 @@ impl GalleryUI {
                     if let Some(info_promise) = preview_ui.media_info.as_ref() {
                         if let Some(info_res) = info_promise.ready() {
                             if let Ok(media_info) = info_res {
-                                if media_info.hash == hash {
+                                if media_info.hash == *hash {
                                     window_state.is_open = true;
                                     return;
                                 }
@@ -357,24 +380,20 @@ impl GalleryUI {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
                         let config = self.get_config();
-                        let gallery_items = self.gallery_items.iter_mut();
-                        for gallery_item in gallery_items {
-                            let status_label = gallery_item.get_status_label().map(|label| label.into());
-                            let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
+                        // let gallery_items = self.gallery_entries.iter_mut();
+                        for gallery_entry in self.gallery_entries.iter_mut() {
+                            let status_label = gallery_entry.borrow().get_status_label().map(|label| label.into());
+                            // let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
                             let mut options = RenderLoadingImageOptions::default();
                             options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
                             options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
                             options.hover_text = status_label;
                             options.thumbnail_size = [thumbnail_size, thumbnail_size];
-                            let response = ui::render_loading_image(ui, ctx, thumbnail, options);
+                            let response = ui::render_loading_image(ui, ctx, gallery_entry.borrow().thumbnail.as_ref(), options);
                             if let Some(response) = response {
                                 if response.clicked() {
-                                    if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                        GalleryUI::launch_preview(
-                                            gallery_entry.hash.clone().clone(),
-                                            Arc::clone(&config),
-                                            self.root_interface_floating_windows.as_ref(),
-                                        )
+                                    if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_id {
+                                        GalleryUI::launch_preview(hash, Arc::clone(&config), self.root_interface_floating_windows.as_ref())
                                     }
                                 }
                             }
@@ -446,21 +465,33 @@ impl GalleryUI {
         let response = ui.add(autocomplete);
 
         if response.changed() {
-            // dbg!(&self.search_string);
             self.load_gallery_entries();
         }
     }
+
+    fn buffer_add(gallery_entry: &Rc<RefCell<GalleryEntry>>) {
+        if gallery_entry.borrow().thumbnail.is_none() {
+            gallery_entry.borrow_mut().load_thumbnail();
+        }
+    }
+
+    fn load_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
+        gallery_entry.borrow().is_loading()
+    }   
 }
 
 impl Default for GalleryUI {
     fn default() -> Self {
+        let load_buffer =
+            SizedEntryBuffer::<GalleryEntry>::new(None, Some(10), Some(GalleryUI::buffer_add), Some(GalleryUI::load_buffer_poll), None);
         Self {
             search_string: String::new(),
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             preview_window_state_ids: vec![],
             root_interface_floating_windows: None,
             config: None,
-            gallery_items: vec![],
+            load_buffer,
+            gallery_entries: vec![],
         }
     }
 }
@@ -474,7 +505,7 @@ impl ui::DockedWindow for GalleryUI {
     }
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_previews();
-        // let mut s = "".to_string();
+        self.process_gallery_entries();
         ui.vertical(|ui| {
             self.render_search(ui);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {

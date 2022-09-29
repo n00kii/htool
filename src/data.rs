@@ -16,10 +16,10 @@ use rusqlite::{named_params, params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::hash;
 use std::io::Cursor;
+use std::mem::discriminant;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
-use std::mem::discriminant;
 
 // config: Arc<Config>,
 // bytes: &[u8],
@@ -50,9 +50,27 @@ impl PartialEq for ImportationStatus {
     }
 }
 
-pub enum _EntryId {
+#[derive(Clone, PartialEq)]
+pub enum EntryId {
     MediaEntry(String),
-    MediaEntryPlural(i32),
+    PoolEntry(i32),
+}
+
+impl EntryId {
+    pub fn as_media_entry_id(&self) -> Option<&String>{
+        if let EntryId::MediaEntry(hash) = self {
+            Some(hash)
+        } else {
+            None
+        }
+    }
+    pub fn as_pool_entry_id(&self) -> Option<&i32> {
+        if let EntryId::PoolEntry(link_id) = self {
+            Some(link_id)
+        } else {
+            None
+        }
+    }
 }
 
 pub struct MediaInfo {
@@ -64,11 +82,11 @@ pub struct MediaInfo {
     pub tags: Vec<Tag>,
 }
 
-pub struct MediaInfoPlural {
-    hashes: Vec<String>,
-    date_registered: i64,
-    total_size: i64,
-    tags: Vec<Tag>,
+pub struct PoolInfo {
+    pub hashes: Vec<String>,
+    pub date_registered: i64,
+    pub total_size: i64,
+    pub tags: Vec<Tag>,
 }
 
 impl MediaInfo {
@@ -85,7 +103,7 @@ impl MediaInfo {
 }
 
 // todo: move stuff out of struct
-pub fn generate_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+pub fn generate_media_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let image = image::load_from_memory(image_data)?;
     let (w, h) = (image.width(), image.height());
     let image_cropped = imageops::crop_imm(
@@ -101,7 +119,7 @@ pub fn generate_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<Image
 }
 
 // https://math.stackexchange.com/questions/4489146/filling-a-square-with-squares-along-the-diagonal
-pub fn generate_plural_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+pub fn generate_pool_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     // https://www.desmos.com/calculator/moriiungym for tuning
     let thumbnail_size: u32 = 100;
     let distance_factor = 0.3; //1 = thumbnails half size away from each other, 0 = thumbnails on top of each other
@@ -129,11 +147,10 @@ pub fn generate_plural_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u
     Ok(thumbnail)
 }
 
-//TODO consolidate below fxns using enum
-pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+pub fn load_thumbnail(config: Arc<Config>, entry_id: EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let conn = initialize_database_connection(&config.path.database()?)?;
-    let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE link_id = ?1")?;
-    let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![link_id], |row| row.get(0));
+    let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1 OR link_id = ?2")?;
+    let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()], |row| row.get(0));
 
     match bytes_res {
         Ok(bytes) => {
@@ -143,83 +160,158 @@ pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageB
         }
         Err(error) => {
             if error == rusqlite::Error::QueryReturnedNoRows {
-                let hashes_of_link = get_hashes_of_link(Arc::clone(&config), link_id)?;
-                if hashes_of_link.len() == 0 {
-                    return Err(anyhow::Error::msg("no hashes in link"));
-                }
-                let max_constituent_thumbnails = 3;
-                let mut constituent_thumbnails = Vec::new();
+                match entry_id {
+                    EntryId::MediaEntry(hash) => {
+                        let mut statement = conn.prepare("SELECT mime FROM media_info WHERE hash = ?1")?;
+                        let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
+                        let bytes = load_bytes(Arc::clone(&config), &hash)?;
+                        if mime_type.starts_with("image") {
+                            let thumbnail = generate_media_thumbnail(&bytes, 100)?;
+                            let mut thumbnail_bytes: Vec<u8> = Vec::new();
+                            let mut writer = Cursor::new(&mut thumbnail_bytes);
+                            thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
 
-                for hash in hashes_of_link {
-                    if let Ok(constituent_thumbnail) = load_thumbnail(config.clone(), &hash) {
-                        constituent_thumbnails.push(constituent_thumbnail);
-                        if constituent_thumbnails.len() == max_constituent_thumbnails {
-                            break;
+                            conn.execute(
+                                "INSERT INTO thumbnail_cache (hash, bytes)
+                            VALUES (?1, ?2)",
+                                params![hash, thumbnail_bytes],
+                            )?;
+                            return Ok(thumbnail);
+                        } else {
+                            return Err(anyhow::Error::msg(format!("can't create thumbnail for {mime_type}")));
                         }
                     }
+                    EntryId::PoolEntry(link_id) => {
+                        let hashes_of_link = get_hashes_of_link(Arc::clone(&config), link_id)?;
+                        if hashes_of_link.len() == 0 {
+                            return Err(anyhow::Error::msg("no hashes in link"));
+                        }
+                        let max_constituent_thumbnails = 3;
+                        let mut constituent_thumbnails = Vec::new();
+
+                        for hash in hashes_of_link {
+                            if let Ok(constituent_thumbnail) = load_thumbnail(config.clone(), EntryId::MediaEntry(hash.clone())) {
+                                constituent_thumbnails.push(constituent_thumbnail);
+                                if constituent_thumbnails.len() == max_constituent_thumbnails {
+                                    break;
+                                }
+                            }
+                        }
+                        if constituent_thumbnails.len() == 0 {
+                            return Err(anyhow::Error::msg("couldnt load any thumbnails of hashes of link"));
+                        }
+
+                        let thumbnail = generate_pool_thumbnail(&constituent_thumbnails)?;
+                        let mut thumbnail_bytes: Vec<u8> = Vec::new();
+                        let mut writer = Cursor::new(&mut thumbnail_bytes);
+                        thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
+
+                        conn.execute(
+                            "INSERT INTO thumbnail_cache (link_id, bytes)
+                                VALUES (?1, ?2)",
+                            params![link_id, thumbnail_bytes],
+                        )?;
+
+                        return Ok(thumbnail); //todo use generate_thumbnail_plural
+                    }
                 }
-                if constituent_thumbnails.len() == 0 {
-                    return Err(anyhow::Error::msg("couldnt load any thumbnails of hashes of link"));
-                }
-
-                let thumbnail = generate_plural_thumbnail(&constituent_thumbnails)?;
-                let mut thumbnail_bytes: Vec<u8> = Vec::new();
-                let mut writer = Cursor::new(&mut thumbnail_bytes);
-                thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
-
-                conn.execute(
-                    "INSERT INTO thumbnail_cache (link_id, bytes)
-                        VALUES (?1, ?2)",
-                    params![link_id, thumbnail_bytes],
-                )?;
-
-                return Ok(thumbnail); //todo use generate_thumbnail_plural
             }
             // todo!()
             return Err(error.into());
         }
     }
 }
+//TODO consolidate below fxns using enum
+// pub fn load_pool_thumbnail(config: Arc<Config>, link_id: i32) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+//     let conn = initialize_database_connection(&config.path.database()?)?;
+//     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE link_id = ?1")?;
+//     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![link_id], |row| row.get(0));
 
-pub fn load_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
-    let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1")?;
-    let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![hash], |row| row.get(0));
+//     match bytes_res {
+//         Ok(bytes) => {
+//             let image = image::load_from_memory(&bytes)?;
+//             let image_buffer = image.into_rgba8();
+//             return Ok(image_buffer);
+//         }
+//         Err(error) => {
+//             if error == rusqlite::Error::QueryReturnedNoRows {
+//                 let hashes_of_link = get_hashes_of_link(Arc::clone(&config), link_id)?;
+//                 if hashes_of_link.len() == 0 {
+//                     return Err(anyhow::Error::msg("no hashes in link"));
+//                 }
+//                 let max_constituent_thumbnails = 3;
+//                 let mut constituent_thumbnails = Vec::new();
 
-    match bytes_res {
-        Ok(bytes) => {
-            let image = image::load_from_memory(&bytes)?;
-            let image_buffer = image.to_rgba8();
-            Ok(image_buffer)
-        }
-        Err(error) => {
-            if error == rusqlite::Error::QueryReturnedNoRows {
-                let mut statement = conn.prepare("SELECT mime FROM media_info WHERE hash = ?1")?;
-                let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
-                let bytes = load_bytes(Arc::clone(&config), hash)?;
-                if mime_type.starts_with("image") {
-                    let thumbnail = generate_thumbnail(&bytes, 100)?;
-                    let mut thumbnail_bytes: Vec<u8> = Vec::new();
-                    let mut writer = Cursor::new(&mut thumbnail_bytes);
-                    thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
+//                 for hash in hashes_of_link {
+//                     if let Ok(constituent_thumbnail) = load_media_thumbnail(config.clone(), &hash) {
+//                         constituent_thumbnails.push(constituent_thumbnail);
+//                         if constituent_thumbnails.len() == max_constituent_thumbnails {
+//                             break;
+//                         }
+//                     }
+//                 }
+//                 if constituent_thumbnails.len() == 0 {
+//                     return Err(anyhow::Error::msg("couldnt load any thumbnails of hashes of link"));
+//                 }
 
-                    conn.execute(
-                        "INSERT INTO thumbnail_cache (hash, bytes)
-                            VALUES (?1, ?2)",
-                        params![hash, thumbnail_bytes],
-                    )?;
-                    return Ok(thumbnail);
-                } else {
-                    return Err(anyhow::Error::msg(format!("can't create thumbnail for {mime_type}")));
-                }
-                // need to generate thumbnail, cache it
-            }
-            // todo!()
-            Err(error.into())
-        }
-    }
-    // println!("b: {:?}", bytes);
-}
+//                 let thumbnail = generate_pool_thumbnail(&constituent_thumbnails)?;
+//                 let mut thumbnail_bytes: Vec<u8> = Vec::new();
+//                 let mut writer = Cursor::new(&mut thumbnail_bytes);
+//                 thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
+
+//                 conn.execute(
+//                     "INSERT INTO thumbnail_cache (link_id, bytes)
+//                         VALUES (?1, ?2)",
+//                     params![link_id, thumbnail_bytes],
+//                 )?;
+
+//                 return Ok(thumbnail); //todo use generate_thumbnail_plural
+//             }
+//             // todo!()
+//             return Err(error.into());
+//         }
+//     }
+// }
+
+// pub fn load_media_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+//     let conn = initialize_database_connection(&config.path.database()?)?;
+//     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1")?;
+//     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![hash], |row| row.get(0));
+
+//     match bytes_res {
+//         Ok(bytes) => {
+//             let image = image::load_from_memory(&bytes)?;
+//             let image_buffer = image.to_rgba8();
+//             Ok(image_buffer)
+//         }
+//         Err(error) => {
+//             if error == rusqlite::Error::QueryReturnedNoRows {
+//                 let mut statement = conn.prepare("SELECT mime FROM media_info WHERE hash = ?1")?;
+//                 let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
+//                 let bytes = load_bytes(Arc::clone(&config), hash)?;
+//                 if mime_type.starts_with("image") {
+//                     let thumbnail = generate_media_thumbnail(&bytes, 100)?;
+//                     let mut thumbnail_bytes: Vec<u8> = Vec::new();
+//                     let mut writer = Cursor::new(&mut thumbnail_bytes);
+//                     thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
+
+//                     conn.execute(
+//                         "INSERT INTO thumbnail_cache (hash, bytes)
+//                             VALUES (?1, ?2)",
+//                         params![hash, thumbnail_bytes],
+//                     )?;
+//                     return Ok(thumbnail);
+//                 } else {
+//                     return Err(anyhow::Error::msg(format!("can't create thumbnail for {mime_type}")));
+//                 }
+//                 // need to generate thumbnail, cache it
+//             }
+//             // todo!()
+//             Err(error.into())
+//         }
+//     }
+//     // println!("b: {:?}", bytes);
+// }
 
 pub fn initialize_database_connection(db_path: &PathBuf) -> Result<Connection> {
     let conn = Connection::open(&db_path)?;
