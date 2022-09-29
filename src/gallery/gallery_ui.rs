@@ -358,14 +358,6 @@ impl GalleryUI {
             ui.label("info");
             if ui.button("load").clicked() {
                 self.load_gallery_entries();
-                // let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
-                // match gallery_items {
-                //     Ok(gallery_items) => self.gallery_items = gallery_items,
-                //     Err(error) => {
-                //         // println!("failed to load items due to {}", error);
-                //         ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
-                //     }
-                // }
             }
         });
     }
@@ -397,55 +389,7 @@ impl GalleryUI {
                                     }
                                 }
                             }
-                            // match gallery_item.get_thumbnail(Arc::clone(&config)) {
-                            //     None => {
-                            //         // nothing, bytes havent been loaded yet
-                            //         let spinner = egui::Spinner::new();
-                            //         ui.add_sized(widget_size, spinner)
-                            //             .on_hover_text(format!("(loading bytes for thumbnail...)"));
-                            //     }
-                            //     Some(promise) => match promise.ready() {
-                            //         // thumbail has started loading
-                            //         None => {
-                            //             // thumbnail still loading
-                            //             let spinner = egui::Spinner::new();
-                            //             ui.add_sized(widget_size, spinner).on_hover_text(format!("(loading thumbnail...)"));
-                            //         }
-                            //         Some(result) => {
-                            //             let mut response = match result {
-                            //                 Ok(image) => {
-                            //                     let image =
-                            //                         egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2()).sense(egui::Sense::click());
 
-                            //                     ui.add_sized(widget_size, image)
-                            //                 }
-                            //                 Err(_error) => {
-                            //                     // couldn't make thumbnail
-                            //                     let text = egui::RichText::new("?").size(48.0);
-                            //                     let label = egui::Label::new(text).sense(egui::Sense::click());
-                            //                     ui.add_sized(widget_size, label)
-                            //                 }
-                            //             };
-
-                            //             if let Some(status_label) = gallery_item.get_status_label() {
-                            //                 response = response.on_hover_text(format!("({status_label})"));
-                            //             } else {
-                            //                 // response.on_hover_text(format!("{file_label} [{mime_type}]"));
-                            //             }
-
-                            //             if response.clicked() {
-                            //                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                            //                     // self.launch_preview(ctx, gallery_entry.hash.clone());
-                            //                     GalleryUI::launch_preview(
-                            //                         gallery_entry.hash.clone().clone(),
-                            //                         Arc::clone(&config),
-                            //                         self.root_interface_floating_windows.as_ref(),
-                            //                     )
-                            //                 }
-                            //             }
-                            //         }
-                            //     },
-                            // }
                         }
                     });
                 });

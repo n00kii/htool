@@ -43,11 +43,6 @@ impl GalleryEntry {
         let entry_id = self.entry_id.clone();
         let config = Arc::clone(&self.config);
         let promise = Promise::spawn_thread("", move || {
-            // let thumbnail_res = data::load_thumbnail(config, entry_id);
-            // let thumbnail_res = match entry_id {
-            //     EntryId::MediaEntry(hash) => data::load_thumbnail(config, EntryId::MediaEntry(hash.clone())),
-            //     EntryId::PoolEntry(link_id) => data::load_thumbnail(config, EntryId::PoolEntry(link_id)),
-            // };
             match data::load_thumbnail(config, entry_id) {
                 Ok(thumbnail_buffer) => {
                     // let image
@@ -80,98 +75,6 @@ impl GalleryEntry {
     }
 }
 
-// pub struct GalleryEntry {
-//     pub hash: String,
-//     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
-// }
-
-// pub struct GalleryEntryPlural {
-//     pub hashes: Vec<String>,
-//     pub link_id: i32,
-//     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
-// }
-
-// pub trait GalleryItem: downcast::Downcast {
-//     fn get_thumbnail(&mut self, config: Arc<Config>) -> Option<&Promise<Result<RetainedImage, Error>>>;
-//     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>>;
-//     fn get_status_label(&self) -> Option<String> {
-//         let mut statuses = vec![];
-
-//         let mut add = |message: &str| statuses.push(message.to_string());
-//         if let Some(result) = &self.get_thumbnail_without_loading() {
-//             if let Some(Err(err)) = result.ready() {
-//                 add(format!("couldn't load thumbnail: {err}").as_str());
-//             }
-//         }
-
-//         let label = statuses.join(", ");
-
-//         if label.len() > 0 {
-//             Some(label)
-//         } else {
-//             None
-//         }
-//     }
-//     fn includes_tags_and(&self) {}
-// }
-
-// downcast::impl_downcast!(GalleryItem);
-
-// impl GalleryItem for GalleryEntry {
-//     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
-//         self.thumbnail.as_ref()
-//     }
-//     fn get_thumbnail(&mut self, config: Arc<Config>) -> Option<&Promise<Result<RetainedImage, Error>>> {
-//         match &self.thumbnail {
-//             None => {
-//                 let config = Arc::clone(&config);
-//                 let hash = self.hash.clone();
-//                 let promise = Promise::spawn_thread("", move || {
-//                     let thumbnail_res = data::load_media_thumbnail(config, &hash);
-//                     match thumbnail_res {
-//                         Ok(thumbnail_buffer) => {
-//                             // let image
-//                             let image = ui::generate_retained_image(&thumbnail_buffer);
-//                             image
-//                         }
-//                         Err(error) => Err(error),
-//                     }
-//                 });
-//                 self.thumbnail = Some(promise);
-//                 return self.thumbnail.as_ref();
-//             }
-//             Some(_promise) => self.thumbnail.as_ref(),
-//         }
-//     }
-// }
-
-// impl GalleryItem for GalleryEntryPlural {
-//     fn get_thumbnail_without_loading(&self) -> Option<&Promise<Result<RetainedImage, Error>>> {
-//         self.thumbnail.as_ref()
-//     }
-//     fn get_thumbnail(&mut self, config: Arc<Config>) -> Option<&Promise<Result<RetainedImage, Error>>> {
-//         match &self.thumbnail {
-//             None => {
-//                 let config = Arc::clone(&config);
-//                 let link_id = self.link_id;
-//                 let promise = Promise::spawn_thread("", move || {
-//                     let thumbnail_res = data::load_pool_thumbnail(config, link_id);
-//                     match thumbnail_res {
-//                         Ok(thumbnail_buffer) => {
-//                             // let image
-//                             let image = ui::generate_retained_image(&thumbnail_buffer);
-//                             image
-//                         }
-//                         Err(error) => Err(error),
-//                     }
-//                 });
-//                 self.thumbnail = Some(promise);
-//                 return self.thumbnail.as_ref();
-//             }
-//             Some(_promise) => self.thumbnail.as_ref(),
-//         }
-//     }
-// }
 
 pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result<Vec<GalleryEntry>> {
     // TODO: this seems really inefficient
@@ -182,8 +85,6 @@ pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result
 
     let all_hashes = data::get_all_hashes(Arc::clone(&config))?;
     let mut gallery_entries: Vec<GalleryEntry> = Vec::new();
-    // let mut gallery_entries: Vec<GalleryEntry> = Vec::new();
-    // let mut gallery_entries_plural: Vec<GalleryEntryPlural> = Vec::new();
     let mut resolved_links: Vec<i32> = Vec::new();
     for hash in all_hashes {
         let links = data::get_links_of_hash(Arc::clone(&config), &hash)?;
@@ -199,11 +100,6 @@ pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result
                     config: Arc::clone(&config),
                     thumbnail: None,
                 });
-                // gallery_entries_plural.push(GalleryEntryPlural {
-                    //     hashes: hashes_of_link,
-                //     link_id,
-                //     thumbnail: None,
-                // });
             }
         } else {
             gallery_entries.push(GalleryEntry {
@@ -213,20 +109,6 @@ pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result
             })
         }
     }
-
-    // let mut gallery_items: Vec<Box<dyn GalleryItem>> = Vec::new();
-    // for gallery_entry in gallery_entries {
-    //     let media_info = data::load_media_info(Arc::clone(&config), &gallery_entry.hash)?;
-    //     if search_tags.len() > 0 {
-    //         if !media_info.includes_tags_and(&search_tags) {
-    //             continue;
-    //         }
-    //     }
-    //     gallery_items.push(Box::new(gallery_entry));
-    // }
-    // for gallery_entry_plural in gallery_entries_plural {
-    //     gallery_items.push(Box::new(gallery_entry_plural));
-    // }
 
     gallery_entries.retain(|gallery_entry| {
         if let EntryId::MediaEntry(hash) = &gallery_entry.entry_id {
@@ -241,5 +123,4 @@ pub fn load_gallery_items(config: Arc<Config>, search_string: &String) -> Result
     });
 
     Ok(gallery_entries)
-    // todo!()
 }
