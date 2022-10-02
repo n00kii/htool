@@ -86,6 +86,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arc-swap"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "983cd8b9d4b02a6dc6ffa557262eb5858a27a0038ffffe21a0f133eaa819a164"
+
+[[package]]
 name = "arrayref"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -336,6 +342,12 @@ dependencies = [
  "libc",
  "objc",
 ]
+
+[[package]]
+name = "color-hex"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecdffb913a326b6c642290a0d0ec8e8d6597291acdc07cc4c9cb4b3635d44cf9"
 
 [[package]]
 name = "color_quant"
@@ -628,9 +640,9 @@ dependencies = [
 
 [[package]]
 name = "egui-modal"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2980b87b45e52241b2acc464592c8c855c2ef9d1c4ef391337297b9fbb7294a6"
+checksum = "f70c639130f9c1f014b58baecf8dbb9125ccc28f445516ff182b783c1f89d1f8"
 dependencies = [
  "egui",
 ]
@@ -707,6 +719,7 @@ dependencies = [
  "ahash 0.8.0",
  "atomic_refcell",
  "bytemuck",
+ "color-hex",
  "emath",
  "nohash-hasher",
  "parking_lot",
@@ -1151,11 +1164,13 @@ name = "htool2"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "chrono",
  "crossbeam-utils",
  "custom_error",
  "downcast-rs",
  "eframe",
+ "egui",
  "egui-modal",
  "egui-notify",
  "egui_extras",
@@ -1164,6 +1179,7 @@ dependencies = [
  "image",
  "image_hasher",
  "infer",
+ "once_cell",
  "path-absolutize",
  "poll-promise",
  "rand",
@@ -1679,9 +1695,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.13.1"
+version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "074864da206b4973b84eb91683020dbefd6a8c3f0f38e054d93954e891935e4e"
+checksum = "e82dad04139b71a90c080c8463fe0dc7902db5192d939bd0950f074d014339e1"
 
 [[package]]
 name = "opaque-debug"

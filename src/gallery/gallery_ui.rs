@@ -1,18 +1,21 @@
+use crate::autocomplete::AutocompleteOption;
 use chrono::TimeZone;
 use chrono::Utc;
+use eframe::egui::Key;
 use eframe::egui::Layout;
 use eframe::egui::RichText;
+use eframe::egui::Window;
 // use crate::modal;
 use crate::tags::tags::Tag;
-use crate::ui::FloatingWindowState;
+use crate::ui::AppUI;
 use crate::ui::RenderLoadingImageOptions;
-use crate::ui::UserInterface;
+use crate::ui::WindowContainer;
 use egui_modal::Modal;
 
 use super::super::autocomplete;
 use super::super::data;
 use super::super::ui;
-use super::super::ui::DockedWindow;
+use super::super::ui::UserInterface;
 use super::super::Config;
 use super::gallery::load_gallery_items;
 use super::gallery::GalleryEntry;
@@ -40,11 +43,10 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 pub struct GalleryUI {
-    pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
-    pub preview_window_state_ids: Vec<Id>,
-    pub config: Option<Arc<Config>>,
+    pub preview_windows: Vec<ui::WindowContainer>,
     pub toasts: egui_notify::Toasts,
     pub gallery_items: Option<Vec<Box<dyn GalleryItem>>>,
+    pub search_options: Option<Vec<autocomplete::AutocompleteOption>>,
     pub search_string: String,
 }
 
@@ -60,15 +62,15 @@ pub struct PreviewUI {
     pub image: Option<Promise<Result<RetainedImage>>>,
     pub media_info_plural: Option<data::MediaInfoPlural>,
     pub media_info: Option<Promise<Result<data::MediaInfo>>>,
-    pub config: Arc<Config>,
     pub tag_edit_buffer: String,
     pub id: String,
 
     pub status: PreviewStatus,
     pub is_editing_tags: bool,
+    pub short_id: String,
 }
 
-impl ui::FloatingWindow for PreviewUI {
+impl ui::UserInterface for PreviewUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Grid::new(format!("preview_ui_{}", self.id))
             .num_columns(3)
@@ -83,12 +85,14 @@ impl ui::FloatingWindow for PreviewUI {
 }
 
 impl PreviewUI {
-    pub fn new(config: Arc<Config>, id: String) -> Box<Self> {
+    pub fn new(id: String) -> Box<Self> {
+        let mut short_id = id.clone();
+        short_id.truncate(6);
         Box::new(PreviewUI {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             image: None,
             id,
-            config,
+            short_id,
             media_info: None,
             media_info_plural: None,
             is_editing_tags: false,
@@ -116,7 +120,6 @@ impl PreviewUI {
     }
 
     pub fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let padding = 10.;
         let delete_modal = Modal::new(ctx, "delete_modal");
         delete_modal.show(|ui| {
             delete_modal.frame(ui, |ui| {
@@ -127,7 +130,7 @@ impl PreviewUI {
                 if delete_modal.caution_button(ui, "delete").clicked() {
                     // delete logic below
                     if let Some(media_info) = self.get_media_info() {
-                        if let Err(e) = data::delete_media(Arc::clone(&self.config), &media_info.hash) {
+                        if let Err(e) = data::delete_media(&media_info.hash) {
                             ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
                         } else {
                             ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
@@ -138,7 +141,7 @@ impl PreviewUI {
             })
         });
 
-        ui.add_space(padding);
+        ui.add_space(ui::constants::SPACER_SIZE);
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("options");
             if self.is_editing_tags {
@@ -151,7 +154,7 @@ impl PreviewUI {
                                 tagstrings.sort();
                                 tagstrings.dedup();
                                 let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
-                                if let Ok(tags) = data::set_tags(Arc::clone(&self.config), &media_info.hash, &tags) {
+                                if let Ok(tags) = data::set_tags(&media_info.hash, &tags) {
                                     ui::toast_success(
                                         &mut self.toasts,
                                         format!("successfully set {} tag{}", tags.len(), if tags.len() == 1 { "" } else { "s" }),
@@ -177,14 +180,14 @@ impl PreviewUI {
                     self.is_editing_tags = true;
                 };
             }
-            ui.add_space(padding);
+            ui.add_space(ui::constants::SPACER_SIZE);
             ui.add_enabled_ui(!self.is_editing_tags, |ui| {
                 if ui.add(ui::caution_button("delete")).clicked() {
                     delete_modal.open();
                 }
             });
         });
-        ui.add_space(padding);
+        ui.add_space(ui::constants::SPACER_SIZE);
     }
 
     pub fn render_info(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
@@ -226,7 +229,7 @@ impl PreviewUI {
                                     }
                                 });
                                 ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
-                                    ui.label(&tag.name);
+                                    ui.label(tag.to_rich_text());
                                 });
                                 ui.end_row();
                             }
@@ -254,9 +257,8 @@ impl PreviewUI {
                         Err(_error) => sender.send(Err(anyhow::Error::msg("failed to load mediainfo"))),
                         Ok(media_info) => {
                             let hash = media_info.hash.clone();
-                            let config = Arc::clone(&self.config);
                             thread::spawn(move || {
-                                let bytes = data::load_bytes(config, &hash);
+                                let bytes = data::load_bytes(&hash);
                                 let load = || -> Result<RetainedImage> {
                                     let bytes = bytes?;
                                     let dynamic_image = image::load_from_memory(&bytes)?;
@@ -275,8 +277,7 @@ impl PreviewUI {
         }
     }
     pub fn load_media_info_by_hash(&mut self, hash: String) {
-        let config = Arc::clone(&self.config);
-        self.media_info = Some(Promise::spawn_thread("", move || data::load_media_info(config, &hash)))
+        self.media_info = Some(Promise::spawn_thread("", move || data::load_media_info(&hash)))
     }
     // pub load_image
 }
@@ -286,39 +287,54 @@ impl GalleryUI {
         if self.gallery_items.is_none() {
             self.load_gallery_entries();
         }
-        if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
-            floating_windows.borrow_mut().retain(|window_state| {
-                if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
-                    match &preview.status {
-                        PreviewStatus::Deleted => {
-                            if let Some(media_info) = preview.get_media_info() {
-                                if let Some(gallery_items) = self.gallery_items.as_mut() {
-                                    gallery_items.retain(|gallery_item| {
-                                        if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                            if gallery_entry.hash == media_info.hash {
-                                                return false;
-                                            }
-                                        }
-                                        true
-                                    });
-                                }
-                            }
-                            ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
-                            return false;
-                        }
-                        PreviewStatus::FailedDelete(e) => {
-                            ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
-                        }
-                        _ => {}
-                    }
-                }
-                true
-            })
+        if self.search_options.is_none() {
+            if let Ok(all_tag_data) = data::get_all_tag_data() {
+                self.search_options = Some(
+                    all_tag_data
+                        .iter()
+                        .map(|tag_data| AutocompleteOption {
+                            label: tag_data.tag.name.clone(),
+                            value: tag_data.tag.to_tagstring(),
+                            color: tag_data.tag.namespace_color(),
+                            description: tag_data.occurances.to_string(),
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }
         }
+        // if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
+        //     floating_windows.borrow_mut().retain(|window_state| {
+        //         if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
+        //             match &preview.status {
+        //                 PreviewStatus::Deleted => {
+        //                     if let Some(media_info) = preview.get_media_info() {
+        //                         if let Some(gallery_items) = self.gallery_items.as_mut() {
+        //                             gallery_items.retain(|gallery_item| {
+        //                                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
+        //                                     if gallery_entry.hash == media_info.hash {
+        //                                         return false;
+        //                                     }
+        //                                 }
+        //                                 true
+        //                             });
+        //                         }
+        //                     }
+        //                     ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
+        //                     return false;
+        //                 }
+        //                 PreviewStatus::FailedDelete(e) => {
+        //                     ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
+        //                 }
+        //                 _ => {}
+        //             }
+        //         }
+        //         true
+        //     })
+        // }
     }
 
     fn load_gallery_entries(&mut self) {
-        let gallery_items = load_gallery_items(self.get_config(), &self.search_string);
+        let gallery_items = load_gallery_items(&self.search_string);
         match gallery_items {
             Ok(gallery_items) => self.gallery_items = Some(gallery_items),
             Err(error) => {
@@ -327,37 +343,17 @@ impl GalleryUI {
         }
     }
 
-    fn launch_preview(hash: String, config: Arc<Config>, floating_windows: Option<&Rc<RefCell<Vec<FloatingWindowState>>>>) {
-        if let Some(floating_windows) = floating_windows {
-            let mut floating_windows = floating_windows.borrow_mut();
-            for window_state in floating_windows.iter_mut() {
-                if let Some(preview_ui) = window_state.window.downcast_ref::<PreviewUI>() {
-                    if let Some(info_promise) = preview_ui.media_info.as_ref() {
-                        if let Some(info_res) = info_promise.ready() {
-                            if let Ok(media_info) = info_res {
-                                if media_info.hash == hash {
-                                    window_state.is_open = true;
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut preview = gallery_ui::PreviewUI::new(Arc::clone(&config), hash.clone());
+    fn launch_preview(hash: String, preview_windows: &mut Vec<WindowContainer>) {
+        let mut preview = PreviewUI::new(hash.clone());
+        let mut title = preview.short_id.clone();
+        title.insert_str(0, "preview-");
+        if !ui::does_window_exist(&title, preview_windows) {
             preview.load_media_info_by_hash(hash.clone());
-            let mut title = hash.clone();
-            let widget_id = Id::new(&title);
-            title.truncate(6);
-            title.insert_str(0, "preview-");
-
-            floating_windows.push(FloatingWindowState {
+            preview_windows.push(WindowContainer {
                 title,
-                widget_id,
-                is_open: true,
+                is_open: Some(true),
                 window: preview,
-            });
+            })
         }
     }
 
@@ -373,18 +369,16 @@ impl GalleryUI {
     fn render_thumbnails(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         ui.vertical(|ui| {
             ui.label("media");
-            let thumbnail_size = self.get_config().ui.import.thumbnail_size as f32;
+            let thumbnail_size = ui::constants::IMPORT_THUMBNAIL_SIZE;
             ScrollArea::vertical().id_source("previews_col").show(ui, |ui| {
                 let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                 ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
-                        let config = self.get_config();
-                        // let gallery_items = self.gallery_items.iter_mut();
                         if let Some(gallery_items) = self.gallery_items.as_mut() {
-                            for gallery_item in gallery_items {
+                            for gallery_item in gallery_items.iter_mut() {
                                 let status_label = gallery_item.get_status_label().map(|label| label.into());
-                                let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
+                                let thumbnail = gallery_item.get_thumbnail();
                                 let mut options = RenderLoadingImageOptions::default();
                                 options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
@@ -394,11 +388,7 @@ impl GalleryUI {
                                 if let Some(response) = response {
                                     if response.clicked() {
                                         if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                            GalleryUI::launch_preview(
-                                                gallery_entry.hash.clone().clone(),
-                                                Arc::clone(&config),
-                                                self.root_interface_floating_windows.as_ref(),
-                                            )
+                                            GalleryUI::launch_preview(gallery_entry.hash.clone(), &mut self.preview_windows)
                                         }
                                     }
                                 }
@@ -411,47 +401,56 @@ impl GalleryUI {
     }
 
     fn render_search(&mut self, ui: &mut Ui) {
-        let options = vec!["bruh", "moment", "red", "green", "to", "two", "yellow", "deoxyribonucleic_acid"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
         ui.horizontal(|ui| {
             ui.label("search");
 
             ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
-                let autocomplete = autocomplete::create(&mut self.search_string, &options, None);
-
-                let response = ui.add(autocomplete);
-                if response.changed() {
-                    self.load_gallery_entries();
+                if let Some(search_options) = self.search_options.as_ref() {
+                    let autocomplete = autocomplete::create(&mut self.search_string, search_options, true);
+                    ui.add(autocomplete);
+                    if ui.ctx().input().key_pressed(Key::Tab)
+                        || ui.ctx().input().key_pressed(Key::Space)
+                        || ui.ctx().input().key_pressed(Key::Backspace)
+                    {
+                        self.load_gallery_entries();
+                    }
                 }
             });
         });
+    }
+
+    fn render_preview_windows(&mut self, ctx: &egui::Context) {
+        self.preview_windows.retain(|window| window.is_open.unwrap());
+        for preview_window in self.preview_windows.iter_mut() {
+            egui::Window::new(&preview_window.title)
+                .open(preview_window.is_open.as_mut().unwrap())
+                .default_size([800.0, 400.0])
+                .collapsible(false)
+                .vscroll(false)
+                .hscroll(false)
+                .show(ctx, |ui| {
+                    preview_window.window.ui(ui, ctx);
+                });
+        }
     }
 }
 
 impl Default for GalleryUI {
     fn default() -> Self {
         Self {
+            preview_windows: vec![],
             search_string: String::new(),
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
-            preview_window_state_ids: vec![],
-            root_interface_floating_windows: None,
-            config: None,
             gallery_items: None,
+            search_options: None,
         }
     }
 }
 
-impl ui::DockedWindow for GalleryUI {
-    fn set_config(&mut self, config: Arc<Config>) {
-        self.config = Some(config);
-    }
-    fn get_config(&self) -> Arc<Config> {
-        Arc::clone(self.config.as_ref().unwrap())
-    }
+impl ui::UserInterface for GalleryUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_previews();
+        self.render_preview_windows(ctx);
         ui.vertical(|ui| {
             self.render_search(ui);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {

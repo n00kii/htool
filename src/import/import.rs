@@ -42,7 +42,7 @@ pub struct MediaEntry {
     pub importation_status: Option<Promise<Arc<ImportationStatus>>>,
 }
 
-pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) {
+pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) {
         let bytes = media_entry.bytes.as_ref();
         let mut fail = |message: String| {
             let (sender, promise) = Promise::new();
@@ -68,12 +68,11 @@ pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMa
                     };
 
                     let bytes = Arc::clone(bytes);
-                    let config = Arc::clone(&config);
                     let dir_link_map = Arc::clone(&dir_link_map);
                     let linking_dir = media_entry.linking_dir.clone();
                     media_entry.importation_status = Some(Promise::spawn_thread("", move || {
                         let bytes = &*bytes as &[u8];
-                        let result = data::register_media(config, bytes, filekind, linking_dir, dir_link_map);
+                        let result = data::register_media(bytes, filekind, linking_dir, dir_link_map);
                         Arc::new(result)
                     }))
                 }
@@ -348,7 +347,7 @@ impl MediaEntry {
         self.mime_type.as_ref()
     }
 
-    pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
+    pub fn get_thumbnail(&mut self, thumbnail_size: f32) -> Option<&Promise<Result<RetainedImage, Error>>> {
         match &self.thumbnail {
             None => match self.get_bytes().ready() {
                 None => {
@@ -364,12 +363,9 @@ impl MediaEntry {
                         }
                         Ok(bytes) => {
                                 let bytes = Arc::clone(bytes);
-                                // let arc = Arc::new(bytes);
                                 thread::spawn(move || {
                                     let bytes = &bytes as &[u8];
-                                    // println!("{:?}", bytes.len());
                                     let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-                                    // println!("{:?}", image_res.is_err());
                                     sender.send(image_res);
                                 });
                             }
@@ -406,8 +402,8 @@ impl MediaEntry {
         cond_var.notify_all();
     }
 
-    pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
-        let pixels = data::generate_thumbnail(image_data, thumbnail_size)?;
+    pub fn load_thumbnail(image_data: &[u8], thumbnail_size: f32) -> Result<RetainedImage> {
+        let pixels = data::generate_thumbnail(image_data, thumbnail_size as u8)?;
         let img = ui::generate_retained_image(&pixels)?;
         Ok(img)
     }

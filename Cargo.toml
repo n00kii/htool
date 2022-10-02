@@ -19,6 +19,7 @@ thiserror = "1.0"
 rand = "0.8.5"
 anyhow = "1.0"
 eframe = "0.19.0"
+egui = {version="0.19.0", features=["color-hex"]}
 rfd = "0.10.0"
 crossbeam-utils = "0.8.9"
 egui_extras = "0.19.0"
@@ -28,7 +29,9 @@ chrono = "0.4.22"
 downcast-rs = "1.2.0"
 rusqlite = { version = "0.28.0", features = ["bundled", "blob"] }
 egui-notify = { git = "https://github.com/n00kii/egui-notify" }
-egui-modal = "0.1.4"
+egui-modal = "0.1.5"
+once_cell = "1.15.0"
+arc-swap = "1.5.1"
 
 [profile.dev]
 opt-level = 3

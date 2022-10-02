@@ -16,15 +16,16 @@ use std::{env, sync::Arc};
 
 
 fn main() -> Result<()> {
-    let config = Arc::new(Config::load()?);
+    Config::load();
     let args: Vec<String> = env::args().collect();
     if let Some(command) = args.get(1) {
         match command.as_str() {
             "test_ui" => {
-                let mut app = ui::UserInterface::new(Arc::clone(&config));
-                app.load_docked_windows();
-                ui::UserInterface::start(app);
-            }
+                let mut app = ui::AppUI::new();
+                app.load_windows();
+                ui::AppUI::start(app);
+                Config::save();
+                }
 
             _ => println!("unknown command {command}"),
         }

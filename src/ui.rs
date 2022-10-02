@@ -1,6 +1,7 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use downcast_rs as downcast;
+use egui::{Align, Layout, text::LayoutJob, TextFormat};
 use egui_notify::Toasts;
 use std::{
     cell::{RefCell, RefMut},
@@ -31,12 +32,76 @@ use poll_promise::Promise;
 pub mod constants {
     use eframe::epaint::Color32;
 
-    pub const IMPORT_THUMBNAIL_SIZE: f64 = 100.;
+    pub const DELETE_ICON: &str = "🗑️";
+    pub const EDIT_ICON: &str = "✏️";
 
+    pub const IMPORT_THUMBNAIL_SIZE: f32 = 100.;
+    pub const SPACER_SIZE: f32 = 10.;
+    pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
     pub const CAUTION_BUTTON_FILL: Color32 = Color32::from_rgb(87, 38, 34);
     pub const SUGGESTED_BUTTON_FILL: Color32 = Color32::from_rgb(33, 54, 84);
     pub const CAUTION_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(242, 148, 148);
     pub const SUGGESTED_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
+}
+
+#[derive(Clone)]
+pub struct LayoutJobText {
+    pub text: String,
+    pub format: TextFormat,
+    pub offset: f32,
+}
+
+impl<T: Into<String>> From<T> for LayoutJobText {
+    fn from(text: T) -> Self {
+        Self::new(text)
+    }
+}
+
+// impl Into<LayoutJobText> for LayoutJobText {
+//     fn into(self) -> LayoutJobText {
+//         self
+//     }
+// }
+
+impl Default for LayoutJobText {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            format: TextFormat::default(),
+            offset: 0.0
+        }
+    }
+}
+
+impl LayoutJobText {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+    pub fn with_offset(mut self, offset: f32) -> Self {
+        self.offset = offset;
+        self
+    }
+    pub fn with_color(mut self, color: Color32) -> Self {
+        self.format.color = color;
+        self
+    }
+}
+
+
+pub fn generate_layout_job(text: Vec<impl Into<LayoutJobText>>) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    for text_data in text {
+        let text_data = text_data.into();
+        job.append(
+            &text_data.text,
+            text_data.offset,
+            text_data.format,
+        );
+    }
+    job
 }
 
 pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<RetainedImage> {
@@ -117,6 +182,15 @@ pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) {
 
 pub fn set_default_toast_options(toast: &mut egui_notify::Toast) {
     toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true);
+}
+
+pub fn does_window_exist(title: &String, windows: &Vec<WindowContainer>) -> bool {
+    for window in windows.iter() {
+        if &window.title == title {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn caution_button(text: impl std::fmt::Display) -> Button {
@@ -236,109 +310,68 @@ pub fn render_loading_image(
         },
     }
 }
-
-pub trait DockedWindow: downcast::Downcast {
-    fn get_config(&self) -> Arc<Config>;
-    fn set_config(&mut self, config: Arc<Config>);
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
-}
-pub trait FloatingWindow: downcast::Downcast {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
-}
-
-downcast::impl_downcast!(FloatingWindow);
-downcast::impl_downcast!(DockedWindow);
-
-pub struct FloatingWindowState {
+pub struct WindowContainer {
     pub title: String,
-    pub widget_id: Id,
-    pub is_open: bool,
-    pub window: Box<dyn FloatingWindow>,
+    pub window: Box<dyn UserInterface>,
+    pub is_open: Option<bool>,
 }
 
-struct DockedWindowState {
-    id: String,
-    window: Box<dyn DockedWindow>,
+pub trait UserInterface: downcast::Downcast {
+    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
 }
 
-pub struct UserInterface {
-    config: Arc<Config>,
+downcast::impl_downcast!(UserInterface);
+
+pub struct AppUI {
     current_window: String,
-    floating_windows: Rc<RefCell<Vec<FloatingWindowState>>>,
-    docked_windows: Vec<DockedWindowState>,
+    windows: Vec<WindowContainer>,
 }
 
-impl eframe::App for UserInterface {
+impl eframe::App for AppUI {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.render_floating_windows(ctx);
         self.render_top_bar(ctx);
-        self.render_side_panel(ctx);
         self.render_current_window(ctx);
         ctx.request_repaint();
     }
 }
 
-impl UserInterface {
-    pub fn new(config: Arc<Config>) -> Self {
-        UserInterface {
-            floating_windows: Rc::new(RefCell::new(vec![])),
-            docked_windows: vec![],
+impl AppUI {
+    pub fn new() -> Self {
+        AppUI {
+            windows: vec![],
             current_window: "".into(),
-            config,
         }
     }
 
-    pub fn clone_config(&self) -> Arc<Config> {
-        Arc::clone(&self.config)
-    }
-
-    pub fn start(app: UserInterface) {
+    pub fn start(app: AppUI) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
         eframe::run_native("htool2", options, Box::new(|_creation_context| Box::new(app)));
     }
 
-    pub fn load_docked_windows(&mut self) {
-        let mut window_states = vec![
-            DockedWindowState {
+    pub fn load_windows(&mut self) {
+        let mut windows = vec![
+            WindowContainer {
                 window: Box::new(import_ui::ImporterUI::default()),
-                id: "importer".to_string(),
+                is_open: None,
+                title: "importer".to_string(),
             },
-            DockedWindowState {
-                window: Box::new(gallery_ui::GalleryUI {
-                    root_interface_floating_windows: Some(Rc::clone(&self.floating_windows)),
-                    ..Default::default()
-                }),
-                id: "gallery".to_string(),
+            WindowContainer {
+                window: Box::new(gallery_ui::GalleryUI { ..Default::default() }),
+                is_open: None,
+
+                title: "gallery".to_string(),
             },
-            DockedWindowState {
-                window: Box::new(tags_ui::TagsUi::default()),
-                id: "tags".to_string(),
+            WindowContainer {
+                window: Box::new(tags_ui::TagsUI::default()),
+                is_open: None,
+
+                title: "tags".to_string(),
             },
         ];
 
-        for window in window_states.iter_mut() {
-            window.window.set_config(self.clone_config());
-        }
-        self.docked_windows = window_states;
+        self.windows = windows;
     }
-
-    pub fn render_floating_windows(&mut self, ctx: &egui::Context) {
-        for window_state in self.floating_windows.borrow_mut().iter_mut() {
-            // window_state.window.show(ctx, &mut window_state.is_open);
-            egui::Window::new(&window_state.title)
-                .id(window_state.widget_id)
-                .open(&mut window_state.is_open)
-                .default_size([800.0, 400.0])
-                .vscroll(false)
-                .hscroll(false)
-                .show(ctx, |ui| {
-                    window_state.window.ui(ui, ctx);
-                });
-        }
-    }
-
-    pub fn remove_floating_window() {}
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("app_top_bar").show(ctx, |ui| {
@@ -346,40 +379,27 @@ impl UserInterface {
                 ui.visuals_mut().button_frame = false;
                 egui::widgets::global_dark_light_mode_switch(ui);
                 ui.separator();
-                for window_state in self.docked_windows.iter_mut() {
-                    let response = ui.selectable_label(self.current_window == window_state.id, window_state.id.clone());
+                for window in self.windows.iter_mut() {
+                    let response = ui.selectable_label(self.current_window == window.title, window.title.clone());
                     if response.clicked() {
-                        self.current_window = window_state.id.clone();
+                        self.current_window = window.title.clone();
                     }
                 }
             });
         });
     }
 
-    fn render_side_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("egui_demo_panel")
-            .resizable(false)
-            .default_width(145.0)
-            .show(ctx, |ui| {
-                ScrollArea::vertical().show(ui, |ui| {
-                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                        ui.add_space(5.0);
-                        for window_state in self.floating_windows.borrow_mut().iter_mut() {
-                            ui.toggle_value(&mut window_state.is_open, &window_state.title);
-                        }
-                    });
-                });
-            });
-    }
-
     fn render_current_window(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.current_window == "".to_string() {
-                ui.label("Nothing here but us chickens!");
+                ui.with_layout(Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
+                    let text = RichText::new(format!("htool2 v{}", env!("CARGO_PKG_VERSION"))).size(24.);
+                    ui.label(text);
+                });
             } else {
-                for window_state in self.docked_windows.iter_mut() {
-                    if window_state.id == self.current_window {
-                        window_state.window.ui(ui, ctx)
+                for window in self.windows.iter_mut() {
+                    if window.title == self.current_window {
+                        window.window.ui(ui, ctx)
                     }
                 }
             }

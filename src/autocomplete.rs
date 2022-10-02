@@ -26,8 +26,16 @@ struct Autocomplete {
 struct AutocompleteState {
     last_ccursor_range: Option<CCursorRange>,
     selected_index: i32,
-    option_matches: Vec<String>,
+    option_matches: Vec<AutocompleteOption>,
     are_matches_dirty: bool,
+}
+
+#[derive(Clone)]
+pub struct AutocompleteOption {
+    pub label: String,
+    pub color: Option<Color32>,
+    pub value: String,
+    pub description: String,
 }
 
 impl Default for AutocompleteState {
@@ -47,18 +55,13 @@ impl Autocomplete {
     }
 }
 
-use eframe::{
-    egui::{
-        self,
-        text::CCursor,
-        text_edit::{CCursorRange, CursorRange, TextEditState},
-        Id, Key, Modifiers, Response,
-    },
-    epaint::{pos2, text::cursor::Cursor, vec2, Color32, FontId, Pos2, Rect},
-};
+use eframe::epaint::{pos2, text::cursor::Cursor, vec2, Color32, FontId, Pos2, Rect};
+use egui::{text_edit::CCursorRange, Area, Id, Response, Ui, Widget};
 
-pub fn create<'a>(search: &'a mut String, options: &'a Vec<String>, alt_text: Option<&'a Vec<String>>) -> impl egui::Widget + 'a {
-    move |ui: &mut egui::Ui| autocomplete_ui(ui, search, options, alt_text)
+use crate::ui;
+
+pub fn create<'a>(search: &'a mut String, options: &'a Vec<AutocompleteOption>, appear_below: bool) -> impl Widget + 'a {
+    move |ui: &mut egui::Ui| autocomplete_ui(ui, search, options, appear_below)
 }
 
 pub fn get_current_word(cursor_index: Option<usize>, text: &String) -> Option<(String, (usize, usize))> {
@@ -107,7 +110,7 @@ pub fn get_current_word(cursor_index: Option<usize>, text: &String) -> Option<(S
     None
 }
 
-pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<String>, alt_text: Option<&Vec<String>>) -> Response {
+pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<AutocompleteOption>, appear_below: bool) -> Response {
     let tedit = egui::TextEdit::singleline(search).lock_focus(true);
     let mut tedit_output = tedit.show(ui);
 
@@ -118,10 +121,14 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
         let mut ac_state: AutocompleteState = ui.ctx().memory().data.get_persisted(id).unwrap_or_default();
         let last_ccursor_range = tedit_output.state.ccursor_range();
 
+        if tedit_response.changed() {
+            ac_state.are_matches_dirty = true;
+        }
+
         let cursor_index = last_ccursor_range.map(|ccursor_range| ccursor_range.primary.index);
 
         if let Some((current_word, word_index_range)) = get_current_word(cursor_index, search) {
-            let ac_matches = autocomplete(&current_word, options);
+            let ac_matches = autocomplete(&current_word, options).to_owned();
             if ac_matches.len() > 0 {
                 let set_ccursor_range = |range: Option<CCursorRange>| {
                     tedit_output.state.set_ccursor_range(range);
@@ -140,19 +147,20 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
                     set_ccursor_range(ac_state.last_ccursor_range);
                 } else if ui.ctx().input().key_pressed(egui::Key::Tab) {
                     if let Some(ac_match) = ac_matches.get(ac_state.selected_index as usize) {
-                        let insert_str = format!("{ac_match} ");
+                        let insert_str = format!("{} ", ac_match.value);
                         search.drain(word_index_range.0..word_index_range.1);
                         search.push_str(insert_str.as_str());
-                        
+
                         let len_diff = insert_str.len() as i32 - (word_index_range.1 as i32 - word_index_range.0 as i32);
-                        
+
                         let ccursor_range = last_ccursor_range.map(|ccursor_range| {
                             let mut ccursor_range = ccursor_range.clone();
                             ccursor_range.primary.index = (len_diff + ccursor_range.primary.index as i32).max(0) as usize;
                             ccursor_range.secondary.index = ccursor_range.primary.index;
                             ccursor_range
                         });
-                        set_ccursor_range(ccursor_range)
+                        set_ccursor_range(ccursor_range);
+                        ac_state.selected_index = 0;
                     }
                 }
 
@@ -169,56 +177,91 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Str
 
                 let text_galleys = ac_matches
                     .iter()
-                    .map(|text| {
-                        let galley = ui.painter().layout_no_wrap(text.replace("_", " "), icon_font.clone(), Color32::LIGHT_GRAY);
+                    .map(|option| {
+                        let text_galley = ui.painter().layout_no_wrap(
+                            option.label.replace("_", " "),
+                            icon_font.clone(),
+                            option.color.unwrap_or(ui::constants::DEFAULT_TEXT_COLOR),
+                        );
 
-                        ac_height += galley.rect.height() + ac_rect_inner_padding;
+                        let desc_galley =
+                            ui.painter()
+                                .layout_no_wrap(option.description.clone(), icon_font.clone(), ui::constants::DEFAULT_TEXT_COLOR);
+
+                        ac_height += text_galley.rect.height() + ac_rect_inner_padding;
                         if text_height == 0. {
-                            text_height = galley.rect.height();
+                            text_height = text_galley.rect.height();
                         }
-                        galley
+                        (text_galley, desc_galley, option.color)
                     })
                     .collect::<Vec<_>>();
 
                 ac_height -= ac_rect_inner_padding;
-                ac_rect.set_top(tedit_response.rect.top() - ac_height - ac_rect_margin);
-                ac_rect.set_bottom(tedit_response.rect.top() - ac_rect_margin);
-
-                ui.painter().rect(ac_rect, 2., visuals.bg_fill, visuals.bg_stroke);
-
-                let ac_rect_left_top = ac_rect.left_top();
-                let mut index = 0;
-                for mut text_galley in text_galleys {
-                    let offset_x = ac_rect_padding;
-                    let offset_y = ac_rect_padding + ((index) as f32 * (ac_rect_inner_padding + text_height));
-                    let text_pos = ac_rect_left_top + vec2(offset_x, offset_y);
-                    let interaction_rect = text_galley.rect.clone().translate(text_pos.to_vec2());
-                    let text_hovered = tedit_response
-                        .ctx
-                        .input()
-                        .pointer
-                        .hover_pos()
-                        .map(|p| interaction_rect.contains(p))
-                        .unwrap_or(false);
-                    let text_selected = ac_state.selected_index == index;
-
-                    if text_selected {
-                        text_galley = ui
-                            .painter()
-                            .layout_no_wrap(text_galley.text().to_string(), icon_font.clone(), Color32::BLUE);
-                    } else if text_hovered {
-                        text_galley = ui
-                            .painter()
-                            .layout_no_wrap(text_galley.text().to_string(), icon_font.clone(), Color32::RED);
-                    }
-                    ui.painter().galley(text_pos, text_galley);
-                    index += 1;
+                if appear_below {
+                    ac_rect.set_top(tedit_response.rect.bottom() + ac_rect_margin);
+                    ac_rect.set_bottom(tedit_response.rect.bottom() + ac_rect_margin + ac_height);
+                } else {
+                    ac_rect.set_top(tedit_response.rect.top() - ac_height - ac_rect_margin);
+                    ac_rect.set_bottom(tedit_response.rect.top() - ac_rect_margin);
                 }
+
+                Area::new(id).interactable(true).fixed_pos(Pos2::ZERO).show(&ui.ctx(), |ui: &mut Ui| {
+                    let screen_rect = ui.ctx().input().screen_rect;
+                    // let area_response = ui.allocate_response(screen_rect.size(), Sense::click());
+                    // if area_response.clicked() && self.close_on_outside_click {
+                    //     self.close();
+                    // }
+                    // ui.painter().rect_filled(
+                    //     screen_rect,
+                    //     Rounding::none(),
+                    //     self.style.overlay_color,
+                    // );
+                    ui.painter().rect(ac_rect, 2., Color32::from_rgb(10, 10, 10), visuals.bg_stroke);
+                    let ac_rect_left_top = ac_rect.left_top();
+                    let mut index = 0;
+                    for (mut text_galley, desc_galley, text_color) in text_galleys {
+                        let offset_x = ac_rect_padding;
+                        let offset_y = ac_rect_padding + ((index) as f32 * (ac_rect_inner_padding + text_height));
+
+                        let d_offset_x = ac_rect.width() - desc_galley.rect.width() - ac_rect_padding;
+                        let text_pos = ac_rect_left_top + vec2(offset_x, offset_y);
+                        let desc_pos = ac_rect_left_top + vec2(d_offset_x, offset_y);
+                        let interaction_rect = text_galley.rect.clone().translate(text_pos.to_vec2());
+                        let text_hovered = tedit_response
+                            .ctx
+                            .input()
+                            .pointer
+                            .hover_pos()
+                            .map(|p| interaction_rect.contains(p))
+                            .unwrap_or(false);
+                        let text_selected = ac_state.selected_index == index;
+
+                        if text_selected {
+                            text_galley = ui.painter().layout_no_wrap(
+                                format!("[ {} ]", text_galley.text().to_string()),
+                                icon_font.clone(),
+                                text_color.unwrap_or(ui::constants::DEFAULT_TEXT_COLOR),
+                            );
+                            // }
+                            // } else if text_hovered {
+                            //     text_galley = ui.painter().layout_no_wrap(
+                            //         text_galley.text().to_string(),
+                            //         icon_font.clone(),
+                            //         ui::constants::SUGGESTED_BUTTON_TEXT_COLOR,
+                            //     );
+                        }
+
+                        ui.painter().galley(text_pos, text_galley);
+                        ui.painter().galley(desc_pos, desc_galley);
+                        index += 1;
+                    }
+                });
             }
         }
 
         ac_state.last_ccursor_range = last_ccursor_range;
         ui.ctx().memory().data.insert_persisted(id, ac_state);
+        ui.ctx().move_to_top(tedit_response.layer_id)
     }
 
     tedit_response
@@ -228,45 +271,38 @@ fn hamming_distance(a: &String, b: &String) -> usize {
     let a_len = a.len();
     let b_len = b.len();
     let size_difference = a_len.abs_diff(b_len);
-    let mut distance: usize = 0;
-    let smaller_size = a_len.min(b_len);
-    let (a_trunc, b_trunc) = (&a[..smaller_size], &b[..smaller_size]);
-    for (c_a, c_b) in a_trunc.chars().zip(b_trunc.chars()) {
-        if c_a != c_b {
-            distance += 1;
+    if a.contains(b) || b.contains(a) {
+        size_difference
+    } else {
+        let mut distance: usize = 0;
+        let smaller_size = a_len.min(b_len);
+        let (a_trunc, b_trunc) = (&a[..smaller_size], &b[..smaller_size]);
+        for (c_a, c_b) in a_trunc.chars().zip(b_trunc.chars()) {
+            if c_a != c_b {
+                distance += 1;
+            }
         }
+        distance + size_difference
     }
-    distance + size_difference
 }
 
-fn autocomplete<'a>(search: &String, options: &'a Vec<String>) -> Vec<&'a String> {
-    // let words = search.split_whitespace().collect::<Vec<_>>();
-    // let is_last_char_whitespace = if let Some(last_char) = search.chars().last() {
-    //     last_char.is_whitespace()
-    // } else {
-    //     false
-    // };
-    let min_distance = 3;
-    let min_search_len = 3;
-    // let current_word = if !is_last_char_whitespace { words.last() } else { None };
-    let mut matches: Vec<(&String, usize)> = vec![];
-    // if let Some(current_word) = current_word {
+fn autocomplete(search: &String, options: &Vec<AutocompleteOption>) -> Vec<AutocompleteOption> {
+    let max_distance_factor = 0.7;
+    let min_search_len = 1;
+    let mut matches: Vec<(AutocompleteOption, usize)> = vec![];
     if search.len() > min_search_len {
-        for option_word in options {
-            let distance = hamming_distance(&search.to_string(), option_word);
-            if distance <= min_distance {
-                // println!("{current_word}, {option_word}")
-                matches.push((option_word, distance))
+        for option in options {
+            let max_distance = (max_distance_factor * option.label.len() as f32) as usize;
+            let distance = hamming_distance(&search.to_string(), &option.label);
+            if distance <= max_distance {
+                matches.push((option.clone(), distance))
             }
         }
         // }
     }
 
     matches.sort_by_key(|(match_string, distance)| distance.clone());
-    matches
-        .iter()
-        .map(|(match_string, distance)| match_string.clone())
-        .collect::<Vec<&String>>()
+    matches.into_iter().map(|(match_option, distance)| match_option).collect::<Vec<_>>()
 }
 
 pub fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {

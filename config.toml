@@ -1,11 +1,20 @@
-version = 0
-
 [path]
 root = "./"
 landing = "testing_files/"
 database = "data.db"
 
-[hash]
-hashing_threads = 10
-[ui.import]
-thumbnail_size = 100
+[[namespaces]]
+name = "artist"
+color = [1.0, 0.6609525, 0.15238094]
+
+[[namespaces]]
+name = "species"
+color = [0.54963815, 0.8549927, 0.7241265]
+
+[[namespaces]]
+name = "character"
+color = [0.7141218, 0.15642667, 0.42730725]
+
+[[namespaces]]
+name = "copyright"
+color = [0.15258633, 0.78472984, 0.9155178]

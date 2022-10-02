@@ -1,3 +1,4 @@
+use crate::config;
 use crate::tags::tags::Tag;
 use crate::tags::tags::TagData;
 use crate::tags::tags::TagLink;
@@ -39,9 +40,9 @@ impl PartialEq for ImportationStatus {
     }
 }
 
-pub enum _EntryId {
+pub enum EntryId {
     MediaEntry(String),
-    MediaEntryPlural(i32),
+    PoolEntry(i32),
 }
 
 pub struct MediaInfo {
@@ -66,7 +67,7 @@ impl MediaInfo {
         for tag in tags {
             let includes_tag = self.tags.iter().any(|included_tag| included_tag == tag);
             if !includes_tag {
-                return false
+                return false;
             }
         }
         true
@@ -119,8 +120,8 @@ pub fn generate_plural_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u
 }
 
 //TODO consolidate below fxns using enum
-pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn load_thumbnail_plural(link_id: i32) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE link_id = ?1")?;
     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![link_id], |row| row.get(0));
 
@@ -132,7 +133,7 @@ pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageB
         }
         Err(error) => {
             if error == rusqlite::Error::QueryReturnedNoRows {
-                let hashes_of_link = get_hashes_of_link(Arc::clone(&config), link_id)?;
+                let hashes_of_link = get_hashes_of_media_link(link_id)?;
                 if hashes_of_link.len() == 0 {
                     return Err(anyhow::Error::msg("no hashes in link"));
                 }
@@ -140,7 +141,7 @@ pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageB
                 let mut constituent_thumbnails = Vec::new();
 
                 for hash in hashes_of_link {
-                    if let Ok(constituent_thumbnail) = load_thumbnail(config.clone(), &hash) {
+                    if let Ok(constituent_thumbnail) = load_thumbnail(&hash) {
                         constituent_thumbnails.push(constituent_thumbnail);
                         if constituent_thumbnails.len() == max_constituent_thumbnails {
                             break;
@@ -170,8 +171,8 @@ pub fn load_thumbnail_plural(config: Arc<Config>, link_id: i32) -> Result<ImageB
     }
 }
 
-pub fn load_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn load_thumbnail(hash: &String) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1")?;
     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![hash], |row| row.get(0));
 
@@ -185,7 +186,7 @@ pub fn load_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<
             if error == rusqlite::Error::QueryReturnedNoRows {
                 let mut statement = conn.prepare("SELECT mime FROM media_info WHERE hash = ?1")?;
                 let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
-                let bytes = load_bytes(Arc::clone(&config), hash)?;
+                let bytes = load_bytes(hash)?;
                 if mime_type.starts_with("image") {
                     let thumbnail = generate_thumbnail(&bytes, 100)?;
                     let mut thumbnail_bytes: Vec<u8> = Vec::new();
@@ -210,8 +211,8 @@ pub fn load_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<
     // println!("b: {:?}", bytes);
 }
 
-pub fn initialize_database_connection(db_path: &PathBuf) -> Result<Connection> {
-    let conn = Connection::open(&db_path)?;
+pub fn initialize_database_connection() -> Result<Connection> {
+    let conn = Connection::open(&Config::global().path.database()?)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS media_info (
                 hash TEXT PRIMARY KEY NOT NULL,
@@ -280,15 +281,15 @@ pub fn initialize_database_connection(db_path: &PathBuf) -> Result<Connection> {
     )?;
     Ok(conn)
 }
-pub fn load_bytes(config: Arc<Config>, hash: &String) -> Result<Vec<u8>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn load_bytes(hash: &String) -> Result<Vec<u8>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT bytes FROM media_bytes WHERE hash = ?1")?;
     let bytes: Vec<u8> = statement.query_row(params![hash], |row| row.get(0))?;
     Ok(bytes)
     // todo!()
 }
-pub fn load_media_info(config: Arc<Config>, hash: &String) -> Result<MediaInfo> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn load_media_info(hash: &String) -> Result<MediaInfo> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT * FROM media_info WHERE hash = ?1")?;
     let mut media_info: MediaInfo = statement.query_row(params![hash], |row| {
         Ok(MediaInfo {
@@ -313,14 +314,14 @@ pub fn load_media_info(config: Arc<Config>, hash: &String) -> Result<MediaInfo> 
     Ok(media_info)
 }
 
-pub fn clear_tags(config: Arc<Config>, hash: &String) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn clear_entry_tags(hash: &String) -> Result<()> {
+    let conn = initialize_database_connection()?;
     conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?;
     Ok(())
 }
 
-pub fn delete_media(config: Arc<Config>, hash: &String) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn delete_media(hash: &String) -> Result<()> {
+    let conn = initialize_database_connection()?;
     conn.execute("DELETE FROM media_info WHERE hash = ?1", params![hash])?;
     conn.execute("DELETE FROM media_bytes WHERE hash = ?1", params![hash])?;
     conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?;
@@ -329,11 +330,8 @@ pub fn delete_media(config: Arc<Config>, hash: &String) -> Result<()> {
     Ok(())
 }
 
-pub fn resolve_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
-    //TODO: protect against circular impls
-    // let inital_tags_data: Vec<TagData> = tags.iter().map(|tag| load_tag_data_with_conn(&conn, tag)).collect::<Result<Vec<TagData>>>()?;
-
+pub fn resolve_tags(tags: &Vec<Tag>) -> Result<Vec<Tag>> {
+    let conn = initialize_database_connection()?;
     fn resolve_tags(conn: &Connection, tags: &Vec<Tag>, mut was_aliased_tagstrings: Vec<String>) -> Result<Vec<Tag>> {
         let inital_tags_data = tags
             .iter()
@@ -355,13 +353,10 @@ pub fn resolve_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
         let mut resolved_tags = vec![];
         let mut is_resolved = true;
         for tag_data in &inital_tags_data {
-            // let mut was_aliased = false;
             for link in &tag_data.links {
                 let is_from_tag = link.from_tagstring == tag_data.tag.to_tagstring();
                 let to_tag = Tag::from_tagstring(&link.to_tagstring);
                 if (link.link_type == TagLinkType::Implication) && is_from_tag {
-                    // resolved_tags.push(Tag::from_tagstring(&link.to_tagstring));
-                    // is_resolved = false;
                     let is_already_included_in_initial = inital_tags_data
                         .iter()
                         .any(|tag_data| (tag_data.tag.to_tagstring() == to_tag.to_tagstring()));
@@ -374,12 +369,10 @@ pub fn resolve_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
                 if (link.link_type == TagLinkType::Alias) && is_from_tag {
                     add_tag(&to_tag, &mut resolved_tags, Some(&mut is_resolved));
                     was_aliased_tagstrings.push(tag_data.tag.to_tagstring());
-                    // was_aliased = true;
                 }
             }
             if !was_aliased(&tag_data.tag.to_tagstring(), &was_aliased_tagstrings) {
                 add_tag(&tag_data.tag, &mut resolved_tags, None);
-                // resolved_tags.push(tag_data.tag.clone())
             }
         }
         if !is_resolved {
@@ -394,8 +387,8 @@ pub fn resolve_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
 }
 // pub fn does_tag
 
-pub fn does_link_exist(config: Arc<Config>, link: &TagLink) -> Result<bool> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn does_link_exist(link: &TagLink) -> Result<bool> {
+    let conn = initialize_database_connection()?;
 
     let mut statement = conn.prepare("SELECT 1 FROM tag_links WHERE type = ?1 AND from_tag = ?2 AND to_tag = ?3")?;
     let exists = statement.exists(params![link.link_type.to_string(), link.from_tagstring, link.to_tagstring])?;
@@ -403,17 +396,17 @@ pub fn does_link_exist(config: Arc<Config>, link: &TagLink) -> Result<bool> {
     Ok(exists)
 }
 
-pub fn does_tagstring_exist(config: Arc<Config>, tagstring: &String) -> Result<bool> {
-    let does_exist = does_tag_exist(config.clone(), &Tag::from_tagstring(tagstring))?;
+pub fn does_tagstring_exist(tagstring: &String) -> Result<bool> {
+    let does_exist = does_tag_exist(&Tag::from_tagstring(tagstring))?;
     Ok(does_exist)
 }
 
-pub fn does_tag_exist(config: Arc<Config>, tag: &Tag) -> Result<bool> {
-    Ok(filter_to_unknown_tags(config, &vec![tag.clone()])?.len() == 0)
+pub fn does_tag_exist(tag: &Tag) -> Result<bool> {
+    Ok(filter_to_unknown_tags(&vec![tag.clone()])?.len() == 0)
 }
 
-pub fn filter_to_unknown_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn filter_to_unknown_tags(tags: &Vec<Tag>) -> Result<Vec<Tag>> {
+    let conn = initialize_database_connection()?;
     let mut not_exists = vec![];
 
     for tag in tags {
@@ -428,19 +421,18 @@ pub fn filter_to_unknown_tags(config: Arc<Config>, tags: &Vec<Tag>) -> Result<Ve
     Ok(not_exists)
 }
 
-pub fn set_tags(config: Arc<Config>, hash: &String, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
-    let resolved_tags = resolve_tags(Arc::clone(&config), tags)?;
-    let conn = initialize_database_connection(&config.path.database()?)?;
-    clear_tags(config, hash)?;
+pub fn set_tags(hash: &String, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
+    let resolved_tags = resolve_tags(tags)?;
+    let conn = initialize_database_connection()?;
+    clear_entry_tags(hash)?;
     for tag in resolved_tags.iter() {
         conn.execute("DELETE FROM media_tags WHERE hash = ?1 AND tag = ?2", params![hash, tag.to_tagstring()])?;
         conn.execute("INSERT INTO media_tags (hash, tag) VALUES (?1, ?2)", params![hash, tag.to_tagstring()])?;
     }
     Ok(resolved_tags)
 }
-pub fn get_all_hashes(config: Arc<Config>) -> Result<Vec<String>> {
-    let db_path = config.path.database()?;
-    let conn = initialize_database_connection(&db_path)?;
+pub fn get_all_hashes() -> Result<Vec<String>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT hash FROM media_info")?;
     let rows = statement.query_map([], |row| row.get(0))?;
     let mut hashes: Vec<String> = Vec::new();
@@ -449,8 +441,8 @@ pub fn get_all_hashes(config: Arc<Config>) -> Result<Vec<String>> {
     }
     Ok(hashes)
 }
-pub fn get_links_of_hash(config: Arc<Config>, hash: &String) -> Result<Vec<i32>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn get_media_links_of_hash(hash: &String) -> Result<Vec<i32>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT DISTINCT id FROM media_links WHERE hash = ?1")?;
     let rows = statement.query_map(params![hash], |row| row.get(0))?;
     let mut link_ids: Vec<i32> = Vec::new();
@@ -459,8 +451,8 @@ pub fn get_links_of_hash(config: Arc<Config>, hash: &String) -> Result<Vec<i32>>
     }
     Ok(link_ids)
 }
-pub fn get_hashes_of_link(config: Arc<Config>, link_id: i32) -> Result<Vec<String>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn get_hashes_of_media_link(link_id: i32) -> Result<Vec<String>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT hash FROM media_links WHERE id = ?1")?;
     let rows = statement.query_map(params![link_id], |row| row.get(0))?;
     let mut hashes: Vec<String> = Vec::new();
@@ -470,9 +462,12 @@ pub fn get_hashes_of_link(config: Arc<Config>, link_id: i32) -> Result<Vec<Strin
     Ok(hashes)
 }
 
-pub fn delete_tag(config: Arc<Config>, tag: &Tag) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn delete_tag(tag: &Tag) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    delete_tag_with_conn(&conn, tag)
+}
 
+fn delete_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
     let s_tag = tag.someified();
     conn.execute(
         "DELETE FROM tag_info WHERE name = ?1 AND namespace = ?2",
@@ -480,13 +475,73 @@ pub fn delete_tag(config: Arc<Config>, tag: &Tag) -> Result<()> {
     )?;
     conn.execute("DELETE FROM tag_links WHERE from_tag = ?1", params![s_tag.to_tagstring()])?;
     conn.execute("DELETE FROM tag_links WHERE to_tag = ?1", params![s_tag.to_tagstring()])?;
+    conn.execute("DELETE FROM media_tags WHERE tag = ?1", params![s_tag.to_tagstring()])?;
 
     Ok(())
 }
 
-pub fn delete_link(config: Arc<Config>, link: &TagLink) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    let old_tag = old_tag.someified();
+    let new_tag = new_tag.someified();
+    let old_tagstring = old_tag.to_tagstring();
+    let new_tagstring = new_tag.to_tagstring();
 
+    register_tag_with_conn(&conn, &new_tag)?;
+    if old_tagstring == new_tagstring {
+        Ok(())
+    } else {
+        let old_tag_data = load_tag_data_with_conn(&conn, &old_tag)?;
+        for old_link in old_tag_data.links {
+            let mut new_link = old_link.clone();
+            if new_link.from_tagstring == old_tagstring {
+                new_link.from_tagstring = new_tagstring.clone();
+            } else {
+                new_link.to_tagstring = new_tagstring.clone();
+            }
+            register_tag_link_with_conn(&conn, &new_link)?;
+        }
+
+        let mut media_stmt = conn.prepare("SELECT hash FROM media_tags WHERE tag = ?1")?;
+        let mut pool_stmt = conn.prepare("SELECT link_id FROM media_tags WHERE tag = ?1")?;
+        let hash_results = media_stmt.query_map(params![old_tagstring], |row| row.get(0))?;
+        let link_id_results = pool_stmt.query_map(params![old_tagstring], |row| row.get(1))?;
+
+        let mut associated_entries: Vec<EntryId> = Vec::new();
+
+        for hash in hash_results {
+            if let Ok(hash) = hash {
+                associated_entries.push(EntryId::MediaEntry(hash))
+            }
+        }
+        for link_id in link_id_results {
+            if let Ok(link_id) = link_id {
+                associated_entries.push(EntryId::PoolEntry(link_id))
+            }
+        }
+
+        for entry in associated_entries.iter() {
+            match entry {
+                EntryId::MediaEntry(hash) => {
+                    conn.execute("INSERT INTO media_tags (hash, tag) VALUES (?1, ?2)", params![hash, new_tagstring])?;
+                }
+                EntryId::PoolEntry(link_id) => {
+                    conn.execute("INSERT INTO media_tags (link_id, tag) VALUES (?1, ?2)", params![link_id, new_tagstring])?;
+                }
+            }
+        }
+
+        delete_tag_with_conn(&conn, &old_tag)?;
+        Ok(())
+    }
+}
+
+pub fn delete_tag_link(link: &TagLink) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    delete_tag_link_with_conn(&conn, link)
+}
+
+fn delete_tag_link_with_conn(conn: &Connection, link: &TagLink) -> Result<()> {
     conn.execute(
         "DELETE FROM tag_links WHERE type = ?1 AND from_tag = ?2 AND to_tag = ?3 ",
         params![link.link_type.to_string(), link.from_tagstring, link.to_tagstring],
@@ -495,9 +550,12 @@ pub fn delete_link(config: Arc<Config>, link: &TagLink) -> Result<()> {
     Ok(())
 }
 
-pub fn register_tag(config: Arc<Config>, tag: &Tag) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn register_tag(tag: &Tag) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    register_tag_with_conn(&conn, tag)
+}
 
+fn register_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
     let s_tag = tag.someified();
     conn.execute(
         "DELETE FROM tag_info WHERE name = ?1 AND namespace = ?2",
@@ -506,7 +564,6 @@ pub fn register_tag(config: Arc<Config>, tag: &Tag) -> Result<()> {
     conn.execute(
         "INSERT INTO tag_info (name, namespace, description)
             VALUES (?1, ?2, ?3)",
-        // params![tag.name, tag.namespace.as_ref().unwrap_or(&"".to_string()), tag.description.as_ref().unwrap_or(&"".to_string())],
         params![
             s_tag.name,
             s_tag.namespace.as_ref().unwrap_or(&"".to_string()),
@@ -517,8 +574,12 @@ pub fn register_tag(config: Arc<Config>, tag: &Tag) -> Result<()> {
     Ok(())
 }
 
-pub fn register_tag_link(config: Arc<Config>, link: &TagLink) -> Result<()> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn register_tag_link(link: &TagLink) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    register_tag_link_with_conn(&conn, link)
+}
+
+fn register_tag_link_with_conn(conn: &Connection, link: &TagLink) -> Result<()> {
     conn.execute(
         "DELETE FROM tag_links WHERE type = ?1 AND from_tag = ?2 AND to_tag = ?3 ",
         params![link.link_type.to_string(), link.from_tagstring, link.to_tagstring],
@@ -528,12 +589,11 @@ pub fn register_tag_link(config: Arc<Config>, link: &TagLink) -> Result<()> {
             VALUES (?1, ?2, ?3)",
         params![link.link_type.to_string(), link.from_tagstring, link.to_tagstring],
     )?;
-
     Ok(())
 }
 
-pub fn get_all_tag_data(config: Arc<Config>) -> Result<Vec<TagData>> {
-    let conn = initialize_database_connection(&config.path.database()?)?;
+pub fn get_all_tag_data() -> Result<Vec<TagData>> {
+    let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT * FROM tag_info")?;
 
     let tag_results = statement.query_map([], |row| {
@@ -555,14 +615,12 @@ pub fn get_all_tag_data(config: Arc<Config>) -> Result<Vec<TagData>> {
 }
 
 pub fn register_media(
-    config: Arc<Config>,
     bytes: &[u8],
     filekind: Option<infer::Type>,
     linking_dir: Option<String>,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
 ) -> ImportationStatus {
     fn register(
-        config: Arc<Config>,
         bytes: &[u8],
         filekind: Option<infer::Type>,
         linking_dir: Option<String>,
@@ -571,8 +629,7 @@ pub fn register_media(
         // println!("got {} kB for register", bytes.len() / 1000);
         let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
         let hasher = hasher_config.to_hasher();
-        let db_path = config.path.database()?;
-        let conn = initialize_database_connection(&db_path)?;
+        let conn = initialize_database_connection()?;
 
         let sha_hash = sha256::digest_bytes(bytes);
         let mut perceptual_hash: Option<String> = None;
@@ -649,7 +706,7 @@ pub fn register_media(
         }
     }
 
-    match register(config, bytes, filekind, linking_dir, dir_link_map) {
+    match register(bytes, filekind, linking_dir, dir_link_map) {
         Ok(status) => return status,
         Err(error) => return ImportationStatus::Fail(error),
     };
