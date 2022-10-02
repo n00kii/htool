@@ -29,11 +29,7 @@ pub struct TagsUI {
     filter_tagstrings: Vec<String>,
     loaded_tag_data: LoadedTagDataRef,
     modify_windows: Vec<WindowContainer>,
-    search_tag: Option<String>,
-    is_search_tag_valid: bool,
     register_unknown_tags: bool,
-    new_implication: TagLink,
-    new_alias: TagLink,
 
     link_pending_delete: Option<TagLink>,
     tag_pending_delete: Option<Tag>,
@@ -42,17 +38,13 @@ pub struct TagsUI {
 impl Default for TagsUI {
     fn default() -> Self {
         Self {
-            search_tag: None,
             link_pending_delete: None,
             tag_pending_delete: None,
             filter_query: String::new(),
             filter_tagstrings: vec![],
-            is_search_tag_valid: false,
             loaded_tag_data: Rc::new(RefCell::new(None)),
             modify_windows: vec![],
-            new_implication: TagLink::empty_implication(),
             register_unknown_tags: false,
-            new_alias: TagLink::empty_alias(),
             toasts: Rc::new(RefCell::new(Toasts::default().with_anchor(Anchor::BottomLeft))),
         }
     }
@@ -126,44 +118,6 @@ impl TagsUI {
                     })
                 }
             }
-            let mut clear_search_tag = false;
-            if let Some(search_tagstring) = self.search_tag.as_mut() {
-                let response = ui.text_edit_singleline(search_tagstring);
-                if response.lost_focus() {
-                    clear_search_tag = true;
-                };
-                response.request_focus();
-                ui.add_enabled_ui(!search_tagstring.is_empty(), |ui| {
-                    if ui.button(format!("edit \"{}\"", search_tagstring)).clicked() {
-                        clear_search_tag = false;
-                        if let Ok(does_exist) = data::does_tagstring_exist(&search_tagstring) {
-                            if does_exist {
-                                clear_search_tag = true;
-                                let mut search_tag = Tag::from_tagstring(&search_tagstring);
-                                Self::load_tag_description(&mut search_tag, &self.loaded_tag_data);
-                                Self::launch_tag_modify_window(
-                                    search_tag,
-                                    &mut self.modify_windows,
-                                    Rc::clone(&self.toasts),
-                                    Rc::clone(&self.loaded_tag_data),
-                                )
-                            } else {
-                                Self::toast_tag_doesnt_exist(&search_tagstring, &mut self.toasts.borrow_mut())
-                            }
-                        } else {
-                            Self::toast_failed_check_tag_exists(&search_tagstring, &mut self.toasts.borrow_mut())
-                        }
-                    }
-                });
-            } else {
-                if ui.button("edit tag").clicked() {
-                    self.search_tag = Some("".to_string())
-                }
-            }
-            if clear_search_tag {
-                self.search_tag = None;
-            }
-            ui.add_space(ui::constants::SPACER_SIZE);
             if ui.button("new tag link").clicked() {
                 let title = "new tag link".to_string();
                 if !ui::does_window_exist(&title, &self.modify_windows) {
