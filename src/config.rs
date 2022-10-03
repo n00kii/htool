@@ -1,12 +1,19 @@
-use std::{env, fs, path::PathBuf};
-
 use anyhow::{Context, Result};
+use arc_swap::{ArcSwap, Guard};
 use figment::{
     providers::{Format, Serialized, Toml},
     Figment,
 };
+use once_cell::sync::OnceCell;
 use path_absolutize::*;
 use serde::{Deserialize, Serialize};
+use std::{
+    env, fs,
+    path::PathBuf,
+    sync::{Arc, RwLock, RwLockReadGuard},
+};
+
+use crate::tags::tags::Namespace;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
@@ -65,41 +72,51 @@ pub struct Hash {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
-    pub version: u8,
     pub path: Path,
-    pub hash: Hash,
-    pub ui: Ui,
+    pub namespaces: Vec<Namespace>,
 }
+
+
 impl Default for Config {
-    fn default() -> Config {
-        Config {
-            version: 0,
+    fn default() -> Self {
+        Self {
             path: Path {
                 root: Some("./root".into()),
                 landing: "landing/".into(),
                 database: "data.db".into(),
             },
-            hash: Hash { hashing_threads: 10 },
-            ui: Ui {
-                import: Import { thumbnail_size: 100 },
-            },
+            namespaces: vec![],
         }
     }
 }
 
+static INSTANCE: OnceCell<ArcSwap<Config>> = OnceCell::new();
+
 impl Config {
+    pub fn global() -> Guard<Arc<Config>> {
+        INSTANCE.get().expect("uninitalized config").load()
+    }
+
+    pub fn clone() -> Config {
+        (&**Self::global()).clone()
+    }
+
     pub fn figment() -> Figment {
-        Figment::from(Serialized::defaults(Config::default())).merge(Toml::file(CONFIG_FILENAME))
+        Figment::from(Serialized::defaults(Self::default())).merge(Toml::file(CONFIG_FILENAME))
     }
 
-    pub fn load() -> Result<Config> {
-        Config::figment().extract().context("couldn't deserialize config")
+    pub fn set(new_config: Config) {
+        INSTANCE.get().expect("uninitalized config").store(Arc::new(new_config));
     }
 
-    pub fn _save(config: &Config) -> Result<()> {
-        let toml_string = toml::to_string(config).context("couldn't serialize config")?;
+    pub fn load() {
+        let config: Config = Config::figment().extract().expect("couldn't load config");
+        INSTANCE.set(ArcSwap::from_pointee(config)).expect("couldn't initialize config");
+    }
+
+    pub fn save() -> Result<()> {
+        let toml_string = toml::to_string(&**Self::global()).context("couldn't serialize config")?;
         fs::write(CONFIG_FILENAME, toml_string).context("couldn't write config")?;
-
         Ok(())
     }
 }

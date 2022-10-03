@@ -50,6 +50,43 @@ impl PartialEq for MediaEntry {
     fn eq(&self, other: &Self) -> bool {
         self.dir_entry.path() == other.dir_entry.path()
     }
+// pub fn import_media(media_entry: &mut MediaEntry, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) {
+//         let bytes = media_entry.bytes.as_ref();
+//         let mut fail = |message: String| {
+//             let (sender, promise) = Promise::new();
+//             media_entry.importation_status = Some(promise);
+//             sender.send(Arc::new(ImportationStatus::Fail(anyhow::Error::msg(message))));
+//         };
+//         match bytes {
+//             None => {
+//                 fail("bytes not loaded".into());
+//             }
+//             Some(promise) => match promise.ready() {
+//                 None => {
+//                     fail("bytes are still loading".into());
+//                 }
+//                 Some(Err(_error)) => {
+//                     fail("failed to load bytes".into());
+//                 }
+//                 Some(Ok(bytes)) => {
+//                     let filekind = match &media_entry.mime_type {
+//                         Some(Ok(kind)) => Some(kind.clone()),
+//                         Some(Err(_error)) => None,
+//                         None => None,
+//                     };
+
+//                     let bytes = Arc::clone(bytes);
+//                     let dir_link_map = Arc::clone(&dir_link_map);
+//                     let linking_dir = media_entry.linking_dir.clone();
+//                     media_entry.importation_status = Some(Promise::spawn_thread("", move || {
+//                         let bytes = &*bytes as &[u8];
+//                         let result = data::register_media(bytes, filekind, linking_dir, dir_link_map);
+//                         Arc::new(result)
+//                     }))
+//                 }
+//             },
+//         }
+//     // Ok(())
 }
 
 fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
@@ -146,7 +183,7 @@ pub fn scan_directory(
 }
 
 impl MediaEntry {
-    pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>, config: Arc<Config>) -> Result<RegistrationForm> {
+    pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) -> Result<RegistrationForm> {
         let bytes = self.bytes.as_ref();
         let mut fail = |message: String| -> Result<_, Error> { Err(anyhow::Error::msg("bytes not loaded")) };
         match bytes {
@@ -187,6 +224,13 @@ impl MediaEntry {
             Ok(Arc::new(bytes))
         });
         self.bytes = Some(promise)
+        //         let mut file = File::open(path)?;
+        //         let mut bytes: Vec<u8> = vec![];
+        //         file.read_to_end(&mut bytes)?;
+        //         Ok(Arc::new(bytes))
+        //     });
+        //     promise
+        // })
     }
 
     pub fn is_importing(&self) -> bool {

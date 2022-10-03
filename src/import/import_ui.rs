@@ -6,7 +6,7 @@ use crate::util::SizedEntryBuffer;
 // hide console window on Windows in release
 use super::super::data;
 use super::super::ui;
-use super::super::ui::DockedWindow;
+use super::super::ui::UserInterface;
 use super::super::Config;
 use super::import::scan_directory;
 // use super::import::{import_media, MediaEntry};
@@ -28,7 +28,6 @@ use std::sync::{Arc, Mutex};
 const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
-    config: Option<Arc<Config>>,
     media_entries: Option<Vec<Rc<RefCell<MediaEntry>>>>,
     alternate_scan_dir: Option<PathBuf>,
     delete_files_on_import: bool,
@@ -47,7 +46,6 @@ pub struct ImporterUI {
 
 impl Default for ImporterUI {
     fn default() -> Self {
-        let config = None;
         let load_buffer = SizedEntryBuffer::new(
             Some(5_000_000),
             None,
@@ -76,7 +74,6 @@ impl Default for ImporterUI {
             media_entries: None,
             alternate_scan_dir: None,
             current_import_res: None,
-            config,
             page_count: 1000,
             page_index: 0,
             scan_extension_filter: HashMap::from([
@@ -125,7 +122,7 @@ impl ImporterUI {
     }
 
     fn get_scan_dir(&self) -> PathBuf {
-        let landing_result = self.get_config().path.landing();
+        let landing_result = Config::global().path.landing();
         let landing = landing_result.unwrap_or_else(|_| PathBuf::from(""));
         if self.alternate_scan_dir.is_some() {
             self.alternate_scan_dir.as_ref().unwrap().clone()
@@ -222,9 +219,6 @@ impl ImporterUI {
                     let media_entries = scan_directory(self.get_scan_dir(), 0, None, &extension_filter);
                     if let Ok(media_entries) = media_entries {
                         self.media_entries = Some(media_entries);
-                        // for media_entry in self.media_entries.as_ref().unwrap() {
-                        //     if let Some(linking_dir) = &media_entry.linking_dir {}
-                        // }
                     }
                 }
 
@@ -420,13 +414,12 @@ impl ImporterUI {
                     .filter_map(|media_entry| {
                         media_entry
                             .borrow_mut()
-                            .generate_reg_form(Arc::clone(&self.dir_link_map), self.get_config())
+                            .generate_reg_form(Arc::clone(&self.dir_link_map))
                             .ok()
                     })
                     .collect::<Vec<_>>();
 
-                let config = self.get_config();
-                self.batch_import_status = Some(Promise::spawn_thread("", || Arc::new(data::register_media_with_form(config, reg_forms))));
+                self.batch_import_status = Some(Promise::spawn_thread("", || Arc::new(data::register_media_with_forms(reg_forms))));
             }
             self.load_buffer.poll();
             self.import_buffer.poll();
@@ -434,20 +427,18 @@ impl ImporterUI {
     }
 
     fn render_previews(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        ui.vertical(|previews_col| {
-            previews_col.label("preview");
+        ui.vertical(|ui| {
+            ui.label("preview");
 
-            let thumbnail_size = self.get_config().ui.import.thumbnail_size;
             if let Some(scanned_dirs) = self.media_entries.as_mut() {
                 // iterate through each mediaentry to draw its name on the sidebar, and to load its image
                 // wrapped in an arc mutex for multithreading purposes
-
                 ScrollArea::vertical()
                     .id_source("previews_col")
-                    .show(previews_col, |previews_col_scroll| {
+                    .show(ui, |ui| {
                         let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
-                        previews_col_scroll.allocate_ui(Vec2::new(previews_col_scroll.available_size_before_wrap().x, 0.0), |scroll_wrap| {
-                            scroll_wrap.with_layout(layout, |scroll_wrap| {
+                        ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
+                            ui.with_layout(layout, |ui| {
                                 // scroll_wrap.ctx().request_repaint();
                                 // let mut num_loading = ImporterUI::get_number_of_loading_bytes(scanned_dirs);
                                 for (index, media_entry) in scanned_dirs.iter_mut().enumerate() {
@@ -486,7 +477,7 @@ impl ImporterUI {
                                     //     //HERE1 import_media(media_entry, dir_link_map, Arc::clone(self.config.as_ref().unwrap()));
                                     // }
 
-                                    let widget_size = (thumbnail_size + 10) as f32;
+                                    let widget_size = ui::constants::IMPORT_THUMBNAIL_SIZE + 10.;
                                     let widget_size = [widget_size, widget_size];
                                     let mut media_entry = media_entry.borrow_mut();
                                     let file_label = media_entry.file_label.clone();
@@ -499,7 +490,7 @@ impl ImporterUI {
                                             None => {
                                                 // nothing, bytes havent been loaded yet
                                                 let spinner = egui::Spinner::new();
-                                                scroll_wrap
+                                                ui
                                                     .add_sized(widget_size, spinner)
                                                     .on_hover_text(format!("{file_label} [{mime_type}] (loading bytes for thumbnail...)"));
                                             }
@@ -508,7 +499,7 @@ impl ImporterUI {
                                                 None => {
                                                     // thumbnail still loading
                                                     let spinner = egui::Spinner::new();
-                                                    scroll_wrap
+                                                    ui
                                                         .add_sized(widget_size, spinner)
                                                         .on_hover_text(format!("{file_label} [{mime_type}] (loading thumbnail...)"));
                                                 }
@@ -545,7 +536,7 @@ impl ImporterUI {
                                                                     ));
                                                                 }
 
-                                                                scroll_wrap.add_sized(widget_size, image_button)
+                                                                ui.add_sized(widget_size, image_button)
                                                             } else {
                                                                 // label, unselectable
                                                                 let mut image = egui::widgets::Image::new(image.texture_id(ctx), image.size_vec2());
@@ -570,7 +561,7 @@ impl ImporterUI {
                                                                     ));
                                                                 }
 
-                                                                scroll_wrap.add_sized(widget_size, image)
+                                                                ui.add_sized(widget_size, image)
                                                             }
                                                         }
                                                         Err(_error) => {
@@ -578,10 +569,10 @@ impl ImporterUI {
                                                             let text = egui::RichText::new("?").size(48.0);
                                                             if is_importable {
                                                                 let button = egui::Button::new(text);
-                                                                scroll_wrap.add_sized(widget_size, button)
+                                                                ui.add_sized(widget_size, button)
                                                             } else {
                                                                 let label = egui::Label::new(text).sense(egui::Sense::hover());
-                                                                scroll_wrap.add_sized(widget_size, label)
+                                                                ui.add_sized(widget_size, label)
                                                             }
                                                         }
                                                     };
@@ -605,7 +596,7 @@ impl ImporterUI {
                                         }
                                         let text = egui::RichText::new("!").color(egui::Color32::from_rgb(255, 149, 138)).size(48.0);
                                         let label = egui::Label::new(text).sense(egui::Sense::hover());
-                                        scroll_wrap
+                                        ui
                                             .add_sized(widget_size, label)
                                             .on_hover_text(format!("{file_label} ({error})",));
                                     } else if mime_type.is_none() {
@@ -613,7 +604,7 @@ impl ImporterUI {
                                         // let is_to_be_loaded = media_entry.try_check_if_is_to_be_loaded();
 
                                         let spinner = egui::Spinner::new();
-                                        scroll_wrap
+                                        ui
                                             .add_sized(widget_size, spinner)
                                             .on_hover_text(format!("{file_label} [?] (loading bytes for reading...)"));
                                     }
@@ -650,13 +641,7 @@ impl ImporterUI {
     }
 }
 
-impl ui::DockedWindow for ImporterUI {
-    fn set_config(&mut self, config: Arc<Config>) {
-        self.config = Some(config);
-    }
-    fn get_config(&self) -> Arc<Config> {
-        Arc::clone(self.config.as_ref().unwrap())
-    }
+impl ui::UserInterface for ImporterUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_media();
 
