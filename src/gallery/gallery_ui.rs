@@ -24,7 +24,7 @@ use crate::ui::AppUI;
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::UserInterface;
 use crate::ui::WindowContainer;
-use crate::util::SizedEntryBuffer;
+use crate::util::PollBuffer;
 use egui_modal::Modal;
 
 use super::super::autocomplete;
@@ -58,16 +58,11 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 pub struct GalleryUI {
-    pub load_buffer: SizedEntryBuffer<GalleryEntry>,
-    // pub root_interface_floating_windows: Option<Rc<RefCell<Vec<ui::FloatingWindowState>>>>,
-    // pub preview_window_state_ids: Vec<Id>,
-    // pub config: Option<Arc<Config>>,
+    pub load_buffer: PollBuffer<GalleryEntry>,
     pub toasts: egui_notify::Toasts,
     pub loading_gallery_entries: Option<Promise<Result<Vec<GalleryEntry>>>>,
     pub gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
     pub preview_windows: Vec<ui::WindowContainer>,
-    // pub toasts: egui_notify::Toasts,
-    // pub gallery_items: Option<Vec<Box<dyn GalleryItem>>>,
     pub search_options: Option<Vec<autocomplete::AutocompleteOption>>,
     pub search_string: String,
 }
@@ -377,35 +372,6 @@ impl PreviewUI {
 
 impl GalleryUI {
     fn process_previews(&mut self) {
-        // if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
-        //     floating_windows.borrow_mut().retain(|window_state| {
-        //         if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
-        //             match &preview.status {
-        //                 PreviewStatus::Deleted => {
-        //                     if let Some(media_info) = preview.get_media_info() {
-        //                         self.gallery_entries.retain(|gallery_entry| {
-        //                             if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_id {
-        //                                 if *hash == media_info.hash {
-        //                                     return false;
-        //                                 }
-        //                             }
-        //                             true
-        //                         });
-        //                     }
-        //                     ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
-        //                     return false;
-        //                 }
-        //                 PreviewStatus::FailedDelete(e) => {
-        //                     ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
-        //                 }
-        //                 _ => {}
-        //             }
-        //         }
-        //         true
-        //     })
-        // if self.gallery_items.is_none() {
-        //     self.load_gallery_entries();
-        // }
         if self.search_options.is_none() {
             if let Ok(all_tag_data) = data::get_all_tag_data() {
                 self.search_options = Some(
@@ -421,35 +387,7 @@ impl GalleryUI {
                 )
             }
         }
-        // if let Some(floating_windows) = self.root_interface_floating_windows.as_ref() {
-        //     floating_windows.borrow_mut().retain(|window_state| {
-        //         if let Some(preview) = window_state.window.downcast_ref::<PreviewUI>() {
-        //             match &preview.status {
-        //                 PreviewStatus::Deleted => {
-        //                     if let Some(media_info) = preview.get_media_info() {
-        //                         if let Some(gallery_items) = self.gallery_items.as_mut() {
-        //                             gallery_items.retain(|gallery_item| {
-        //                                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-        //                                     if gallery_entry.hash == media_info.hash {
-        //                                         return false;
-        //                                     }
-        //                                 }
-        //                                 true
-        //                             });
-        //                         }
-        //                     }
-        //                     ui::set_default_toast_options(self.toasts.success(format!("successfully deleted {}", preview.id)));
-        //                     return false;
-        //                 }
-        //                 PreviewStatus::FailedDelete(e) => {
-        //                     ui::set_default_toast_options(self.toasts.error(format!("failed to delete {}: {}", preview.id, e)));
-        //                 }
-        //                 _ => {}
-        //             }
-        //         }
-        //         true
-        //     })
-        // }
+
     }
 
     fn process_gallery_entries(&mut self) {
@@ -509,18 +447,6 @@ impl GalleryUI {
             }
         }));
 
-        // let gallery_entries = load_gallery_entries(&self.search_string);
-        // match gallery_entries {
-        //     Ok(gallery_items) => {
-        //         self.gallery_entries = gallery_items
-        //             .into_iter()
-        //             .map(|gallery_entry| Rc::new(RefCell::new(gallery_entry)))
-        //             .collect::<Vec<_>>()
-        //     }
-        //     Err(error) => {
-        //         ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
-        //     }
-        // }
     }
 
     fn launch_preview(hash: String, preview_windows: &mut Vec<WindowContainer>) {
@@ -555,12 +481,9 @@ impl GalleryUI {
                 ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                     ui.with_layout(layout, |ui| {
                         ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
-                        // let config = self.get_config();
-                        // let gallery_items = self.gallery_entries.iter_mut();
                         if let Some(gallery_entries) = self.gallery_entries.as_mut() {
                             for gallery_entry in gallery_entries.iter_mut() {
                                 let status_label = gallery_entry.borrow().get_status_label().map(|label| label.into());
-                                // let thumbnail = gallery_item.get_thumbnail(Arc::clone(&config));
                                 let mut options = RenderLoadingImageOptions::default();
                                 options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
@@ -570,31 +493,10 @@ impl GalleryUI {
                                 if let Some(response) = response {
                                     if response.clicked() {
                                         if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_id {
-                                            // GalleryUI::launch_preview(hash, Arc::clone(&config), self.root_interface_floating_windows.as_ref())
-                                            // GalleryUI::launch_preview(hash, Arc::clone(&config), self.root_interface_floating_windows.as_ref())
                                             GalleryUI::launch_preview(hash.clone(), &mut self.preview_windows)
                                         }
                                     }
                                 }
-
-                                // if let Some(gallery_items) = self.gallery_items.as_mut() {
-                                //     for gallery_item in gallery_items.iter_mut() {
-                                //         let status_label = gallery_item.get_status_label().map(|label| label.into());
-                                //         let thumbnail = gallery_item.get_thumbnail();
-                                //         let mut options = RenderLoadingImageOptions::default();
-                                //         options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
-                                //         options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
-                                //         options.hover_text = status_label;
-                                //         options.thumbnail_size = [thumbnail_size, thumbnail_size];
-                                //         let response = ui::render_loading_image(ui, ctx, thumbnail, options);
-                                //         if let Some(response) = response {
-                                //             if response.clicked() {
-                                //                 if let Some(gallery_entry) = gallery_item.downcast_ref::<GalleryEntry>() {
-                                //                     GalleryUI::launch_preview(gallery_entry.hash.clone(), &mut self.preview_windows)
-                                //                 }
-                                //             }
-                                //         }
-                                // }
                             }
                         } else {
                             ui.label("loading...");
@@ -654,18 +556,14 @@ impl GalleryUI {
 
 impl Default for GalleryUI {
     fn default() -> Self {
-        let load_buffer = SizedEntryBuffer::<GalleryEntry>::new(None, Some(10), Some(GalleryUI::buffer_add), Some(GalleryUI::load_buffer_poll), None);
+        let load_buffer = PollBuffer::<GalleryEntry>::new(None, Some(10), Some(GalleryUI::buffer_add), Some(GalleryUI::load_buffer_poll), None);
         Self {
             preview_windows: vec![],
             search_string: String::new(),
             loading_gallery_entries: None,
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
-            // preview_window_state_ids: vec![],
-            // root_interface_floating_windows: None,
-            // config: None,
             load_buffer,
             gallery_entries: None,
-            // gallery_items: None,
             search_options: None,
         }
     }
@@ -687,18 +585,3 @@ impl ui::UserInterface for GalleryUI {
     }
 }
 
-#[derive(Default)]
-struct FullView {}
-
-impl ui::UserInterface for FullView {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        Area::new("hello world")
-            .interactable(true)
-            .fixed_pos(Pos2::ZERO)
-            .show(ctx, |ui: &mut Ui| {
-                let screen_rect = ui.ctx().input().screen_rect;
-                let area_response = ui.allocate_response(screen_rect.size(), Sense::click());
-                ui.painter().rect_filled(screen_rect, Rounding::none(), Color32::GRAY);
-            });
-    }
-}

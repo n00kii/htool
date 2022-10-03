@@ -39,10 +39,17 @@ pub mod constants {
     pub const IMPORT_THUMBNAIL_SIZE: f32 = 100.;
     pub const SPACER_SIZE: f32 = 10.;
     pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
+    
     pub const CAUTION_BUTTON_FILL: Color32 = Color32::from_rgb(87, 38, 34);
     pub const SUGGESTED_BUTTON_FILL: Color32 = Color32::from_rgb(33, 54, 84);
     pub const CAUTION_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(242, 148, 148);
     pub const SUGGESTED_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
+
+    pub const IMPORT_IMAGE_HIDDEN_TINT: Color32 = Color32::from_rgb(220, 220, 220);
+    pub const IMPORT_IMAGE_UNLOADED_TINT: Color32 = Color32::from_rgb(200, 200, 200);
+    pub const IMPORT_IMAGE_SUCCESS_TINT: Color32 = Color32::from_rgb(200, 200, 255);
+    pub const IMPORT_IMAGE_DUPLICATE_TINT: Color32 = Color32::from_rgb(200, 255, 200);
+    pub const IMPORT_IMAGE_FAIL_TINT: Color32 = Color32::from_rgb(255, 200, 200);
 }
 
 #[derive(Clone)]
@@ -286,7 +293,7 @@ pub fn render_loading_image(
                 let image_size: [f32; 2] = options.scaled_image_size(image.size_vec2().into());
 
                 let mut response = if options.is_button {
-                    let mut image_button = egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap());
+                    let mut image_button = egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap_or(false));
                     for sense in &options.sense {
                         image_button = image_button.sense(*sense);
                     }
@@ -367,14 +374,14 @@ impl AppUI {
     }
 
     pub fn load_windows(&mut self) {
-        let mut windows = vec![
+        self.windows = vec![
             WindowContainer {
                 window: Box::new(import_ui::ImporterUI::default()),
                 is_open: None,
                 title: "importer".to_string(),
             },
             WindowContainer {
-                window: Box::new(gallery_ui::GalleryUI { ..Default::default() }),
+                window: Box::new(gallery_ui::GalleryUI::default()),
                 is_open: None,
 
                 title: "gallery".to_string(),
@@ -386,8 +393,6 @@ impl AppUI {
                 title: "tags".to_string(),
             },
         ];
-
-        self.windows = windows;
     }
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {

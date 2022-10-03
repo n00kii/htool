@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 use anyhow::Result;
 
-pub struct SizedEntryBuffer<T> {
+pub struct PollBuffer<T> {
     pub entries: Vec<Rc<RefCell<T>>>,
     pub size_limit: Option<usize>,
     pub count_limit: Option<usize>,
@@ -10,8 +10,8 @@ pub struct SizedEntryBuffer<T> {
     pub get_entry_size: fn(&Rc<RefCell<T>>) -> usize,
 }
 
-impl<T: PartialEq> SizedEntryBuffer<T> {
-    fn contains_media_entry(&self, entry: &Rc<RefCell<T>>) -> bool {
+impl<T: PartialEq> PollBuffer<T> {
+    fn contains_entry(&self, entry: &Rc<RefCell<T>>) -> bool {
         self.entries.contains(entry)
     }
     fn current_size(&self) -> usize {
@@ -33,7 +33,7 @@ impl<T: PartialEq> SizedEntryBuffer<T> {
         is_full_by_count || is_full_by_size
     }
     pub fn try_add_entry(&mut self, entry: Rc<RefCell<T>>) -> Result<()> {
-        if self.contains_media_entry(&entry) {
+        if self.contains_entry(&entry) {
             return Err(anyhow::Error::msg("already added"));
         }
 
@@ -66,9 +66,9 @@ impl<T: PartialEq> SizedEntryBuffer<T> {
         Self {
             size_limit,
             count_limit,
-            on_add: on_add.unwrap_or(SizedEntryBuffer::default_on_add),
-            on_poll: on_poll.unwrap_or(SizedEntryBuffer::default_on_poll),
-            get_entry_size: get_entry_size.unwrap_or(SizedEntryBuffer::default_get_entry_size),
+            on_add: on_add.unwrap_or(PollBuffer::default_on_add),
+            on_poll: on_poll.unwrap_or(PollBuffer::default_on_poll),
+            get_entry_size: get_entry_size.unwrap_or(PollBuffer::default_get_entry_size),
             entries: vec![],
         }
     }
