@@ -104,7 +104,7 @@ impl ImporterUI {
         let mut media_entry = media_entry.borrow_mut();
         if media_entry.are_bytes_loaded() {
             if media_entry.thumbnail.is_none() {
-                media_entry.load_thumbnail(100); //FIXME: replace w config
+                media_entry.load_thumbnail(); //FIXME: replace w config
             }
             if media_entry.mime_type.is_none() {
                 media_entry.load_mime_type();
@@ -207,7 +207,7 @@ impl ImporterUI {
         ui.vertical(|ui| {
             ui.label("options");
             ScrollArea::vertical().id_source("options").show(ui, |ui| {
-                if ui.button(if self.media_entries.is_some() { "re-scan" } else { "scan" }).clicked() {
+                if ui.button(format!("{} {}", ui::constants::SEARCH_ICON, if self.media_entries.is_some() { "re-scan" } else { "scan" })).clicked() {
                     let mut extension_filter = vec![];
                     for (_extension_group, extensions) in &self.scan_extension_filter {
                         for (extension, do_include) in extensions {
@@ -282,8 +282,6 @@ impl ImporterUI {
                         for media_entry in self.get_importable_media_entries() {
                             media_entry.borrow_mut().is_selected = true;
                         }
-                        // if let Some(scanned_dirs) = &mut self.media_entries {
-                        // }
                     }
 
                     if ui.add_enabled(self.media_entries.is_some(), Button::new("deselect all")).clicked() {
@@ -294,7 +292,8 @@ impl ImporterUI {
 
                     if ui.add_enabled(self.media_entries.is_some(), Button::new("invert")).clicked() {
                         for media_entry in self.get_importable_media_entries() {
-                            media_entry.borrow_mut().is_selected = !media_entry.borrow().is_selected;
+                            let current_state = media_entry.borrow().is_selected;
+                            media_entry.borrow_mut().is_selected = !current_state;
                         }
                     }
                 });
@@ -334,9 +333,7 @@ impl ImporterUI {
                     ui.checkbox(&mut self.import_hidden_entries, "don't import hidden");
                     ui.checkbox(&mut self.delete_files_on_import, "delete files on import");
 
-                    if ui.add_enabled(self.is_any_entry_selected(), Button::new("import selected")).clicked() {
-                        // if let Some(scanned_dirs) = &mut self.media_entries {
-                        // IMPORT HERE
+                    if ui.add_enabled(self.is_any_entry_selected(), ui::suggested_button(format!("{} import selected", ui::constants::IMPORT_ICON))).clicked() {
                         let selected_media_entries = self.get_selected_media_entries();
                         ui::toast_info(&mut self.toasts, format!("marked {} media for importing", selected_media_entries.len()));
                         for media_entry in self.get_selected_media_entries() {
@@ -444,7 +441,7 @@ impl ImporterUI {
             if let Some(scanned_dirs) = self.media_entries.as_mut() {
                 // iterate through each mediaentry to draw its name on the sidebar, and to load its image
                 // wrapped in an arc mutex for multithreading purposes
-                ScrollArea::vertical().id_source("previews_col").show(ui, |ui| {
+                ScrollArea::vertical().id_source("previews_col").auto_shrink([false, false]).show(ui, |ui| {
                     let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                     ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                         ui.with_layout(layout, |ui| {
@@ -459,8 +456,9 @@ impl ImporterUI {
                                 };
 
                                 let mut options = ui::RenderLoadingImageOptions::default();
+                                let thumbnail_size = Config::global().ui.import.thumbnail_size as f32;
                                 options.widget_margin = [10., 10.];
-                                options.desired_image_size = [ui::constants::IMPORT_THUMBNAIL_SIZE, ui::constants::IMPORT_THUMBNAIL_SIZE];
+                                options.desired_image_size = [thumbnail_size, thumbnail_size];
                                 options.hover_text_on_loading_image =
                                     Some(format!("{file_label} [{mime_type_label}] (loading thumbnail...)",).into());
                                 options.hover_text_on_error_image = Some(Box::new(move |error| format!("{file_label_clone} ({error})").into()));

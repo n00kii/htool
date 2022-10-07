@@ -1,14 +1,17 @@
-use std::fmt;
+use std::{fmt, cell::RefCell, rc::Rc};
 
 use anyhow::Result;
 use egui::{Color32, RichText};
+use poll_promise::Promise;
 use rusqlite::ToSql;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, ui::{LayoutJobText, self}};
+use crate::{
+    config::Config,
+    ui::{self, LayoutJobText}, data,
+};
 
 const TAG_DELIM: &str = "::";
-// const TAG_DELIM: &str = "::";
 const IMPLICATION_STRING: &str = "implication";
 const ALIAS_STRING: &str = "alias";
 const UNDEFINED_STRING: &str = "undefined link";
@@ -184,7 +187,6 @@ impl Tag {
                 namespace: None,
                 description: None,
             },
-            // _ => Err(anyhow::Error::msg("invalid tagstring")),
         }
     }
     pub fn from_tagstrings(tagstrings: &String) -> Vec<Self> {
@@ -208,7 +210,7 @@ impl TagLink {
             Tag::from_tagstring(&self.from_tagstring).to_layout_job_text(),
             " to ".into(),
             Tag::from_tagstring(&self.to_tagstring).to_layout_job_text(),
-            ")".into()
+            ")".into(),
         ]
     }
     pub fn empty_alias() -> Self {
@@ -218,4 +220,25 @@ impl TagLink {
             link_type: TagLinkType::Alias,
         }
     }
+}
+pub type TagDataRef = Option<Rc<Promise<Result<Vec<TagData>>>>>;
+
+
+pub fn clone_tag_data_ref(tag_data_ref: &TagDataRef) -> TagDataRef {
+    tag_data_ref.as_ref().map(|tag_data| Rc::clone(&tag_data))
+}
+
+pub fn load_tag_data(tag_data_ref: &mut TagDataRef) {
+    // pub fn load_tag_data(all_tag_data: &mut Option<Promise<Result<Vec<TagData>>>>) {
+    *tag_data_ref = Some(Rc::new(Promise::spawn_thread("", || data::get_all_tag_data())));
+    // }
+}
+
+pub fn unpack_tag_data(tag_data_ref: &TagDataRef) -> Option<&Result<Vec<TagData>>> {
+    if let Some(tag_data_promise) = tag_data_ref.as_ref() {
+        if let Some(tag_data_res) = tag_data_promise.ready() {
+            return Some(tag_data_res)
+        }
+    }
+    None
 }

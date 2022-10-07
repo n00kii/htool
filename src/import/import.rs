@@ -383,7 +383,7 @@ impl MediaEntry {
         }
     }
 
-    pub fn load_thumbnail(&mut self, thumbnail_size: u8) {
+    pub fn load_thumbnail(&mut self) {
         if let Some(bytes_promise) = self.bytes.as_ref() {
             if let Some(bytes_res) = bytes_promise.ready() {
                 let (sender, promise) = Promise::new();
@@ -395,7 +395,7 @@ impl MediaEntry {
                         thread::spawn(move || {
                             let bytes = &bytes as &[u8];
                             let generate_image = || -> Result<RetainedImage> {
-                                let pixels = data::generate_media_thumbnail(bytes, thumbnail_size)?;
+                                let pixels = data::generate_media_thumbnail(bytes)?;
                                 ui::generate_retained_image(&pixels)
                             };
                             sender.send(generate_image());

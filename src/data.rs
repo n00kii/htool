@@ -1,4 +1,5 @@
 use crate::config;
+use crate::import::import::MediaEntry;
 use crate::tags::tags::Tag;
 use crate::tags::tags::TagData;
 use crate::tags::tags::TagLink;
@@ -13,8 +14,10 @@ use image_hasher::{HashAlg, HasherConfig};
 use infer;
 use poll_promise::Promise;
 use poll_promise::Sender;
+use rusqlite::ToSql;
 use rusqlite::{named_params, params, Connection, Result as SqlResult};
 use std::collections::HashMap;
+use std::fmt;
 use std::hash;
 use std::io::Cursor;
 use std::mem::discriminant;
@@ -51,14 +54,20 @@ impl PartialEq for ImportationStatus {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum EntryId {
     MediaEntry(String),
     PoolEntry(i32),
 }
 
 impl EntryId {
-    pub fn as_media_entry_id(&self) -> Option<&String>{
+    pub fn is_media_entry_id(&self) -> bool {
+        matches!(self, EntryId::MediaEntry(_))
+    }
+    pub fn is_pool_entry_id(&self) -> bool {
+        matches!(self, EntryId::PoolEntry(_))
+    }
+    pub fn as_media_entry_id(&self) -> Option<&String> {
         if let EntryId::MediaEntry(hash) = self {
             Some(hash)
         } else {
@@ -73,24 +82,64 @@ impl EntryId {
         }
     }
 }
+#[derive(PartialEq)]
+pub enum EntryInfo {
+    MediaEntry(MediaInfo),
+    PoolEntry(PoolInfo),
+}
+
+impl EntryInfo {
+    pub fn details(&self) -> EntryDetails {
+        match self {
+            EntryInfo::MediaEntry(media_info) => media_info.details.clone(),
+            EntryInfo::PoolEntry(pool_info) => pool_info.details.clone()
+        }
+    }
+    pub fn entry_id(&self) -> EntryId {
+        self.details().id
+    }
+}
 
 pub struct MediaInfo {
-    pub hash: String,
     pub mime: String,
     pub p_hash: Option<String>,
-    pub date_registered: i64,
-    pub size: i64,
-    pub tags: Vec<Tag>,
+    pub details: EntryDetails,
+}
+
+impl PartialEq for MediaInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.details == other.details
+    }
 }
 
 pub struct PoolInfo {
     pub hashes: Vec<String>,
-    pub date_registered: i64,
-    pub total_size: i64,
-    pub tags: Vec<Tag>,
+    pub details: EntryDetails,
 }
 
-impl MediaInfo {
+impl PartialEq for PoolInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.details == other.details
+    }
+}
+
+#[derive(Clone)]
+pub struct EntryDetails {
+    pub id: EntryId,
+    pub tags: Vec<Tag>,
+    pub size: i64,
+    pub date_registered: i64,
+    pub score: i64,
+    pub is_bookmarked: bool,
+}
+
+impl PartialEq for EntryDetails {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl EntryDetails {
     pub fn includes_tags_or(&self) {}
     pub fn includes_tags_and(&self, tags: &Vec<Tag>) -> bool {
         for tag in tags {
@@ -103,8 +152,10 @@ impl MediaInfo {
     }
 }
 
+
 // todo: move stuff out of struct
-pub fn generate_media_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+pub fn generate_media_thumbnail(image_data: &[u8]) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let thumbnail_size = Config::global().ui.gallery.thumbnail_size as u32;
     let image = image::load_from_memory(image_data)?;
     let (w, h) = (image.width(), image.height());
     let image_cropped = imageops::crop_imm(
@@ -115,14 +166,16 @@ pub fn generate_media_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result
         if w > h { h } else { w },
     )
     .to_image();
-    let thumbnail = imageops::thumbnail(&image_cropped, thumbnail_size.into(), thumbnail_size.into());
+    let thumbnail = imageops::thumbnail(&image_cropped, thumbnail_size, thumbnail_size);
     Ok(thumbnail)
 }
+
+// mod constants
 
 // https://math.stackexchange.com/questions/4489146/filling-a-square-with-squares-along-the-diagonal
 pub fn generate_pool_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>, Vec<u8>>>) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     // https://www.desmos.com/calculator/moriiungym for tuning
-    let thumbnail_size: u32 = 100;
+    let thumbnail_size = Config::global().ui.gallery.thumbnail_size as u32;
     let distance_factor = 0.3; //1 = thumbnails half size away from each other, 0 = thumbnails on top of each other
     let size_factor = 0.3; // 0 = normal size; 1 = thumbnail_size size; >0.5 = constituent thumbnails clip out of bounds
 
@@ -151,7 +204,8 @@ pub fn generate_pool_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>
 pub fn load_thumbnail(entry_id: EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1 OR link_id = ?2")?;
-    let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()], |row| row.get(0));
+    let bytes_res: Result<Vec<u8>, rusqlite::Error> =
+        statement.query_row(params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()], |row| row.get(0));
 
     match bytes_res {
         Ok(bytes) => {
@@ -167,7 +221,7 @@ pub fn load_thumbnail(entry_id: EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>
                         let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
                         let bytes = load_bytes(&hash)?;
                         if mime_type.starts_with("image") {
-                            let thumbnail = generate_media_thumbnail(&bytes, 100)?;
+                            let thumbnail = generate_media_thumbnail(&bytes)?;
                             let mut thumbnail_bytes: Vec<u8> = Vec::new();
                             let mut writer = Cursor::new(&mut thumbnail_bytes);
                             thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
@@ -222,106 +276,18 @@ pub fn load_thumbnail(entry_id: EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>
         }
     }
 }
-//TODO consolidate below fxns using enum
-// pub fn load_pool_thumbnail(config: Arc<Config>, link_id: i32) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-//     let conn = initialize_database_connection(&config.path.database()?)?;
-//     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE link_id = ?1")?;
-//     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![link_id], |row| row.get(0));
-
-//     match bytes_res {
-//         Ok(bytes) => {
-//             let image = image::load_from_memory(&bytes)?;
-//             let image_buffer = image.into_rgba8();
-//             return Ok(image_buffer);
-//         }
-//         Err(error) => {
-//             if error == rusqlite::Error::QueryReturnedNoRows {
-//                 let hashes_of_link = get_hashes_of_link(Arc::clone(&config), link_id)?;
-//                 if hashes_of_link.len() == 0 {
-//                     return Err(anyhow::Error::msg("no hashes in link"));
-//                 }
-//                 let max_constituent_thumbnails = 3;
-//                 let mut constituent_thumbnails = Vec::new();
-
-//                 for hash in hashes_of_link {
-//                     if let Ok(constituent_thumbnail) = load_media_thumbnail(config.clone(), &hash) {
-//                         constituent_thumbnails.push(constituent_thumbnail);
-//                         if constituent_thumbnails.len() == max_constituent_thumbnails {
-//                             break;
-//                         }
-//                     }
-//                 }
-//                 if constituent_thumbnails.len() == 0 {
-//                     return Err(anyhow::Error::msg("couldnt load any thumbnails of hashes of link"));
-//                 }
-
-//                 let thumbnail = generate_pool_thumbnail(&constituent_thumbnails)?;
-//                 let mut thumbnail_bytes: Vec<u8> = Vec::new();
-//                 let mut writer = Cursor::new(&mut thumbnail_bytes);
-//                 thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
-
-//                 conn.execute(
-//                     "INSERT INTO thumbnail_cache (link_id, bytes)
-//                         VALUES (?1, ?2)",
-//                     params![link_id, thumbnail_bytes],
-//                 )?;
-
-//                 return Ok(thumbnail); //todo use generate_thumbnail_plural
-//             }
-//             // todo!()
-//             return Err(error.into());
-//         }
-//     }
-// }
-
-// pub fn load_media_thumbnail(config: Arc<Config>, hash: &String) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-//     let conn = initialize_database_connection(&config.path.database()?)?;
-//     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1")?;
-//     let bytes_res: Result<Vec<u8>, rusqlite::Error> = statement.query_row(params![hash], |row| row.get(0));
-
-//     match bytes_res {
-//         Ok(bytes) => {
-//             let image = image::load_from_memory(&bytes)?;
-//             let image_buffer = image.to_rgba8();
-//             Ok(image_buffer)
-//         }
-//         Err(error) => {
-//             if error == rusqlite::Error::QueryReturnedNoRows {
-//                 let mut statement = conn.prepare("SELECT mime FROM media_info WHERE hash = ?1")?;
-//                 let mime_type: String = statement.query_row(params![hash], |row| row.get("mime"))?;
-//                 let bytes = load_bytes(Arc::clone(&config), hash)?;
-//                 if mime_type.starts_with("image") {
-//                     let thumbnail = generate_media_thumbnail(&bytes, 100)?;
-//                     let mut thumbnail_bytes: Vec<u8> = Vec::new();
-//                     let mut writer = Cursor::new(&mut thumbnail_bytes);
-//                     thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
-
-//                     conn.execute(
-//                         "INSERT INTO thumbnail_cache (hash, bytes)
-//                             VALUES (?1, ?2)",
-//                         params![hash, thumbnail_bytes],
-//                     )?;
-//                     return Ok(thumbnail);
-//                 } else {
-//                     return Err(anyhow::Error::msg(format!("can't create thumbnail for {mime_type}")));
-//                 }
-//                 // need to generate thumbnail, cache it
-//             }
-//             // todo!()
-//             Err(error.into())
-//         }
-//     }
-//     // println!("b: {:?}", bytes);
-// }
 
 pub fn initialize_database_connection() -> Result<Connection> {
     let conn = Connection::open(&Config::global().path.database()?)?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS media_info (
-                hash TEXT PRIMARY KEY NOT NULL,
+                hash TEXT,
+                link_id INTEGER,
                 perceptual_hash TEXT,
                 mime TEXT,
                 date_registered INTEGER,
+                is_bookmarked INTEGER,
+                score INTEGER,
                 size INTEGER
             )", // and more meta tags
         [],
@@ -395,13 +361,19 @@ pub fn load_media_info(hash: &String) -> Result<MediaInfo> {
     let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT * FROM media_info WHERE hash = ?1")?;
     let mut media_info: MediaInfo = statement.query_row(params![hash], |row| {
-        Ok(MediaInfo {
-            hash: hash.to_string(),
-            p_hash: row.get(1)?,
-            mime: row.get(2)?,
-            date_registered: row.get(3)?,
-            size: row.get(4)?,
+        let details = EntryDetails {
+            id: EntryId::MediaEntry(hash.to_string()),
+            date_registered: row.get("date_registered")?,
+            score: row.get("score")?,
+            is_bookmarked: row.get("is_bookmarked")?,
+            size: row.get("size")?,
             tags: vec![],
+        };
+
+        Ok(MediaInfo {
+            p_hash: row.get("perceptual_hash")?,
+            mime: row.get("mime")?,
+            details,
         })
     })?;
 
@@ -410,27 +382,53 @@ pub fn load_media_info(hash: &String) -> Result<MediaInfo> {
 
     for tag_res in rows {
         if let Ok(tagstring) = tag_res {
-            media_info.tags.push(Tag::from_tagstring(&tagstring));
+            media_info.details.tags.push(Tag::from_tagstring(&tagstring));
         }
     }
 
     Ok(media_info)
 }
 
-pub fn clear_entry_tags(hash: &String) -> Result<()> {
+pub fn set_score(entry_id: &EntryId, new_score: i64) -> Result<()> {
     let conn = initialize_database_connection()?;
-    conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?;
+    match entry_id {
+        EntryId::MediaEntry(hash) => conn.execute("UPDATE media_info SET score = ?1 WHERE hash = ?2", params![new_score, hash])?,
+        EntryId::PoolEntry(link_id) => conn.execute("UPDATE media_info SET score = ?1 WHERE link_id = ?2", params![new_score, link_id])?,
+    };
     Ok(())
 }
 
-pub fn delete_media(hash: &String) -> Result<()> {
+pub fn set_bookmark(entry_id: &EntryId, new_state: bool) -> Result<()> {
     let conn = initialize_database_connection()?;
-    conn.execute("DELETE FROM media_info WHERE hash = ?1", params![hash])?;
-    conn.execute("DELETE FROM media_bytes WHERE hash = ?1", params![hash])?;
-    conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?;
-    conn.execute("DELETE FROM media_links WHERE hash = ?1", params![hash])?;
-    conn.execute("DELETE FROM thumbnail_cache WHERE hash = ?1", params![hash])?;
+    match entry_id {
+        EntryId::MediaEntry(hash) => conn.execute("UPDATE media_info SET is_bookmarked = ?1 WHERE hash = ?2", params![new_state, hash])?,
+        EntryId::PoolEntry(link_id) => conn.execute("UPDATE media_info SET is_bookmarked = ?1 WHERE link_id = ?2", params![new_state, link_id])?,
+    };
     Ok(())
+}
+
+pub fn clear_entry_tags(entry_id: &EntryId) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    match entry_id {
+        EntryId::MediaEntry(hash) => conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?,
+        EntryId::PoolEntry(link_id) => conn.execute("DELETE FROM media_tags WHERE link_id = ?1", params![link_id])?,
+    };
+    Ok(())
+}
+
+pub fn delete_media(entry_id: &EntryId) -> Result<()> {
+    match entry_id {
+        EntryId::MediaEntry(hash) => {
+            let conn = initialize_database_connection()?;
+            conn.execute("DELETE FROM media_info WHERE hash = ?1", params![hash])?;
+            conn.execute("DELETE FROM media_bytes WHERE hash = ?1", params![hash])?;
+            conn.execute("DELETE FROM media_tags WHERE hash = ?1", params![hash])?;
+            conn.execute("DELETE FROM media_links WHERE hash = ?1", params![hash])?;
+            conn.execute("DELETE FROM thumbnail_cache WHERE hash = ?1", params![hash])?;
+            Ok(())
+        }
+        EntryId::PoolEntry(_) => Err(anyhow::Error::msg("invalid entry_id type")),
+    }
 }
 
 pub fn resolve_tags(tags: &Vec<Tag>) -> Result<Vec<Tag>> {
@@ -524,13 +522,34 @@ pub fn filter_to_unknown_tags(tags: &Vec<Tag>) -> Result<Vec<Tag>> {
     Ok(not_exists)
 }
 
-pub fn set_tags(hash: &String, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
+pub fn set_tags(entry_id: &EntryId, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
     let resolved_tags = resolve_tags(tags)?;
     let conn = initialize_database_connection()?;
-    clear_entry_tags(hash)?;
+    clear_entry_tags(entry_id)?;
+
+    let mut delete_tag_stmt = if entry_id.is_media_entry_id() {
+        conn.prepare("DELETE FROM media_tags WHERE hash = ?1 AND tag = ?2")?
+    } else {
+        conn.prepare("DELETE FROM media_tags WHERE link_id = ?1 AND tag = ?2")?
+    };
+
+    let mut insert_tag_stmt = if entry_id.is_media_entry_id() {
+        conn.prepare("INSERT INTO media_tags (hash, tag) VALUES (?1, ?2)")?
+    } else {
+        conn.prepare("INSERT INTO media_tags (link_id, tag) VALUES (?1, ?2)")?
+    };
+
     for tag in resolved_tags.iter() {
-        conn.execute("DELETE FROM media_tags WHERE hash = ?1 AND tag = ?2", params![hash, tag.to_tagstring()])?;
-        conn.execute("INSERT INTO media_tags (hash, tag) VALUES (?1, ?2)", params![hash, tag.to_tagstring()])?;
+        match entry_id {
+            EntryId::MediaEntry(hash) => {
+                delete_tag_stmt.execute(params![hash, tag.to_tagstring()])?;
+                insert_tag_stmt.execute(params![hash, tag.to_tagstring()])?;
+            }
+            EntryId::PoolEntry(link_id) => {
+                delete_tag_stmt.execute(params![link_id, tag.to_tagstring()])?;
+                insert_tag_stmt.execute(params![link_id, tag.to_tagstring()])?;
+            }
+        }
     }
     Ok(resolved_tags)
 }
@@ -713,6 +732,7 @@ pub fn get_all_tag_data() -> Result<Vec<TagData>> {
             all_tag_data.push(load_tag_data_with_conn(&conn, &tag)?);
         }
     }
+    all_tag_data.sort_by(|a, b| b.occurances.cmp(&a.occurances));
 
     Ok(all_tag_data)
 }
@@ -757,22 +777,21 @@ pub fn register_media(
 
         let insert_result = if perceptual_hash.is_some() {
             conn.execute(
-                "INSERT INTO media_info (hash, perceptual_hash, mime, date_registered, size)
-                    VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![sha_hash, perceptual_hash.unwrap(), mime_type, timestamp, bytes.len()],
+                "INSERT INTO media_info (perceptual_hash, hash, mime, date_registered, size, is_bookmarked, rating)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![perceptual_hash.unwrap(), sha_hash, mime_type, timestamp, bytes.len(), false, 0],
             )
         } else {
             conn.execute(
-                "INSERT INTO media_info (hash, mime, date_registered, size)
-                    VALUES (?1, ?2, ?3, ?4)",
-                params![sha_hash, mime_type, timestamp, bytes.len()],
+                "INSERT INTO media_info (hash, mime, date_registered, size, is_bookmarked, rating)
+                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![sha_hash, mime_type, timestamp, bytes.len(), false, 0],
             )
         };
 
         match insert_result {
             Ok(_) => {
                 conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, bytes])?;
-                // conn.execute(sql, params);
                 if let Some(linking_dir) = linking_dir {
                     if let Ok(mut dir_link_map) = dir_link_map.lock() {
                         if let Some(link_id) = dir_link_map.get(&linking_dir) {
@@ -798,7 +817,6 @@ pub fn register_media(
                 return Ok(ImportationStatus::Success);
             }
             Err(error) => {
-                // if (let rusqlite::Error::SqliteFailure(e, _) = error) && e.code == rusqlite::ErrorCode::ConstraintViolation { waiting for rust 1.62 :(
                 if let rusqlite::Error::SqliteFailure(e, _) = error {
                     if e.code == rusqlite::ErrorCode::ConstraintViolation {
                         return Ok(ImportationStatus::Duplicate);
@@ -854,19 +872,11 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
             return Ok(ImportationStatus::Duplicate);
         }
 
-        let insert_result = if perceptual_hash.is_some() {
-            conn.execute(
-                "INSERT INTO media_info (hash, perceptual_hash, mime, date_registered, size)
-                    VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![sha_hash, perceptual_hash.unwrap(), mime_type, timestamp, reg_form.bytes.len()],
-            )
-        } else {
-            conn.execute(
-                "INSERT INTO media_info (hash, mime, date_registered, size)
-                    VALUES (?1, ?2, ?3, ?4)",
-                params![sha_hash, mime_type, timestamp, reg_form.bytes.len()],
-            )
-        };
+        let insert_result = conn.execute(
+            "INSERT INTO media_info (hash, perceptual_hash, mime, date_registered, size, is_bookmarked, score)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![sha_hash, perceptual_hash, mime_type, timestamp, reg_form.bytes.len(), false, 0],
+        );
 
         match insert_result {
             Ok(_) => {
@@ -896,7 +906,6 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
                 return Ok(ImportationStatus::Success);
             }
             Err(error) => {
-                // if (let rusqlite::Error::SqliteFailure(e, _) = error) && e.code == rusqlite::ErrorCode::ConstraintViolation { waiting for rust 1.62 :(
                 if let rusqlite::Error::SqliteFailure(e, _) = error {
                     if e.code == rusqlite::ErrorCode::ConstraintViolation {
                         return Ok(ImportationStatus::Duplicate);

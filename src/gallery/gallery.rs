@@ -12,16 +12,18 @@ use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
 use std::thread;
+use data::EntryInfo;
 use std::time::Duration;
 
 pub struct GalleryEntry {
-    pub entry_id: EntryId,
+    // pub entry_id: EntryId,
+    pub entry_info: EntryInfo,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
 }
 
 impl PartialEq for GalleryEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.entry_id == other.entry_id 
+        self.entry_info == other.entry_info 
     }
 }
 
@@ -41,21 +43,8 @@ impl GalleryEntry {
         }
     }
     pub fn load_thumbnail(&mut self) {
-        let entry_id = self.entry_id.clone();
-        // let promise = Promise::spawn_thread("", move || {
-        //     Err(anyhow::Error::msg("bruh"))
-        //     // match data::load_thumbnail(entry_id) {
-        //     //     Ok(thumbnail_buffer) => {
-        //     //         // let image
-        //     //         let image = ui::generate_retained_image(&thumbnail_buffer);
-        //     //         image
-        //     //     }
-        //     //     Err(error) => Err(error),
-        //     // }
-        // });
+        let entry_id = self.entry_info.entry_id();
         self.thumbnail = Some(Promise::spawn_thread("", move || {
-            // thread::sleep(Duration::from_millis(50));
-            // Err(anyhow::Error::msg("bruh"))
             match data::load_thumbnail(entry_id) {
                 Ok(thumbnail_buffer) => {
                     // let image
@@ -90,10 +79,7 @@ impl GalleryEntry {
 
 pub fn load_gallery_entries(search_string: &String) -> Result<Vec<GalleryEntry>> {
     // TODO: this seems really inefficient
-    let search_tags = search_string
-        .split_whitespace()
-        .map(|tagstring| Tag::from_tagstring(&tagstring.to_string()))
-        .collect::<Vec<_>>();
+
 
     let all_hashes = data::get_all_hashes()?;
     let mut gallery_entries: Vec<GalleryEntry> = Vec::new();
@@ -107,30 +93,32 @@ pub fn load_gallery_entries(search_string: &String) -> Result<Vec<GalleryEntry>>
                 }
                 let hashes_of_link = data::get_hashes_of_media_link(link_id)?;
                 resolved_links.push(link_id);
-                gallery_entries.push(GalleryEntry {
-                    entry_id: EntryId::PoolEntry(link_id),
-                    thumbnail: None,
-                });
+                // gallery_entries.push(GalleryEntry {
+                //     // entry_id: EntryId::PoolEntry(link_id),
+                //     entry_info: EntryInfo::MediaEntry(data::load_media_info(&"".to_string())?),
+                //     thumbnail: None,
+                // });
             }
         } else {
             gallery_entries.push(GalleryEntry {
-                entry_id: EntryId::MediaEntry(hash),
+                // entry_id: EntryId::MediaEntry(hash),
+                entry_info: EntryInfo::MediaEntry(data::load_media_info(&hash)?),
                 thumbnail: None,
             })
         }
     }
 
-    gallery_entries.retain(|gallery_entry| {
-        if let EntryId::MediaEntry(hash) = &gallery_entry.entry_id {
-            let media_info_res = data::load_media_info(hash);
-            if let Ok(media_info) = media_info_res {
-                if !media_info.includes_tags_and(&search_tags) {
-                    return false;
-                }
-            }
-        }
-        true
-    });
+    // gallery_entries.retain(|gallery_entry| {
+    //     if let EntryId::MediaEntry(hash) = &gallery_entry.entry_info.entry_id() {
+    //         let media_info_res = data::load_media_info(hash);
+    //         if let Ok(media_info) = media_info_res {
+    //             if !media_info.details.includes_tags_and(&search_tags) {
+    //                 return false;
+    //             }
+    //         }
+    //     }
+    //     true
+    // });
 
     Ok(gallery_entries)
 }

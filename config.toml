@@ -18,3 +18,12 @@ color = [0.7141218, 0.15642667, 0.42730725]
 [[namespaces]]
 name = "copyright"
 color = [0.15258633, 0.78472984, 0.9155178]
+
+[media]
+max_score = 5
+[ui.import]
+thumbnail_size = 100
+
+[ui.gallery]
+thumbnail_size = 100
+preview_size = 500

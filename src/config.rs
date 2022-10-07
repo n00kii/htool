@@ -58,24 +58,31 @@ impl Path {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Ui {
     pub import: Import,
+    pub gallery: Gallery,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Import {
-    pub thumbnail_size: u8,
+    pub thumbnail_size: usize,
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Gallery {
+    pub thumbnail_size: usize,
+    pub preview_size: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Hash {
-    pub hashing_threads: u8,
+pub struct Media {
+    pub max_score: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     pub path: Path,
     pub namespaces: Vec<Namespace>,
+    pub media: Media,
+    pub ui: Ui,
 }
-
 
 impl Default for Config {
     fn default() -> Self {
@@ -86,6 +93,14 @@ impl Default for Config {
                 database: "data.db".into(),
             },
             namespaces: vec![],
+            media: Media { max_score: 5 },
+            ui: Ui {
+                import: Import { thumbnail_size: 100 },
+                gallery: Gallery {
+                    thumbnail_size: 100,
+                    preview_size: 500,
+                },
+            },
         }
     }
 }

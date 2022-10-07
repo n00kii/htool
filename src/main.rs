@@ -24,7 +24,7 @@ fn main() -> Result<()> {
             "test_ui" => {
                 let mut app = ui::AppUI::new();
                 app.load_windows();
-                ui::AppUI::start(app);
+                app.start();
                 Config::save();
                 }
 

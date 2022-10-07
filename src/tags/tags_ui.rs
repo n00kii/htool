@@ -1,4 +1,4 @@
-use super::tags::{self, Namespace, Tag, TagData, TagLink};
+use super::tags::{self, Namespace, Tag, TagData, TagLink, TagDataRef};
 use crate::{
     config::{self, Config},
     data,
@@ -20,14 +20,13 @@ use egui_notify::{Anchor, Toasts};
 use poll_promise::Promise;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration, vec};
 
-type LoadedTagDataRef = Rc<RefCell<Option<Promise<Result<Vec<TagData>>>>>>;
 type ToastsRef = Rc<RefCell<egui_notify::Toasts>>;
 
 pub struct TagsUI {
     toasts: ToastsRef,
     filter_query: String,
     filter_tagstrings: Vec<String>,
-    loaded_tag_data: LoadedTagDataRef,
+    loaded_tag_data: TagDataRef,
     modify_windows: Vec<WindowContainer>,
     register_unknown_tags: bool,
 
@@ -42,7 +41,7 @@ impl Default for TagsUI {
             tag_pending_delete: None,
             filter_query: String::new(),
             filter_tagstrings: vec![],
-            loaded_tag_data: Rc::new(RefCell::new(None)),
+            loaded_tag_data: None,
             modify_windows: vec![],
             register_unknown_tags: false,
             toasts: Rc::new(RefCell::new(Toasts::default().with_anchor(Anchor::BottomLeft))),
@@ -69,7 +68,7 @@ impl ui::UserInterface for TagsUI {
                 });
                 strip.cell(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label("filter");
+                        ui.label(format!("{} filter", ui::constants::SEARCH_ICON));
                         ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
                             let response = ui.text_edit_singleline(&mut self.filter_query);
                             if response.changed() {
@@ -87,9 +86,7 @@ impl ui::UserInterface for TagsUI {
 }
 
 impl TagsUI {
-    fn load_tag_data(all_tag_data: &mut Option<Promise<Result<Vec<TagData>>>>) {
-        *all_tag_data = Some(Promise::spawn_thread("", || data::get_all_tag_data()));
-    }
+    
     fn render_modify_windows(&mut self, ctx: &egui::Context) {
         self.modify_windows.retain(|window| window.is_open.unwrap());
         for modify_window in self.modify_windows.iter_mut() {
@@ -103,27 +100,27 @@ impl TagsUI {
     }
     fn render_options(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
-            ui.label("options");
-            if ui.button("refresh").clicked() {
-                Self::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+            ui.label("tags");
+            if ui.button(format!("{} refresh", ui::constants::REFRESH_ICON)).clicked() {
+                tags::load_tag_data(&mut self.loaded_tag_data);
             }
             ui.add_space(ui::constants::SPACER_SIZE);
-            if ui.button("new tag").clicked() {
+            if ui.button(format!("{} new tag", ui::constants::ADD_ICON)).clicked() {
                 let title = "new tag".to_string();
                 if !ui::does_window_exist(&title, &self.modify_windows) {
                     self.modify_windows.push(WindowContainer {
                         title,
-                        window: Box::new(ModifyTagUI::new(None, Rc::clone(&self.loaded_tag_data), Rc::clone(&self.toasts))),
+                        window: Box::new(ModifyTagUI::new(None, tags::clone_tag_data_ref(&self.loaded_tag_data), Rc::clone(&self.toasts))),
                         is_open: Some(true),
                     })
                 }
             }
-            if ui.button("new tag link").clicked() {
+            if ui.button(format!("{} new tag link", ui::constants::ADD_ICON)).clicked() {
                 let title = "new tag link".to_string();
                 if !ui::does_window_exist(&title, &self.modify_windows) {
                     self.modify_windows.push(WindowContainer {
                         title,
-                        window: Box::new(ModifyTagLinkUI::new(Rc::clone(&self.loaded_tag_data), Rc::clone(&self.toasts))),
+                        window: Box::new(ModifyTagLinkUI::new(tags::clone_tag_data_ref(&self.loaded_tag_data), Rc::clone(&self.toasts))),
                         is_open: Some(true),
                     })
                 }
@@ -141,8 +138,8 @@ impl TagsUI {
             }
         });
     }
-    fn load_tag_description(tag: &mut Tag, loaded_tag_data: &LoadedTagDataRef) {
-        if let Some(tag_data_promise) = &*loaded_tag_data.borrow() {
+    fn load_tag_description(tag: &mut Tag, loaded_tag_data: &TagDataRef) {
+        if let Some(tag_data_promise) = loaded_tag_data.as_ref() {
             if let Some(Ok(tag_data)) = tag_data_promise.ready() {
                 for tag_data in tag_data {
                     if tag_data.tag == *tag {
@@ -153,8 +150,8 @@ impl TagsUI {
         }
     }
     fn render_tags(&mut self, ui: &mut egui::Ui) {
-        if self.loaded_tag_data.borrow().is_none() {
-            Self::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+        if self.loaded_tag_data.is_none() {
+            tags::load_tag_data(&mut self.loaded_tag_data);
         }
         let mut do_reload_data = false;
         let delete_tag_modal = Modal::new(ui.ctx(), "tag_delete_modal");
@@ -203,8 +200,8 @@ impl TagsUI {
         }
         ui.label("tags");
         egui::ScrollArea::both().id_source("tags_info_scroll").show(ui, |ui| {
-            if let Some(data_promise) = self.loaded_tag_data.borrow_mut().as_mut() {
-                match data_promise.ready_mut() {
+            if let Some(data_promise) = self.loaded_tag_data.as_ref() {
+                match data_promise.ready() {
                     Some(Ok(all_tag_data)) => {
                         TableBuilder::new(ui)
                             .striped(true)
@@ -239,7 +236,6 @@ impl TagsUI {
                                 });
                             })
                             .body(|mut body| {
-                                all_tag_data.sort_by(|a, b| b.occurances.cmp(&a.occurances));
                                 for tag_data in all_tag_data {
                                     if !self.filter_tagstrings.is_empty() {
                                         let mut passes_filter = false;
@@ -262,8 +258,8 @@ impl TagsUI {
                                         row.col(|ui| {
                                             let tag_label = egui::Label::new(tag_data.tag.to_rich_text()).sense(egui::Sense::click());
                                             let response = ui.add(tag_label).context_menu(|ui| {
-                                                let delete_jt = LayoutJobText::new(format!("{} ", ui::constants::DELETE_ICON,));
-                                                let edit_jt = LayoutJobText::new(format!("{} ", ui::constants::EDIT_ICON,));
+                                                let delete_jt = LayoutJobText::new(format!("{} delete ", ui::constants::DELETE_ICON,));
+                                                let edit_jt = LayoutJobText::new(format!("{} edit ", ui::constants::EDIT_ICON,));
                                                 let tag_jt = LayoutJobText::new(&tag_data.tag.name)
                                                     .with_color(tag_data.tag.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR));
                                                 let delete_lj = ui::generate_layout_job(vec![delete_jt, tag_jt.clone()]);
@@ -274,7 +270,7 @@ impl TagsUI {
                                                         tag_data.tag.clone(),
                                                         &mut self.modify_windows,
                                                         Rc::clone(&self.toasts),
-                                                        Rc::clone(&self.loaded_tag_data),
+                                                        tags::clone_tag_data_ref(&self.loaded_tag_data),
                                                     )
                                                 }
                                                 if ui.button(delete_lj).clicked() {
@@ -384,7 +380,7 @@ impl TagsUI {
             }
         });
         if do_reload_data {
-            Self::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+            tags::load_tag_data(&mut self.loaded_tag_data);
         }
     }
     fn toast_fail_modify_tag(old_tagstring: &String, new_tagstring: &String, error: &Error, toasts: &mut Toasts) {
@@ -393,7 +389,7 @@ impl TagsUI {
             format!("failed tag modification ( \"{old_tagstring}\" --> \"{new_tagstring}\"): {error} "),
         );
     }
-    fn launch_tag_modify_window(tag: Tag, modify_windows: &mut Vec<WindowContainer>, toasts: ToastsRef, loaded_tag_data: LoadedTagDataRef) {
+    fn launch_tag_modify_window(tag: Tag, modify_windows: &mut Vec<WindowContainer>, toasts: ToastsRef, loaded_tag_data: TagDataRef) {
         let title = format!("edit \"{}\"", tag.to_tagstring());
 
         if !ui::does_window_exist(&title, modify_windows) {
@@ -458,11 +454,11 @@ struct ModifyTagLinkUI {
     link_type: TagLinkType,
     from_tagstrings: String,
     to_tagstrings: String,
-    loaded_tag_data: LoadedTagDataRef,
+    loaded_tag_data: TagDataRef,
 }
 
 impl ModifyTagLinkUI {
-    fn new(loaded_tag_data: LoadedTagDataRef, toasts: ToastsRef) -> Self {
+    fn new(loaded_tag_data: TagDataRef, toasts: ToastsRef) -> Self {
         Self {
             toasts,
             from_tagstrings: String::new(),
@@ -506,17 +502,6 @@ impl ui::UserInterface for ModifyTagLinkUI {
                             TagsUI::toast_failed_check_tag_exists(tagstring, toasts)
                         }
                     }
-                    // let mut check_exists = |tagstring: &String, do_register: &mut bool| {
-                    //     if let Ok(does_exist) = data::does_tagstring_exist(tagstring) {
-                    //         if !does_exist {
-                    //             *do_register = false;
-                    //             TagsUI::toast_tag_doesnt_exist(tagstring, toasts)
-                    //         }
-                    //     } else {
-                    //         *do_register = false;
-                    //         TagsUI::toast_failed_check_tag_exists(tagstring, toasts)
-                    //     }
-                    // };
 
                     let toasts = &mut self.toasts.borrow_mut();
                     for from_tag in Tag::from_tagstrings(&self.from_tagstrings) {
@@ -538,7 +523,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                             TagsUI::toast_failed_new_link(&link, &e, toasts);
                                         } else {
                                             TagsUI::toast_success_new_link(&link, toasts);
-                                            TagsUI::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+                                            tags::load_tag_data(&mut self.loaded_tag_data);
                                         }
                                     }
                                 } else {
@@ -555,7 +540,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
 
 struct ModifyTagUI {
     toasts: ToastsRef,
-    loaded_tag_data: LoadedTagDataRef,
+    loaded_tag_data: TagDataRef,
     is_new_tag: bool,
     old_tag: Option<Tag>,
     tag_strings: String,
@@ -564,7 +549,7 @@ struct ModifyTagUI {
 }
 
 impl ModifyTagUI {
-    fn new(tag: Option<Tag>, loaded_tag_data: LoadedTagDataRef, toasts: ToastsRef) -> Self {
+    fn new(tag: Option<Tag>, loaded_tag_data: TagDataRef, toasts: ToastsRef) -> Self {
         Self {
             toasts,
             loaded_tag_data,
@@ -611,7 +596,7 @@ impl UserInterface for ModifyTagUI {
                                         TagsUI::toast_failed_new_tag(&tag.to_tagstring(), &e, toasts);
                                     } else {
                                         TagsUI::toast_success_new_tag(&tag.to_tagstring(), toasts);
-                                        TagsUI::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+                                        tags::load_tag_data(&mut self.loaded_tag_data);
                                     }
                                 }
                             } else {
@@ -637,7 +622,7 @@ impl UserInterface for ModifyTagUI {
                                         &new_tag.to_tagstring(),
                                         &mut self.toasts.borrow_mut(),
                                     );
-                                    TagsUI::load_tag_data(&mut self.loaded_tag_data.borrow_mut());
+                                    tags::load_tag_data(&mut self.loaded_tag_data);
                                 }
                             }
                             _ => {

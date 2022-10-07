@@ -290,8 +290,11 @@ fn autocomplete(search: &String, options: &Vec<AutocompleteOption>) -> Vec<Autoc
     let max_distance_factor = 0.7;
     let min_search_len = 1;
     let mut matches: Vec<(AutocompleteOption, usize)> = vec![];
-    if search.len() > min_search_len {
+    if search.len() >= min_search_len {
         for option in options {
+            if !option.label.starts_with(search.chars().next().unwrap()) {
+                continue;
+            }
             let max_distance = (max_distance_factor * option.label.len() as f32) as usize;
             let distance = hamming_distance(&search.to_string(), &option.label);
             if distance <= max_distance {
