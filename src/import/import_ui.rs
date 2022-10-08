@@ -55,8 +55,8 @@ impl Default for ImporterUI {
         );
 
         let import_buffer = PollBuffer::new(
-            Some(10_000_000),
-            Some(10),
+            Some(30_000_000),
+            Some(30),
             Some(ImporterUI::buffer_add),
             Some(ImporterUI::import_buffer_poll),
             Some(ImporterUI::buffer_entry_size),
@@ -427,7 +427,7 @@ impl ImporterUI {
                     .filter_map(|media_entry| media_entry.borrow_mut().generate_reg_form(Arc::clone(&self.dir_link_map)).ok())
                     .collect::<Vec<_>>();
 
-                self.batch_import_status = Some(Promise::spawn_thread("", || Arc::new(data::register_media_with_forms(reg_forms))));
+                self.batch_import_status = Some(Promise::spawn_thread("batch_import", || Arc::new(data::register_media_with_forms(reg_forms))));
             }
             self.load_buffer.poll();
             self.import_buffer.poll();
@@ -481,7 +481,7 @@ impl ImporterUI {
                                 };
                                 options.is_button = media_entry.is_importable();
                                 options.is_button_selected = Some(media_entry.is_selected);
-                                let response = ui::render_loading_image(ui, ctx, media_entry.thumbnail.as_ref(), options);
+                                let response = ui::render_loading_image(ui, ctx, media_entry.thumbnail.as_ref(), &options);
                                 if let Some(response) = response.as_ref() {
                                     if response.clicked() {
                                         media_entry.is_selected = !media_entry.is_selected

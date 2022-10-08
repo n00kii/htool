@@ -230,7 +230,7 @@ pub fn clone_tag_data_ref(tag_data_ref: &TagDataRef) -> TagDataRef {
 
 pub fn load_tag_data(tag_data_ref: &mut TagDataRef) {
     // pub fn load_tag_data(all_tag_data: &mut Option<Promise<Result<Vec<TagData>>>>) {
-    *tag_data_ref = Some(Rc::new(Promise::spawn_thread("", || data::get_all_tag_data())));
+    *tag_data_ref = Some(Rc::new(Promise::spawn_thread("load_tag_data", || data::get_all_tag_data())));
     // }
 }
 

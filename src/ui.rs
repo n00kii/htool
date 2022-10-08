@@ -48,6 +48,7 @@ pub mod constants {
     pub const REMOVE_ICON: &str = "❌";
     pub const SAVE_ICON: &str = "💾";
     pub const COPY_ICON: &str = "📋";
+    pub const TOOL_ICON: &str = "🔨";
 
     pub const APPLICATION_ICON_PATH: &str = "src/resources/icon.ico";
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
@@ -291,9 +292,19 @@ pub fn generate_layout_job(text: Vec<impl Into<LayoutJobText>>) -> LayoutJob {
     job
 }
 
+pub fn shrink_rect_scaled(rect: &Rect, scale: f32) -> Rect {
+    shrink_rect_scaled2(rect, [scale; 2])
+}
+
+pub fn shrink_rect_scaled2(rect: &Rect, scale: [f32; 2]) -> Rect {
+    let offset = vec2((1. - scale[0]) * rect.width() * 0.5, (1. - scale[1]) * rect.height() * 0.5);
+    let new_rect = Rect::from_min_max(rect.left_top() + offset, rect.right_bottom() - offset);
+    new_rect
+}
+
 pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<RetainedImage> {
     let pixels = image_buffer.as_flat_samples();
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([pixels.extents().1, pixels.extents().2], pixels.as_slice());
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([pixels.extents().1, pixels. extents().2], pixels.as_slice());
     Ok(RetainedImage::from_color_image("", color_image))
 }
 #[derive(PartialEq)]
@@ -432,7 +443,7 @@ pub fn render_loading_image(
     ui: &mut Ui,
     ctx: &egui::Context,
     image: Option<&Promise<Result<RetainedImage>>>,
-    options: RenderLoadingImageOptions,
+    options: &RenderLoadingImageOptions,
 ) -> Option<Response> {
     let bind_hover_text = |response: Response, hover_text_option: &Option<WidgetText>| -> Response {
         let mut response = response;
@@ -471,10 +482,10 @@ pub fn render_loading_image(
                     }
                     ui.add_sized(options.widget_size(None), label)
                 };
-                let hover_text = if let Some(format_error) = options.hover_text_on_error_image {
+                let hover_text = if let Some(format_error) = &options.hover_text_on_error_image {
                     Some(format_error(image_error))
                 } else {
-                    options.hover_text
+                    options.hover_text.as_ref().map(|wt| wt.to_owned())
                 };
                 response = bind_hover_text(response, &hover_text);
                 Some(response)
@@ -518,7 +529,6 @@ pub struct WindowContainer {
 pub trait UserInterface: downcast::Downcast {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context);
 }
-
 
 downcast::impl_downcast!(UserInterface);
 fn load_icon(path: &str) -> eframe::IconData {

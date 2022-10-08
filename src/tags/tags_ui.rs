@@ -136,6 +136,17 @@ impl TagsUI {
                     })
                 }
             }
+            ui.add_space(ui::constants::SPACER_SIZE);
+            if ui.button(ui::icon_text("patch tags", ui::constants::TOOL_ICON)).clicked() {
+                // let title = "namespaces".to_string();
+                // if !ui::does_window_exist(&title, &self.modify_windows) {
+                //     self.modify_windows.push(WindowContainer {
+                //         title,
+                //         window: Box::new(ModifyNamespacesUI::new(Rc::clone(&self.toasts))),
+                //         is_open: Some(true),
+                //     })
+                // }
+            }
         });
     }
     fn load_tag_description(tag: &mut Tag, loaded_tag_data: &TagDataRef) {
@@ -515,7 +526,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                     to_tagstring: to_tag.to_tagstring(),
                                     link_type: self.link_type.clone(),
                                 };
-                                if let Ok(does_link_exist) = data::does_link_exist(&link) {
+                                if let Ok(does_link_exist) = data::does_tag_ink_exist(&link) {
                                     if does_link_exist {
                                         TagsUI::toast_link_already_exists(&link, toasts)
                                     } else {

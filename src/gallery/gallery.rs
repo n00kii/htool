@@ -43,9 +43,9 @@ impl GalleryEntry {
         }
     }
     pub fn load_thumbnail(&mut self) {
-        let entry_id = self.entry_info.entry_id();
-        self.thumbnail = Some(Promise::spawn_thread("", move || {
-            match data::load_thumbnail(entry_id) {
+        let entry_id = self.entry_info.entry_id().clone();
+        self.thumbnail = Some(Promise::spawn_thread("load_gallery_entry_thumbail", move || {
+            match data::load_thumbnail(&entry_id) {
                 Ok(thumbnail_buffer) => {
                     // let image
                     let image = ui::generate_retained_image(&thumbnail_buffer);
@@ -90,19 +90,20 @@ pub fn load_gallery_entries(search_string: &String) -> Result<Vec<GalleryEntry>>
             for link_id in links {
                 if resolved_links.contains(&link_id) {
                     continue;
+                } else {
+                    resolved_links.push(link_id);
                 }
-                let hashes_of_link = data::get_hashes_of_media_link(link_id)?;
-                resolved_links.push(link_id);
-                // gallery_entries.push(GalleryEntry {
-                //     // entry_id: EntryId::PoolEntry(link_id),
-                //     entry_info: EntryInfo::MediaEntry(data::load_media_info(&"".to_string())?),
-                //     thumbnail: None,
-                // });
+                let entry_id = EntryId::PoolEntry(link_id);
+                gallery_entries.push(GalleryEntry {
+                    entry_info: data::load_entry_info(&entry_id)?,
+                    thumbnail: None,
+                });
             }
         } else {
+            let entry_id = EntryId::MediaEntry(hash);
             gallery_entries.push(GalleryEntry {
                 // entry_id: EntryId::MediaEntry(hash),
-                entry_info: EntryInfo::MediaEntry(data::load_media_info(&hash)?),
+                entry_info: data::load_entry_info(&entry_id)?,
                 thumbnail: None,
             })
         }

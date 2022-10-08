@@ -1,5 +1,6 @@
 use crate::autocomplete::AutocompleteOption;
 use crate::data::EntryId;
+use crate::data::EntryInfo;
 use crate::tags::tags;
 use crate::tags::tags::TagData;
 use crate::tags::tags_ui::TagsUI;
@@ -17,11 +18,16 @@ use egui::Align2;
 use egui::Area;
 use egui::Color32;
 use egui::Event;
+use egui::FontId;
 use egui::Frame;
+use egui::Grid;
 use egui::Mesh;
+use egui::Order;
+use egui::Painter;
 use egui::PointerButton;
 use egui::Pos2;
 use egui::Rect;
+use egui::Response;
 use egui::Rounding;
 use egui::Sense;
 use egui::Stroke;
@@ -59,6 +65,7 @@ use egui_extras::RetainedImage;
 use image::DynamicImage;
 use poll_promise::Promise;
 use rand::Rng;
+use std::any::Any;
 use std::cell::RefCell;
 use std::cell::RefMut;
 use std::rc::Rc;
@@ -90,24 +97,35 @@ pub enum PreviewStatus {
 pub struct PreviewUI {
     pub tag_data: TagDataRef,
     pub toasts: egui_notify::Toasts,
-    pub image: Option<Promise<Result<RetainedImage>>>,
-    pub pool_info: Option<data::PoolInfo>,
-    pub media_info: Option<Promise<Result<data::MediaInfo>>>,
+    // pub preview: Option<Promise<Result<RetainedImage>>>,
+    pub preview: Option<Preview>,
+    pub entry_info: Option<Promise<Result<EntryInfo>>>,
     pub tag_edit_buffer: String,
     pub id: String,
     pub is_fullscreen: bool,
+    pub ignore_fullscreen_edit: i32,
 
     pub view_offset: [f32; 2],
     pub view_zoom: f32,
+
+    current_dragged_index: Option<usize>,
+    current_drop_index: Option<usize>,
 
     pub status: PreviewStatus,
     pub is_editing_tags: bool,
     pub short_id: String,
     pub clipboard_image: Option<Promise<Result<FlatSamples<Vec<u8>>>>>,
+    is_reordering: bool,
+}
+
+pub enum Preview {
+    MediaEntry(Promise<Result<RetainedImage>>),
+    PoolEntry((Vec<Promise<Result<RetainedImage>>>, usize)),
 }
 
 impl ui::UserInterface for PreviewUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.process_preview();
         egui::Grid::new(format!("preview_ui_{}", self.id))
             .num_columns(3)
             .min_col_width(120.)
@@ -126,15 +144,18 @@ impl PreviewUI {
         short_id.truncate(6);
         Box::new(PreviewUI {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
-            image: None,
+            preview: None,
             id,
+            current_dragged_index: None,
+            current_drop_index: None,
+            is_reordering: false,
             tag_data: all_tag_data,
             is_fullscreen: false,
             view_offset: [0., 0.],
             view_zoom: 0.5,
+            ignore_fullscreen_edit: 0,
             short_id,
-            media_info: None,
-            pool_info: None,
+            entry_info: None,
             is_editing_tags: false,
             status: PreviewStatus::None,
             tag_edit_buffer: "".to_string(),
@@ -143,22 +164,34 @@ impl PreviewUI {
         })
     }
 
-    pub fn get_media_info(&self) -> Option<&data::MediaInfo> {
-        if let Some(info_promise) = self.media_info.as_ref() {
-            if let Some(info_res) = info_promise.ready() {
-                if let Ok(media_info) = info_res {
-                    return Some(media_info);
-                }
-            }
-        }
-        None
-    }
+    fn process_preview(&mut self) {
+        if self.preview.is_none() {
+            self.load_image()
+            // if let Some(entry_info_promise) = self.entry_info.as_ref() {
+            //     if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+            //         match entry_info.entry_id() {
+            //             EntryId::MediaEntry(hash) => {
+            //                 let hash = hash.clone()
+            //                 self.preview = Some(Preview::MediaEntry(Promise::spawn_thread("", move|| {
 
-    pub fn get_tags(&self) -> Option<&Vec<Tag>> {
-        if let Some(media_info) = self.get_media_info() {
-            return Some(&media_info.details.tags);
+            //                 })))
+            //             }
+            //             EntryId::PoolEntry(link_id) => {
+
+            //             }
+            //         }
+            //     }
+            // match entry_info_promise.ready() {
+            //     Some(Ok(EntryInfo::MediaEntry(media_info))) => {
+
+            //     }
+            //     Some(Ok(EntryInfo::PoolEntry(pool_info))) => {
+
+            //     }
+            //     _ => ()
+            // }
+            // }
         }
-        None
     }
 
     pub fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -171,13 +204,15 @@ impl PreviewUI {
                 delete_modal.button(ui, "cancel");
                 if delete_modal.caution_button(ui, format!("delete")).clicked() {
                     // delete logic below
-                    if let Some(media_info) = self.get_media_info() {
-                        let entry_id = media_info.details.id.clone();
-                        if let Err(e) = data::delete_media(&media_info.details.id) {
-                            ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
-                        } else {
-                            ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
-                            self.status = PreviewStatus::Deleted(entry_id);
+                    if let Some(entry_info_promise) = &self.entry_info {
+                        if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                            let entry_id = entry_info.entry_id();
+                            if let Err(e) = data::delete_entry(&entry_info.entry_id()) {
+                                ui::toast_error(&mut self.toasts, format!("failed to delete {}: {}", self.id, e));
+                            } else {
+                                ui::toast_success(&mut self.toasts, format!("successfully deleted {}", self.id));
+                                self.status = PreviewStatus::Deleted(entry_id.clone());
+                            }
                         }
                     }
                 }
@@ -202,9 +237,7 @@ impl PreviewUI {
                                 ui::toast_info(&mut self.toasts, "copied image to clipboard");
                             }
                         }
-                        Err(e) => {
-                            ui::toast_error(&mut self.toasts, format!("failed to access system clipboard: {e}"))
-                        }
+                        Err(e) => ui::toast_error(&mut self.toasts, format!("failed to access system clipboard: {e}")),
                     }
                 }
                 Some(Err(e)) => {
@@ -214,7 +247,7 @@ impl PreviewUI {
                 _ => (),
             }
         }
-        
+
         if reset_clipboard_image {
             self.clipboard_image = None;
         }
@@ -223,32 +256,32 @@ impl PreviewUI {
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("options");
             let mut self_updated = false;
-            if let Some(media_info_promise) = self.media_info.as_mut() {
-                if let Some(media_info_res) = media_info_promise.ready_mut() {
-                    if let Ok(media_info) = media_info_res {
+            if let Some(entry_info_promise) = self.entry_info.as_mut() {
+                if let Some(entry_info_res) = entry_info_promise.ready_mut() {
+                    if let Ok(entry_info) = entry_info_res {
                         if ui
-                            .button(if !media_info.details.is_bookmarked {
+                            .button(if !entry_info.details().is_bookmarked {
                                 ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
                             } else {
                                 ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
                             })
                             .clicked()
                         {
-                            let new_state = !media_info.details.is_bookmarked;
-                            if let Err(e) = data::set_bookmark(&media_info.details.id, new_state) {
+                            let new_state = !entry_info.details().is_bookmarked;
+                            if let Err(e) = data::set_bookmark(&entry_info.entry_id(), new_state) {
                                 ui::toast_error(&mut self.toasts, format!("failed to set bookmarked {new_state}: {e}"))
                             } else {
-                                media_info.details.is_bookmarked = new_state;
+                                entry_info.details_mut().is_bookmarked = new_state;
                                 self_updated = true;
                             }
                         }
-                        let star_response = ui::star_rating(ui, &mut media_info.details.score, Config::global().media.max_score);
+                        let star_response = ui::star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
                         if star_response.changed() {
-                            let new_value = media_info.details.score;
-                            if let Err(e) = data::set_score(&media_info.details.id, new_value) {
+                            let new_value = entry_info.details().score;
+                            if let Err(e) = data::set_score(&entry_info.entry_id(), new_value) {
                                 ui::toast_error(&mut self.toasts, format!("failed to set score={new_value}: {e}"))
                             } else {
-                                media_info.details.score = new_value;
+                                entry_info.details_mut().score = new_value;
                                 self_updated = true;
                             }
                         }
@@ -263,22 +296,20 @@ impl PreviewUI {
                     .clicked()
                 {
                     self.is_editing_tags = false;
-                    if let Some(media_info_promise) = self.media_info.as_ref() {
-                        if let Some(media_info_res) = media_info_promise.ready() {
-                            if let Ok(media_info) = media_info_res {
-                                let mut tagstrings = self.tag_edit_buffer.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>(); //.collect::<Vec<_>>();
-                                tagstrings.sort();
-                                tagstrings.dedup();
-                                let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
-                                if let Ok(tags) = data::set_tags(&media_info.details.id, &tags) {
-                                    ui::toast_success(
-                                        &mut self.toasts,
-                                        format!("successfully set {} tag{}", tags.len(), if tags.len() == 1 { "" } else { "s" }),
-                                    );
-                                    self_updated = true;
-                                };
-                                self.load_media_info_by_hash(media_info.details.id.as_media_entry_id().unwrap().clone());
-                            }
+                    if let Some(entry_info_promise) = self.entry_info.as_ref() {
+                        if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                            let mut tagstrings = self.tag_edit_buffer.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>(); //.collect::<Vec<_>>();
+                            tagstrings.sort();
+                            tagstrings.dedup();
+                            let tags = tagstrings.iter().map(|tagstring| Tag::from_tagstring(tagstring)).collect::<Vec<Tag>>();
+                            if let Ok(tags) = data::set_tags(&entry_info.details().id, &tags) {
+                                ui::toast_success(
+                                    &mut self.toasts,
+                                    format!("successfully set {} tag{}", tags.len(), if tags.len() == 1 { "" } else { "s" }),
+                                );
+                                self_updated = true;
+                            };
+                            self.load_entry_info(&entry_info.entry_id().clone());
                         }
                     }
                 }
@@ -286,53 +317,40 @@ impl PreviewUI {
                     self.is_editing_tags = false;
                 }
             } else {
-                if ui.button(format!("{} edit tags", ui::constants::EDIT_ICON)).clicked() {
-                    self.tag_edit_buffer = self
-                        .get_tags()
-                        .unwrap_or(&vec![])
-                        .iter()
-                        .map(|tag| tag.to_tagstring())
-                        .collect::<Vec<String>>()
-                        .join("\n");
-                    self.is_editing_tags = true;
-                };
+                if let Some(entry_info_promise) = self.entry_info.as_ref() {
+                    if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                        if ui.button(format!("{} edit tags", ui::constants::EDIT_ICON)).clicked() {
+                            self.tag_edit_buffer = entry_info
+                                .details()
+                                .tags
+                                .iter()
+                                .map(|tag| tag.to_tagstring())
+                                .collect::<Vec<String>>()
+                                .join("\n");
+                            self.is_editing_tags = true;
+                        };
+                    }
+                }
             }
             ui.add_space(ui::constants::SPACER_SIZE);
-            if let Some(media_info_promise) = self.media_info.as_ref() {
-                if let Some(Ok(media_info)) = media_info_promise.ready() {
+            if let Some(entry_info_promise) = self.entry_info.as_ref() {
+                if let Some(Ok(media_info)) = entry_info_promise.ready() {
                     ui.menu_button(format!("{} export", ui::constants::EXPORT_ICON), |ui| {
-                        // if let Ok(clipboard) = Clipboard::new() {
-                        if ui.button(ui::icon_text("to clipboard (image)", ui::constants::COPY_ICON)).clicked() {
-                            let hash = media_info.details.id.as_media_entry_id().unwrap().clone();
-                            self.clipboard_image = Some(Promise::spawn_thread("", move || {
-                                let load = || -> Result<FlatSamples<Vec<u8>>> {
-                                    let bytes = data::load_bytes(&hash)?;
-                                    let image = image::load_from_memory(&bytes)?;
-                                    let (width, height) = (image.width() as usize, image.height() as usize);
-                                    let rgba_image = image.to_rgba8();
-                                    let flat_samples = rgba_image.into_flat_samples();
-                                    // let img_data = arboard::ImageData {
-                                    //     bytes: flat_samples.as_slice().into(),
-                                    //     width,
-                                    //     height,
-                                    // };
-                                    Ok(flat_samples)
-                                };
-                                load()
-                            }))
-                            // match data::load_thumbnail(entry_id)
-                            // let hash = media_info.details.id.as_media_entry_id().unwrap().clone();
-                            // thread::spawn(move || {
-                            //     let bytes = data::load_bytes(&hash);
-                            //     let load = || -> Result<RetainedImage> {
-                            //         let bytes = bytes?;
-                            // let dynamic_image = image::load_from_memory(&bytes)?;
-                            //         let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
-                            //         Ok(retained_image)
-                            //     };
-                            //     sender.send(load())
+                        if let EntryId::MediaEntry(hash) = media_info.entry_id().clone() {
+                            if ui.button(ui::icon_text("to clipboard (image)", ui::constants::COPY_ICON)).clicked() {
+                                self.clipboard_image = Some(Promise::spawn_thread("load_image_clipboard", move || {
+                                    let load = || -> Result<FlatSamples<Vec<u8>>> {
+                                        let bytes = data::load_bytes(&hash)?;
+                                        let image = image::load_from_memory(&bytes)?;
+                                        let (width, height) = (image.width() as usize, image.height() as usize);
+                                        let rgba_image = image.to_rgba8();
+                                        let flat_samples = rgba_image.into_flat_samples();
+                                        Ok(flat_samples)
+                                    };
+                                    load()
+                                }))
+                            }
                         }
-                        if ui.button(ui::icon_text("to clipboard (file)", ui::constants::COPY_ICON)).clicked() {}
                         // }
                         if ui.button(ui::icon_text("to file", ui::constants::EXPORT_ICON)).clicked() {}
                     });
@@ -354,83 +372,86 @@ impl PreviewUI {
     pub fn render_info(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
         ui.vertical(|ui| {
             ui.label("info");
-            if let Some(media_info) = self.get_media_info() {
-                egui::Grid::new(format!("info_{}", self.id)).num_columns(2).show(ui, |ui| {
-                    let datetime = Utc.timestamp(media_info.details.date_registered, 0);
-                    ui.label("registered");
-                    ui.label(datetime.format("%B %e, %Y @%l:%M%P").to_string());
-                    ui.end_row();
+            if let Some(entry_info_promise) = &self.entry_info {
+                if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                    egui::Grid::new(format!("info_{}", self.id)).num_columns(2).show(ui, |ui| {
+                        let datetime = Utc.timestamp(entry_info.details().date_registered, 0);
+                        ui.label("registered");
+                        ui.label(datetime.format("%B %e, %Y @%l:%M%P").to_string());
+                        ui.end_row();
 
-                    ui.label("size");
-                    ui.label(ui::readable_byte_size(media_info.details.size, 2, ui::NumericBase::Two).to_string());
-                    ui.end_row();
+                        ui.label("size");
+                        ui.label(ui::readable_byte_size(entry_info.details().size, 2, ui::NumericBase::Two).to_string());
+                        ui.end_row();
 
-                    ui.label("type");
-                    ui.label(&media_info.mime);
-                    ui.end_row();
-                });
-            }
-            ui.separator();
-            ui.label("tags");
-            if self.is_editing_tags {
-                ui.text_edit_multiline(&mut self.tag_edit_buffer);
-            } else {
-                if let Some(tags) = self.get_tags() {
-                    if tags.is_empty() {
-                        ui.vertical_centered_justified(|ui| {
-                            ui.label("({ no tags ))");
-                        });
+                        if let EntryInfo::MediaEntry(media_info) = &entry_info {
+                            ui.label("type");
+                            ui.label(&media_info.mime);
+                            ui.end_row();
+                        }
+                    });
+                    ui.separator();
+                    ui.label("tags");
+                    let tags = &entry_info.details().tags;
+                    if self.is_editing_tags {
+                        ui.text_edit_multiline(&mut self.tag_edit_buffer);
                     } else {
-                        egui::Grid::new(format!("tags_{}", self.id)).num_columns(2).striped(true).show(ui, |ui| {
-                            for tag in tags {
-                                ui.horizontal(|ui| {
-                                    let info_label = egui::Label::new("?").sense(egui::Sense::click());
-                                    let add_label = egui::Label::new("+").sense(egui::Sense::click());
-                                    if ui.add(info_label).clicked() {
-                                        println!("?")
-                                    }
-                                    if ui.add(add_label).clicked() {
-                                        println!("+")
-                                    }
-                                });
-                                let mut current_tag_data = None;
-                                let exists_in_tag_data = if let Some(Ok(tag_data)) = tags::unpack_tag_data(&self.tag_data) {
-                                    tag_data.iter().any(|tag_data| {
-                                        if tag_data.tag == *tag {
-                                            current_tag_data = Some(tag_data.clone());
-                                            true
-                                        } else {
-                                            false
+                        if tags.is_empty() {
+                            ui.vertical_centered_justified(|ui| {
+                                ui.label("({ no tags ))");
+                            });
+                        } else {
+                            egui::Grid::new(format!("tags_{}", self.id)).num_columns(2).striped(true).show(ui, |ui| {
+                                for tag in tags {
+                                    ui.horizontal(|ui| {
+                                        let info_label = egui::Label::new("?").sense(egui::Sense::click());
+                                        let add_label = egui::Label::new("+").sense(egui::Sense::click());
+                                        if ui.add(info_label).clicked() {
+                                            println!("?")
                                         }
-                                    })
-                                } else {
-                                    true
-                                };
-                                ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
-                                    let mut tag_text = tag.to_rich_text();
-                                    if !exists_in_tag_data {
-                                        tag_text = tag_text.strikethrough();
-                                    }
-                                    let response = ui.label(tag_text);
-                                    if !exists_in_tag_data {
-                                        response.on_hover_text_at_pointer("(unknown tag)");
-                                    } else if current_tag_data.is_none() {
-                                        response.on_hover_text_at_pointer("(loading...)");
+                                        if ui.add(add_label).clicked() {
+                                            println!("+")
+                                        }
+                                    });
+                                    let mut current_tag_data = None;
+                                    let exists_in_tag_data = if let Some(Ok(tag_data)) = tags::unpack_tag_data(&self.tag_data) {
+                                        tag_data.iter().any(|tag_data| {
+                                            if tag_data.tag == *tag {
+                                                current_tag_data = Some(tag_data.clone());
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        })
                                     } else {
-                                        let hover_text = RichText::new(format!(
-                                            "{} ({})",
-                                            tag.to_tagstring(),
-                                            current_tag_data
-                                                .map(|tag_data| tag_data.occurances.to_string())
-                                                .unwrap_or(String::from("?"))
-                                        ))
-                                        .color(tag.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR));
-                                        response.on_hover_text_at_pointer(hover_text);
-                                    }
-                                });
-                                ui.end_row();
-                            }
-                        });
+                                        true
+                                    };
+                                    ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
+                                        let mut tag_text = tag.to_rich_text();
+                                        if !exists_in_tag_data {
+                                            tag_text = tag_text.strikethrough();
+                                        }
+                                        let response = ui.label(tag_text);
+                                        if !exists_in_tag_data {
+                                            response.on_hover_text_at_pointer("(unknown tag)");
+                                        } else if current_tag_data.is_none() {
+                                            response.on_hover_text_at_pointer("(loading...)");
+                                        } else {
+                                            let hover_text = RichText::new(format!(
+                                                "{} ({})",
+                                                tag.to_tagstring(),
+                                                current_tag_data
+                                                    .map(|tag_data| tag_data.occurances.to_string())
+                                                    .unwrap_or(String::from("?"))
+                                            ))
+                                            .color(tag.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR));
+                                            response.on_hover_text_at_pointer(hover_text);
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -443,27 +464,97 @@ impl PreviewUI {
             area.show(ctx, |ui: &mut Ui| {
                 let screen_rect = ui.ctx().input().screen_rect;
                 ui.painter().rect_filled(screen_rect, Rounding::none(), Color32::BLACK);
+                fn paint_text(text: impl Into<String>, pos: Pos2, painter: &Painter) -> Rect {
+                    let galley = painter.layout_no_wrap(text.into(), FontId::default(), ui::constants::DEFAULT_TEXT_COLOR);
+                    let offset = vec2(-galley.rect.width() / 2., -galley.rect.height() / 2.);
+                    let text_pos = pos + offset;
+                    let mut painted_rect = galley.rect.clone();
+                    painter.galley(text_pos, galley.clone());
+                    painted_rect.set_center(text_pos + vec2(painted_rect.width() / 2., painted_rect.height() / 2.));
+                    painted_rect
+                }
                 let mut options = RenderLoadingImageOptions::default();
                 options.desired_image_size = (screen_rect.size() * self.view_zoom).into();
                 let area_response = ui.allocate_response(screen_rect.size(), Sense::click());
                 let mut image_size = None;
                 let mut image_center = None;
-                if let Some(image_promise) = self.image.as_ref() {
-                    if let Some(image_res) = image_promise.ready() {
-                        if let Ok(image) = image_res {
-                            let mut mesh = Mesh::with_texture(image.texture_id(ctx));
-                            let mesh_size = options.scaled_image_size(image.size_vec2().into()).into();
-                            let mut mesh_pos = screen_rect.center() - (mesh_size / 2.);
-                            mesh_pos += self.view_offset.into();
-                            mesh.add_rect_with_uv(
-                                Rect::from_min_size(mesh_pos, mesh_size),
-                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                Color32::WHITE,
-                            );
-                            image_size = Some(mesh_size);
-                            image_center = Some(mesh_pos + (mesh_size / 2.));
-                            ui.painter().add(mesh);
+                if let Some(preview) = self.preview.as_ref() {
+                    let image = match preview {
+                        Preview::MediaEntry(image_promise) => {
+                            if let Some(Ok(image)) = image_promise.ready() {
+                                Some(image)
+                            } else {
+                                None
+                            }
                         }
+                        Preview::PoolEntry((images, current_index)) => {
+                            if let Some(image_promise) = images.get(*current_index) {
+                                if let Some(Ok(image)) = image_promise.ready() {
+                                    Some(image)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(image) = image {
+                        let mut mesh = Mesh::with_texture(image.texture_id(ctx));
+                        let mesh_size = options.scaled_image_size(image.size_vec2().into()).into();
+                        let mut mesh_pos = screen_rect.center() - (mesh_size / 2.);
+                        mesh_pos += self.view_offset.into();
+                        mesh.add_rect_with_uv(
+                            Rect::from_min_size(mesh_pos, mesh_size),
+                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Color32::WHITE,
+                        );
+                        image_size = Some(mesh_size);
+                        image_center = Some(mesh_pos + (mesh_size / 2.));
+                        ui.painter().add(mesh);
+                    } else {
+                        paint_text("loading...", screen_rect.center(), ui.painter());
+                    }
+                } else {
+                    paint_text("waiting to load", screen_rect.center(), ui.painter());
+                }
+                let MAX_IGNORE_FULLSCREEN_EDIT = 20; // number of frames to ignore double click
+                let mut was_rect_clicked = |rect: &Rect| -> bool {
+                    if ui.rect_contains_pointer(*rect) && ctx.input().pointer.primary_released() {
+                        self.ignore_fullscreen_edit = MAX_IGNORE_FULLSCREEN_EDIT;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                let control_rect_scale_y = 0.1;
+
+                if let Some(Preview::PoolEntry((images, current_index))) = self.preview.as_mut() {
+                    let rect_scale_x = 0.4;
+                    let rect_scale_y = 1. - (control_rect_scale_y * 2.);
+                    let rect_size = vec2(rect_scale_x * screen_rect.width(), rect_scale_y * screen_rect.height());
+                    let rect_y_offset = (screen_rect.height() - rect_size.y) * 0.5;
+                    let left_rect_pos = pos2(0., rect_y_offset);
+                    let right_rect_pos = pos2(screen_rect.width() - rect_size.x, rect_y_offset);
+                    let left_rect = Rect::from_min_max(left_rect_pos, left_rect_pos + rect_size);
+                    let right_rect = Rect::from_min_max(right_rect_pos, right_rect_pos + rect_size);
+
+                    if was_rect_clicked(&left_rect) {
+                        *current_index = (*current_index as i32 - 1).max(0).min(images.len() as i32 - 1) as usize
+                    } else if was_rect_clicked(&right_rect) {
+                        *current_index = (*current_index as i32 + 1).max(0).min(images.len() as i32 - 1) as usize
+                    }
+
+                    let bottom_rect_size = vec2(screen_rect.width(), control_rect_scale_y * screen_rect.height());
+                    let bottom_rect_pos = pos2(0., (1. - control_rect_scale_y) * screen_rect.height());
+                    let bottom_rect = Rect::from_min_max(bottom_rect_pos, bottom_rect_pos + bottom_rect_size);
+
+                    if ui.rect_contains_pointer(bottom_rect) {
+                        let inner_bottom_rect = Rect::from_center_size(bottom_rect.center(), vec2(20., 20.));
+                        let text_rect = paint_text(format!("{} / {}", *current_index + 1, images.len()), bottom_rect.center(), ui.painter());
+                        ui.painter().rect_filled(text_rect.expand(10.), Rounding::none(), Color32::BLACK);
+                        paint_text(format!("{} / {}", *current_index + 1, images.len()), bottom_rect.center(), ui.painter());
                     }
                 }
 
@@ -481,31 +572,138 @@ impl PreviewUI {
                 }
 
                 for event in &ctx.input().events {
-                    if let Event::Scroll(scroll_delta) = event {
-                        if let Some(image_center) = image_center {
-                            if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
-                                let zoom_factor = 1. / 300.;
-                                let new_view_zoom = (self.view_zoom + scroll_delta.y * zoom_factor).max(0.1);
-                                let delta_zoom = new_view_zoom - self.view_zoom;
-                                let zoom_center = if scroll_delta.y > 0. { hover_pos } else { screen_rect.center() };
-                                let zoom_offset = ((zoom_center - image_center) / new_view_zoom) * (delta_zoom);
-                                self.view_offset = (Vec2::from(self.view_offset) - zoom_offset).into();
-                                self.view_zoom = new_view_zoom;
+                    match event {
+                        Event::Scroll(scroll_delta) => {
+                            if let Some(image_center) = image_center {
+                                if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
+                                    let zoom_factor = 1. / 300.;
+                                    let new_view_zoom = (self.view_zoom + scroll_delta.y * zoom_factor).max(0.1);
+                                    let delta_zoom = new_view_zoom - self.view_zoom;
+                                    let zoom_center = if scroll_delta.y > 0. { hover_pos } else { screen_rect.center() };
+                                    let zoom_offset = ((zoom_center - image_center) / new_view_zoom) * (delta_zoom);
+                                    self.view_offset = (Vec2::from(self.view_offset) - zoom_offset).into();
+                                    self.view_zoom = new_view_zoom;
+                                }
                             }
                         }
+                        // despite this being called "zoom" im using the above event for zoom, and this (ctrl+scroll)
+                        // for page flipping'
+                        Event::Zoom(factor) => {
+                            if let Some(Preview::PoolEntry((images, current_index))) = self.preview.as_mut() {
+                                *current_index = (*current_index as i32 + if *factor < 1. { -1 } else { 1 })
+                                    .max(0)
+                                    .min(images.len() as i32 - 1) as usize
+                            }
+                        }
+                        _ => (),
                     }
                 }
-
-                if area_response.double_clicked() {
+                self.ignore_fullscreen_edit = (self.ignore_fullscreen_edit - 1).max(0);
+                if area_response.double_clicked() && self.ignore_fullscreen_edit == 0 {
                     self.is_fullscreen = false;
                 }
             });
         } else {
             let mut options = RenderLoadingImageOptions::default();
             options.shrink_to_image = true;
-            options.desired_image_size = [500., 500.];
+            options.desired_image_size = [500.; 2];
             options.hover_text_on_error_image = Some(Box::new(|error| format!("failed to load image: {error}").into()));
-            let image_response = ui::render_loading_image(ui, ctx, self.get_image(), options);
+
+            if !ctx.memory().is_anything_being_dragged() {
+                if let Some(current_dragged_index) = self.current_dragged_index {
+                    if let Some(current_drop_index) = self.current_drop_index {
+                        match self.preview.as_mut() {
+                            Some(Preview::PoolEntry((images, _))) => {
+                                let image_promise = images.remove(current_dragged_index);
+                                images.insert(current_drop_index, image_promise)
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+
+                self.current_dragged_index = None;
+                self.current_drop_index = None;
+            }
+
+            let image_response = match self.preview.as_mut() {
+                Some(Preview::MediaEntry(image_promise)) => ui::render_loading_image(ui, ctx, Some(image_promise), &options),
+                Some(Preview::PoolEntry((images_promise, current_view_index))) => {
+                    options.desired_image_size = [200.; 2];
+                    options.sense.push(Sense::drag());
+                    ScrollArea::vertical()
+                        .min_scrolled_height(500.)
+                        .id_source(format!("{}_pool_scroll", self.id))
+                        .show(ui, |ui| {
+                            ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                                let grid = Grid::new(format!("{}_pool_grid", self.id)).show(ui, |ui| {
+                                    for (image_index, image_promise) in images_promise.iter().enumerate() {
+                                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                            if self.current_dragged_index.is_some() && image_index == 0 {
+                                                if let Some(current_drop_index) = self.current_drop_index.as_ref() {
+                                                    if *current_drop_index == 0 && self.current_dragged_index.unwrap() != 0 {
+                                                        ui.separator();
+                                                    }
+                                                }
+                                            }
+
+                                            if let Some(current_drag_index) = self.current_dragged_index.as_ref() {
+                                                if *current_drag_index == image_index {
+                                                    options.image_tint = Some(ui::constants::IMPORT_IMAGE_UNLOADED_TINT);
+                                                }
+                                            }
+
+                                            let image_response = ui::render_loading_image(ui, ctx, Some(image_promise), &options);
+                                            options.image_tint = None;
+                                            if let Some(image_response) = image_response {
+                                                if image_response.dragged() {
+                                                    if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                                                        let mut options = RenderLoadingImageOptions::default();
+                                                        options.desired_image_size = [600.; 2];
+                                                        options.shrink_to_image = true;
+                                                        egui::Area::new("dragged_item")
+                                                            .interactable(false)
+                                                            .fixed_pos(pointer_pos)
+                                                            .order(Order::Foreground)
+                                                            .show(ctx, |ui| ui::render_loading_image(ui, ctx, Some(image_promise), &options));
+                                                    }
+                                                    if self.current_dragged_index.is_none() {
+                                                        self.current_dragged_index = Some(image_index)
+                                                    }
+                                                }
+                                                if image_response.double_clicked() {
+                                                    *current_view_index = image_index;
+                                                    self.view_zoom = 1.;
+                                                    self.view_offset = [0., 0.];
+                                                    self.is_fullscreen = true;
+                                                }
+                                                if let Some(current_dragged_index) = self.current_dragged_index.as_ref() {
+                                                    if ui.rect_contains_pointer(image_response.rect) {
+                                                        if (*current_dragged_index == image_index) || (((*current_dragged_index as i32) - 1).max(0) as usize == image_index) {
+                                                            self.current_drop_index = None;
+                                                        } else {
+                                                            self.current_drop_index = Some(image_index.max(1));
+                                                            ui.separator();
+                                                        }
+                                                    }
+                                                };
+                                            };
+                                        });
+
+                                        if (image_index + 1) % 4 == 0 {
+                                            ui.end_row()
+                                        }
+                                    }
+                                });
+                                if self.current_dragged_index.is_some() && !ui.rect_contains_pointer(grid.response.rect) {
+                                    self.current_drop_index = Some(0);
+                                }
+                            });
+                        });
+                    None
+                }
+                _ => None,
+            };
             if let Some(image_response) = image_response {
                 if image_response.double_clicked() {
                     self.view_zoom = 1.;
@@ -516,37 +714,70 @@ impl PreviewUI {
         }
     }
 
-    pub fn get_image(&mut self) -> Option<&Promise<Result<RetainedImage>>> {
-        match &self.image {
-            None => match self.media_info.as_ref().unwrap().ready() {
-                None => None,
-                Some(result) => {
-                    let (sender, promise) = Promise::new();
-                    match result {
-                        Err(error) => sender.send(Err(anyhow::Error::msg(format!("failed to load mediainfo: {error}")))),
-                        Ok(media_info) => {
-                            let hash = media_info.details.id.as_media_entry_id().unwrap().clone();
-                            thread::spawn(move || {
-                                let bytes = data::load_bytes(&hash);
-                                let load = || -> Result<RetainedImage> {
-                                    let bytes = bytes?;
-                                    let dynamic_image = image::load_from_memory(&bytes)?;
-                                    let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
-                                    Ok(retained_image)
-                                };
-                                sender.send(load())
-                            });
+    pub fn load_image(&mut self) {
+        let load = |hash: String| -> Result<RetainedImage> {
+            let bytes = data::load_bytes(&hash);
+            let bytes = bytes?;
+            let dynamic_image = image::load_from_memory(&bytes)?;
+            let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
+            Ok(retained_image)
+        };
+
+        if let Some(entry_info_promise) = self.entry_info.as_ref() {
+            if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                match entry_info.entry_id() {
+                    EntryId::MediaEntry(hash) => {
+                        let hash = hash.clone();
+                        self.preview = Some(Preview::MediaEntry(Promise::spawn_thread("load_media_image_preview", move || load(hash))));
+                    }
+                    EntryId::PoolEntry(link_id) => {
+                        if let Ok(hashes) = data::get_hashes_of_media_link(*link_id) {
+                            self.preview = Some(Preview::PoolEntry((
+                                hashes
+                                    .into_iter()
+                                    .map(|hash| Promise::spawn_thread("load_pool_image_previews", move || load(hash)))
+                                    .collect::<Vec<_>>(),
+                                0,
+                            )));
                         }
                     }
-                    self.image = Some(promise);
-                    self.image.as_ref()
                 }
-            },
-            Some(_promise) => self.image.as_ref(),
+            }
         }
     }
-    pub fn load_media_info_by_hash(&mut self, hash: String) {
-        self.media_info = Some(Promise::spawn_thread("", move || data::load_media_info(&hash)))
+
+    // pub fn get_image(&mut self) -> Option<&Promise<Result<RetainedImage>>> {
+    //     match &self.image {
+    //         None => match self.entry_info.as_ref().unwrap().ready() {
+    //             None => None,
+    //             Some(result) => {
+    //                 let (sender, promise) = Promise::new();
+    //                 match result {
+    //                     Err(error) => sender.send(Err(anyhow::Error::msg(format!("failed to load mediainfo: {error}")))),
+    //                     Ok(entry_info) => {
+    //                         let hash = entry_info.details().id.as_media_entry_id().unwrap().clone();
+    //                         thread::spawn(move || {
+    //                             let bytes = data::load_bytes(&hash);
+    //                             let load = || -> Result<RetainedImage> {
+    //                                 let bytes = bytes?;
+    //                                 let dynamic_image = image::load_from_memory(&bytes)?;
+    //                                 let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
+    //                                 Ok(retained_image)
+    //                             };
+    //                             sender.send(load())
+    //                         });
+    //                     }
+    //                 }
+    //                 self.image = Some(promise);
+    //                 self.image.as_ref()
+    //             }
+    //         },
+    //         Some(_promise) => self.image.as_ref(),
+    //     }
+    // }
+    pub fn load_entry_info(&mut self, entry_id: &EntryId) {
+        let entry_id = entry_id.clone();
+        self.entry_info = Some(Promise::spawn_thread("load_entry_info_preview", move || data::load_entry_info(&entry_id)))
     }
     // pub load_image
 }
@@ -584,7 +815,7 @@ impl GalleryUI {
                 }
                 if let PreviewStatus::Deleted(entry_id) = &preview_ui.status {
                     if let Some(gallery_entries) = self.gallery_entries.as_mut() {
-                        gallery_entries.retain(|gallery_entry| gallery_entry.borrow().entry_info.entry_id() != *entry_id);
+                        gallery_entries.retain(|gallery_entry| gallery_entry.borrow().entry_info.entry_id() != entry_id);
                         do_refiter = true;
                     }
                 }
@@ -665,7 +896,7 @@ impl GalleryUI {
 
     fn load_gallery_entries(&mut self) {
         let search_string = self.search_string.clone();
-        self.loading_gallery_entries = Some(Promise::spawn_thread("", move || {
+        self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || {
             let gallery_entries = load_gallery_entries(&search_string);
             match gallery_entries {
                 Ok(gallery_entries) => Ok(gallery_entries),
@@ -682,12 +913,12 @@ impl GalleryUI {
         }
     }
 
-    fn launch_preview(hash: String, preview_windows: &mut Vec<WindowContainer>, tag_data: TagDataRef) {
-        let mut preview = PreviewUI::new(hash.clone(), tag_data);
+    fn launch_preview(entry_id: &EntryId, preview_windows: &mut Vec<WindowContainer>, tag_data: TagDataRef) {
+        let mut preview = PreviewUI::new(entry_id.to_string(), tag_data);
         let mut title = preview.short_id.clone();
         title.insert_str(0, &format!("{} ", ui::constants::GALLERY_ICON));
         if !ui::does_window_exist(&title, preview_windows) {
-            preview.load_media_info_by_hash(hash.clone());
+            preview.load_entry_info(entry_id);
             preview_windows.push(WindowContainer {
                 title,
                 is_open: Some(true),
@@ -745,16 +976,21 @@ impl GalleryUI {
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
                                 options.hover_text = status_label;
                                 options.desired_image_size = [thumbnail_size, thumbnail_size];
-                                let response = ui::render_loading_image(ui, ctx, gallery_entry.borrow().thumbnail.as_ref(), options);
+                                let response = ui::render_loading_image(ui, ctx, gallery_entry.borrow().thumbnail.as_ref(), &options);
                                 if let Some(response) = response {
                                     if response.clicked() {
-                                        if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_info.entry_id() {
-                                            GalleryUI::launch_preview(
-                                                hash.clone(),
-                                                &mut self.preview_windows,
-                                                tags::clone_tag_data_ref(&self.tag_data),
-                                            )
-                                        }
+                                        GalleryUI::launch_preview(
+                                            &gallery_entry.borrow().entry_info.entry_id(),
+                                            &mut self.preview_windows,
+                                            tags::clone_tag_data_ref(&self.tag_data),
+                                        )
+                                        // if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_info.entry_id() {
+                                        //     GalleryUI::launch_preview(
+                                        //         &gallery_entry.borrow().entry_info.entry_id(),
+                                        //         &mut self.preview_windows,
+                                        //         tags::clone_tag_data_ref(&self.tag_data),
+                                        //     )
+                                        // }
                                     }
                                 }
                             }

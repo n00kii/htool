@@ -217,7 +217,7 @@ impl MediaEntry {
 
     pub fn load_bytes(&mut self) {
         let path = self.dir_entry.path().clone();
-        let promise = Promise::spawn_thread("", move || {
+        let promise = Promise::spawn_thread("load_import_entry_bytes", move || {
             let mut file = File::open(path)?;
             let mut bytes: Vec<u8> = vec![];
             file.read_to_end(&mut bytes)?;
