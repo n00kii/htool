@@ -22,8 +22,7 @@ fn main() -> Result<()> {
     if let Some(command) = args.get(1) {
         match command.as_str() {
             "test_ui" => {
-                let mut app = ui::AppUI::new();
-                app.load_windows();
+                let app = ui::AppUI::new();
                 app.start();
                 Config::save();
                 }

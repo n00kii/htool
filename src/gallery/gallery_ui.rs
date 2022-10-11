@@ -97,7 +97,6 @@ pub enum PreviewStatus {
 pub struct PreviewUI {
     pub tag_data: TagDataRef,
     pub toasts: egui_notify::Toasts,
-    // pub preview: Option<Promise<Result<RetainedImage>>>,
     pub preview: Option<Preview>,
     pub entry_info: Option<Promise<Result<EntryInfo>>>,
     pub tag_edit_buffer: String,
@@ -116,11 +115,12 @@ pub struct PreviewUI {
     pub short_id: String,
     pub clipboard_image: Option<Promise<Result<FlatSamples<Vec<u8>>>>>,
     is_reordering: bool,
+    original_order: Option<Vec<String>>,
 }
 
 pub enum Preview {
     MediaEntry(Promise<Result<RetainedImage>>),
-    PoolEntry((Vec<Promise<Result<RetainedImage>>>, usize)),
+    PoolEntry((Vec<(String, Promise<Result<RetainedImage>>)>, usize)),
 }
 
 impl ui::UserInterface for PreviewUI {
@@ -159,38 +159,14 @@ impl PreviewUI {
             is_editing_tags: false,
             status: PreviewStatus::None,
             tag_edit_buffer: "".to_string(),
-
+            original_order: None,
             clipboard_image: None,
         })
     }
 
     fn process_preview(&mut self) {
         if self.preview.is_none() {
-            self.load_image()
-            // if let Some(entry_info_promise) = self.entry_info.as_ref() {
-            //     if let Some(Ok(entry_info)) = entry_info_promise.ready() {
-            //         match entry_info.entry_id() {
-            //             EntryId::MediaEntry(hash) => {
-            //                 let hash = hash.clone()
-            //                 self.preview = Some(Preview::MediaEntry(Promise::spawn_thread("", move|| {
-
-            //                 })))
-            //             }
-            //             EntryId::PoolEntry(link_id) => {
-
-            //             }
-            //         }
-            //     }
-            // match entry_info_promise.ready() {
-            //     Some(Ok(EntryInfo::MediaEntry(media_info))) => {
-
-            //     }
-            //     Some(Ok(EntryInfo::PoolEntry(pool_info))) => {
-
-            //     }
-            //     _ => ()
-            // }
-            // }
+            self.load_preview()
         }
     }
 
@@ -237,12 +213,14 @@ impl PreviewUI {
                                 ui::toast_info(&mut self.toasts, "copied image to clipboard");
                             }
                         }
-                        Err(e) => ui::toast_error(&mut self.toasts, format!("failed to access system clipboard: {e}")),
+                        Err(e) => {
+                            ui::toast_error(&mut self.toasts, format!("failed to access system clipboard: {e}"));
+                        }
                     }
                 }
                 Some(Err(e)) => {
                     reset_clipboard_image = true;
-                    ui::toast_error(&mut self.toasts, format!("failed to load image to clipboard: {e}"))
+                    ui::toast_error(&mut self.toasts, format!("failed to load image to clipboard: {e}"));
                 }
                 _ => (),
             }
@@ -259,37 +237,40 @@ impl PreviewUI {
             if let Some(entry_info_promise) = self.entry_info.as_mut() {
                 if let Some(entry_info_res) = entry_info_promise.ready_mut() {
                     if let Ok(entry_info) = entry_info_res {
-                        if ui
-                            .button(if !entry_info.details().is_bookmarked {
-                                ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
-                            } else {
-                                ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
-                            })
-                            .clicked()
-                        {
-                            let new_state = !entry_info.details().is_bookmarked;
-                            if let Err(e) = data::set_bookmark(&entry_info.entry_id(), new_state) {
-                                ui::toast_error(&mut self.toasts, format!("failed to set bookmarked {new_state}: {e}"))
-                            } else {
-                                entry_info.details_mut().is_bookmarked = new_state;
-                                self_updated = true;
+                        ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
+                            if ui
+                                .button(if !entry_info.details().is_bookmarked {
+                                    ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
+                                } else {
+                                    ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
+                                })
+                                .clicked()
+                            {
+                                let new_state = !entry_info.details().is_bookmarked;
+                                if let Err(e) = data::set_bookmark(&entry_info.entry_id(), new_state) {
+                                    ui::toast_error(&mut self.toasts, format!("failed to set bookmarked {new_state}: {e}"));
+                                } else {
+                                    entry_info.details_mut().is_bookmarked = new_state;
+                                    self_updated = true;
+                                }
                             }
-                        }
-                        let star_response = ui::star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
-                        if star_response.changed() {
-                            let new_value = entry_info.details().score;
-                            if let Err(e) = data::set_score(&entry_info.entry_id(), new_value) {
-                                ui::toast_error(&mut self.toasts, format!("failed to set score={new_value}: {e}"))
-                            } else {
-                                entry_info.details_mut().score = new_value;
-                                self_updated = true;
+                            let star_response = ui::star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
+                            if star_response.changed() {
+                                let new_value = entry_info.details().score;
+                                if let Err(e) = data::set_score(&entry_info.entry_id(), new_value) {
+                                    ui::toast_error(&mut self.toasts, format!("failed to set score={new_value}: {e}"));
+                                } else {
+                                    entry_info.details_mut().score = new_value;
+                                    self_updated = true;
+                                }
                             }
-                        }
+                        });
                     }
+                } else {
+                    ui.spinner();
                 }
             }
             ui.add_space(ui::constants::SPACER_SIZE);
-            ui.add_enabled_ui(!self.is_editing_tags, |ui| {});
             if self.is_editing_tags {
                 if ui
                     .add(ui::suggested_button(ui::icon_text("save changes", ui::constants::SAVE_ICON)))
@@ -317,56 +298,119 @@ impl PreviewUI {
                     self.is_editing_tags = false;
                 }
             } else {
-                if let Some(entry_info_promise) = self.entry_info.as_ref() {
-                    if let Some(Ok(entry_info)) = entry_info_promise.ready() {
-                        if ui.button(format!("{} edit tags", ui::constants::EDIT_ICON)).clicked() {
-                            self.tag_edit_buffer = entry_info
-                                .details()
-                                .tags
-                                .iter()
-                                .map(|tag| tag.to_tagstring())
-                                .collect::<Vec<String>>()
-                                .join("\n");
-                            self.is_editing_tags = true;
-                        };
+                ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
+                    if let Some(entry_info_promise) = self.entry_info.as_ref() {
+                        if let Some(Ok(entry_info)) = entry_info_promise.ready() {
+                            if ui.button(format!("{} edit tags", ui::constants::EDIT_ICON)).clicked() {
+                                self.tag_edit_buffer = entry_info
+                                    .details()
+                                    .tags
+                                    .iter()
+                                    .map(|tag| tag.to_tagstring())
+                                    .collect::<Vec<String>>()
+                                    .join("\n");
+                                self.is_editing_tags = true;
+                            };
+                        }
+                    }
+                });
+            }
+            if let Some(entry_info_promise) = self.entry_info.as_mut() {
+                if let Some(Ok(EntryInfo::PoolEntry(pool_info))) = entry_info_promise.ready_mut() {
+                    if self.is_reordering {
+                        if ui
+                            .add(ui::suggested_button(ui::icon_text("save changes", ui::constants::SAVE_ICON)))
+                            .clicked()
+                        {
+                            self.is_reordering = false;
+                            if let Some(current_order) = Self::get_current_order(&self.preview) {
+                                if let EntryId::PoolEntry(link_id) = &pool_info.details.id {
+                                    let _ = data::delete_cached_thumbnail(&pool_info.details.id);
+                                    if let Err(e) = data::set_media_link_values_in_order(link_id, current_order) {
+                                        ui::toast_error(&mut self.toasts, format!("failed to reorder link: {e}"));
+                                    } else {
+                                        ui::toast_success(&mut self.toasts, format!("successfully reordered link {link_id}"));
+                                        self_updated = true;
+                                    };
+                                }
+                            }
+                        }
+                        if ui.button(ui::icon_text("discard changes", ui::constants::REMOVE_ICON)).clicked() {
+                            self.is_reordering = false;
+                            if let Some(Preview::PoolEntry((mut images, current_index))) = self.preview.take() {
+                                if let Some(original_order) = self.original_order.take() {
+                                    let old_images = original_order
+                                        .iter()
+                                        .filter_map(|hash| {
+                                            images
+                                                .iter()
+                                                .position(|(other_hash, image_promise)| other_hash == hash)
+                                                .map(|index| images.remove(index))
+                                        })
+                                        .collect::<Vec<_>>();
+                                    self.preview = Some(Preview::PoolEntry((old_images, 0)));
+                                }
+                            }
+                        }
+                    } else {
+                        ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
+                            if ui.button(ui::icon_text("reorder items", ui::constants::REORDER_ICON)).clicked() {
+                                self.is_reordering = true;
+                                if let Some(Preview::PoolEntry(images)) = self.preview.as_ref() {}
+
+                                self.original_order = Self::get_current_order(&self.preview)
+                            }
+                        });
                     }
                 }
             }
             ui.add_space(ui::constants::SPACER_SIZE);
-            if let Some(entry_info_promise) = self.entry_info.as_ref() {
-                if let Some(Ok(media_info)) = entry_info_promise.ready() {
-                    ui.menu_button(format!("{} export", ui::constants::EXPORT_ICON), |ui| {
-                        if let EntryId::MediaEntry(hash) = media_info.entry_id().clone() {
-                            if ui.button(ui::icon_text("to clipboard (image)", ui::constants::COPY_ICON)).clicked() {
-                                self.clipboard_image = Some(Promise::spawn_thread("load_image_clipboard", move || {
-                                    let load = || -> Result<FlatSamples<Vec<u8>>> {
-                                        let bytes = data::load_bytes(&hash)?;
-                                        let image = image::load_from_memory(&bytes)?;
-                                        let (width, height) = (image.width() as usize, image.height() as usize);
-                                        let rgba_image = image.to_rgba8();
-                                        let flat_samples = rgba_image.into_flat_samples();
-                                        Ok(flat_samples)
-                                    };
-                                    load()
-                                }))
+            ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
+                if let Some(entry_info_promise) = self.entry_info.as_ref() {
+                    if let Some(Ok(media_info)) = entry_info_promise.ready() {
+                        ui.menu_button(format!("{} export", ui::constants::EXPORT_ICON), |ui| {
+                            if let EntryId::MediaEntry(hash) = media_info.entry_id().clone() {
+                                if ui.button(ui::icon_text("to clipboard (image)", ui::constants::COPY_ICON)).clicked() {
+                                    self.clipboard_image = Some(Promise::spawn_thread("load_image_clipboard", move || {
+                                        let load = || -> Result<FlatSamples<Vec<u8>>> {
+                                            let bytes = data::load_bytes(&hash)?;
+                                            let image = image::load_from_memory(&bytes)?;
+                                            let rgba_image = image.to_rgba8();
+                                            let flat_samples = rgba_image.into_flat_samples();
+                                            Ok(flat_samples)
+                                        };
+                                        load()
+                                    }))
+                                }
                             }
-                        }
-                        // }
-                        if ui.button(ui::icon_text("to file", ui::constants::EXPORT_ICON)).clicked() {}
-                    });
+                            // }
+                            if ui.button(ui::icon_text("to file", ui::constants::EXPORT_ICON)).clicked() {}
+                        });
+                    }
                 }
-            }
-            if ui.button(format!("{} find source", ui::constants::SEARCH_ICON)).clicked() {}
-            ui.add_space(ui::constants::SPACER_SIZE);
-            if ui.add(ui::caution_button(format!("{} delete", ui::constants::DELETE_ICON))).clicked() {
-                delete_modal.open();
-            }
+                if ui.button(format!("{} find source", ui::constants::SEARCH_ICON)).clicked() {}
+                ui.add_space(ui::constants::SPACER_SIZE);
+                if ui.add(ui::caution_button(format!("{} delete", ui::constants::DELETE_ICON))).clicked() {
+                    delete_modal.open();
+                }
+            });
 
             if self_updated {
                 self.status = PreviewStatus::Updated;
             }
         });
         ui.add_space(ui::constants::SPACER_SIZE);
+    }
+
+    #[inline]
+    pub fn get_current_order(preview: &Option<Preview>) -> Option<Vec<String>> {
+        preview.as_ref().and_then(|images| {
+            if let Preview::PoolEntry((images, current_index)) = &images {
+                Some(images.iter().map(|(hash, image_promise)| hash.clone()).collect())
+            } else {
+                None
+            }
+        })
     }
 
     pub fn render_info(&mut self, ui: &mut Ui, _ctx: &egui::Context) {
@@ -488,7 +532,7 @@ impl PreviewUI {
                             }
                         }
                         Preview::PoolEntry((images, current_index)) => {
-                            if let Some(image_promise) = images.get(*current_index) {
+                            if let Some((hash, image_promise)) = images.get(*current_index) {
                                 if let Some(Ok(image)) = image_promise.ready() {
                                     Some(image)
                                 } else {
@@ -637,7 +681,7 @@ impl PreviewUI {
                         .show(ui, |ui| {
                             ui.with_layout(Layout::top_down(Align::Center), |ui| {
                                 let grid = Grid::new(format!("{}_pool_grid", self.id)).show(ui, |ui| {
-                                    for (image_index, image_promise) in images_promise.iter().enumerate() {
+                                    for (image_index, (hash, image_promise)) in images_promise.iter().enumerate() {
                                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                                             if self.current_dragged_index.is_some() && image_index == 0 {
                                                 if let Some(current_drop_index) = self.current_drop_index.as_ref() {
@@ -656,7 +700,7 @@ impl PreviewUI {
                                             let image_response = ui::render_loading_image(ui, ctx, Some(image_promise), &options);
                                             options.image_tint = None;
                                             if let Some(image_response) = image_response {
-                                                if image_response.dragged() {
+                                                if image_response.dragged() && self.is_reordering {
                                                     if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
                                                         let mut options = RenderLoadingImageOptions::default();
                                                         options.desired_image_size = [600.; 2];
@@ -679,7 +723,9 @@ impl PreviewUI {
                                                 }
                                                 if let Some(current_dragged_index) = self.current_dragged_index.as_ref() {
                                                     if ui.rect_contains_pointer(image_response.rect) {
-                                                        if (*current_dragged_index == image_index) || (((*current_dragged_index as i32) - 1).max(0) as usize == image_index) {
+                                                        if (*current_dragged_index == image_index)
+                                                            || (((*current_dragged_index as i32) - 1).max(0) as usize == image_index)
+                                                        {
                                                             self.current_drop_index = None;
                                                         } else {
                                                             self.current_drop_index = Some(image_index.max(1));
@@ -714,9 +760,9 @@ impl PreviewUI {
         }
     }
 
-    pub fn load_image(&mut self) {
-        let load = |hash: String| -> Result<RetainedImage> {
-            let bytes = data::load_bytes(&hash);
+    pub fn load_preview(&mut self) {
+        let load = |hash: &String| -> Result<RetainedImage> {
+            let bytes = data::load_bytes(hash);
             let bytes = bytes?;
             let dynamic_image = image::load_from_memory(&bytes)?;
             let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;
@@ -728,14 +774,16 @@ impl PreviewUI {
                 match entry_info.entry_id() {
                     EntryId::MediaEntry(hash) => {
                         let hash = hash.clone();
-                        self.preview = Some(Preview::MediaEntry(Promise::spawn_thread("load_media_image_preview", move || load(hash))));
+                        self.preview = Some(Preview::MediaEntry(Promise::spawn_thread("load_media_image_preview", move || {
+                            load(&hash)
+                        })));
                     }
                     EntryId::PoolEntry(link_id) => {
                         if let Ok(hashes) = data::get_hashes_of_media_link(*link_id) {
                             self.preview = Some(Preview::PoolEntry((
                                 hashes
                                     .into_iter()
-                                    .map(|hash| Promise::spawn_thread("load_pool_image_previews", move || load(hash)))
+                                    .map(|hash| (hash.clone(), Promise::spawn_thread("load_pool_image_previews", move || load(&hash))))
                                     .collect::<Vec<_>>(),
                                 0,
                             )));
@@ -857,10 +905,11 @@ impl GalleryUI {
             }
             self.load_buffer.poll();
         } else {
-            if self.loading_gallery_entries.is_none() {
-                self.load_gallery_entries();
-            }
         }
+        //     if self.loading_gallery_entries.is_none() {
+        // self.load_gallery_entries();
+        //     }
+        // }
 
         if self.gallery_entries.is_some() && self.filtered_gallery_entries.is_none() {
             self.filter_entries();
@@ -886,7 +935,9 @@ impl GalleryUI {
                             self.filter_entries()
                         }
                         Err(error) => {
-                            ui::toast_error(&mut self.toasts, format!("failed to load items due to {}", error));
+                            ui::toast_error(&mut self.toasts, format!("failed to load items: {}", error))
+                                .set_duration(None)
+                                .set_closable(false);
                         }
                     }
                 }
@@ -894,7 +945,7 @@ impl GalleryUI {
         }
     }
 
-    fn load_gallery_entries(&mut self) {
+    pub fn load_gallery_entries(&mut self) {
         let search_string = self.search_string.clone();
         self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || {
             let gallery_entries = load_gallery_entries(&search_string);
@@ -984,13 +1035,6 @@ impl GalleryUI {
                                             &mut self.preview_windows,
                                             tags::clone_tag_data_ref(&self.tag_data),
                                         )
-                                        // if let EntryId::MediaEntry(hash) = &gallery_entry.borrow().entry_info.entry_id() {
-                                        //     GalleryUI::launch_preview(
-                                        //         &gallery_entry.borrow().entry_info.entry_id(),
-                                        //         &mut self.preview_windows,
-                                        //         tags::clone_tag_data_ref(&self.tag_data),
-                                        //     )
-                                        // }
                                     }
                                 }
                             }

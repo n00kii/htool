@@ -28,10 +28,7 @@ use std::{
 
 pub struct MediaEntry {
     pub is_hidden: bool,
-    pub is_imported: bool,
     pub is_selected: bool,
-    pub disable_bytes_loading: bool,
-    pub is_to_be_loaded: Arc<(Mutex<bool>, Condvar)>,
 
     pub dir_entry: DirEntry,
     pub mime_type: Option<Result<Type>>,
@@ -41,7 +38,6 @@ pub struct MediaEntry {
     pub linking_dir: Option<String>,
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
-    pub modified_thumbnail: Option<RetainedImage>,
 
     pub importation_status: Option<Promise<ImportationStatus>>,
 }
@@ -161,8 +157,6 @@ pub fn scan_directory(
 
                 scanned_dir_entries.push(Rc::new(RefCell::new(MediaEntry {
                     is_hidden: false,
-                    is_to_be_loaded: Arc::new((Mutex::new(false), Condvar::new())),
-                    is_imported: false,
                     thumbnail: None,
                     file_size: file_size as usize,
                     mime_type: None,
@@ -170,10 +164,8 @@ pub fn scan_directory(
                     file_label,
                     bytes: None,
                     is_selected: false,
-                    modified_thumbnail: None,
                     importation_status: None,
                     linking_dir: linking_dir.clone(),
-                    disable_bytes_loading: false,
                 })));
             }
         }
@@ -200,12 +192,14 @@ impl MediaEntry {
 
                     let bytes = Arc::clone(bytes);
                     let dir_link_map = Arc::clone(&dir_link_map);
+                    let linking_value: Option<i32> = self.dir_entry.file_name().to_string_lossy().parse().ok();
                     let linking_dir = self.linking_dir.clone();
                     let (sender, promise) = Promise::new();
                     self.importation_status = Some(promise);
                     Ok(RegistrationForm {
                         bytes,
                         filekind,
+                        linking_value,
                         importation_result_sender: sender,
                         linking_dir,
                         dir_link_map,
@@ -292,10 +286,20 @@ impl MediaEntry {
     }
 
     pub fn is_importable(&self) -> bool {
-        let is_duplicate = self.match_importation_status(ImportationStatus::Duplicate);
-        let was_success = self.match_importation_status(ImportationStatus::Success);
+        let allow_import_attempt = if let Some(importation_promise) = self.importation_status.as_ref() {
+            if let Some(importation_status) = importation_promise.ready() {
+                match importation_status {
+                    ImportationStatus::Fail(_) => true,
+                    _ => false
+                }
+            } else {
+                false
+            }
+        } else {
+            true
+        };
 
-        return !self.failed_to_load_type() && !self.is_imported && !(was_success || is_duplicate);
+        return !self.failed_to_load_type() && allow_import_attempt;
     }
 
     pub fn unload_bytes_if_unnecessary(&mut self) {
@@ -318,9 +322,9 @@ impl MediaEntry {
         if self.is_hidden {
             add("hidden");
         };
-        if self.is_imported {
-            add("already imported")
-        };
+        if self.is_importing() {
+            add("importing...")
+        }
         if self.failed_to_load_type() {
             add("unable to read file type")
         };
@@ -342,7 +346,7 @@ impl MediaEntry {
                     },
                     _ => None,
                 };
-                error.unwrap_or("unknown error".to_string())
+                error.unwrap_or("unknown importation error".to_string())
                 // "unknown error"
             };
             // statuses.push(format!("import failed due to: {error_message}"));

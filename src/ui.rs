@@ -2,7 +2,7 @@
 
 use downcast_rs as downcast;
 use egui::{pos2, text::LayoutJob, vec2, Align, FontData, FontDefinitions, FontFamily, Layout, Pos2, Rect, Shape, Stroke, TextFormat};
-use egui_notify::Toasts;
+use egui_notify::{Toast, Toasts};
 use std::{
     cell::{RefCell, RefMut},
     fmt::Display,
@@ -35,6 +35,16 @@ use poll_promise::Promise;
 pub mod constants {
     use eframe::epaint::Color32;
 
+    pub const ERROR_COLOR: Color32 = Color32::from_rgb(200, 90, 90);
+    pub const INFO_COLOR: Color32 = Color32::from_rgb(150, 200, 210);
+    pub const WARNING_COLOR: Color32 = Color32::from_rgb(230, 220, 140);
+    pub const SUCCESS_COLOR: Color32 = Color32::from_rgb(140, 230, 140);
+
+    pub const INFO_ICON: &str = "ℹ";
+    pub const WARNING_ICON: &str = "⚠";
+    pub const ERROR_ICON: &str = "！";
+    pub const SUCCESS_ICON: &str = "✅";
+
     pub const BOOKMARK_ICON: &str = "♥";
     pub const DELETE_ICON: &str = "🗑";
     pub const EDIT_ICON: &str = "✏";
@@ -49,6 +59,7 @@ pub mod constants {
     pub const SAVE_ICON: &str = "💾";
     pub const COPY_ICON: &str = "📋";
     pub const TOOL_ICON: &str = "🔨";
+    pub const REORDER_ICON: &str = "↔";
 
     pub const APPLICATION_ICON_PATH: &str = "src/resources/icon.ico";
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
@@ -118,26 +129,6 @@ pub fn icon_text(text: impl Display, icon: &str) -> String {
     format!("{icon} {text}")
 }
 
-// def createRegularPolygon(numSides, sideLength, angleOffsetRadians=0, centerPoint=None, alternateInnerSize=None):
-// polygon = QPolygonF()
-// totalAngleDegrees = 180 * (numSides - 2)
-// angleStepDegrees = totalAngleDegrees / numSides
-// angleStepDegreeesOfUnitCircle = 180 - angleStepDegrees
-// if centerPoint == None: centerPoint = QPoint(0, 0)
-// for pointIndex in range(numSides):
-//     radius = sideLength
-
-//     if alternateInnerSize and (pointIndex % 2 == 0):
-//         radius = alternateInnerSize
-
-//     currentAngleRadians = math.radians(pointIndex * angleStepDegreeesOfUnitCircle) + angleOffsetRadians
-//     pointX = radius * math.cos(currentAngleRadians)
-//     pointY = radius * math.sin(currentAngleRadians)
-//     point = QPointF(pointX, pointY) + centerPoint
-//     polygon.append(point)
-
-// return polygon
-
 pub fn scale_color(base_color: Color32, color_factor: f32) -> Color32 {
     Color32::from_rgb(
         (base_color.r() as f32 * color_factor) as u8,
@@ -205,6 +196,7 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
     let canvas_padding = 5.;
     let stroke_width = 1.;
 
+    // if ui.end
     let outer_canvas_width = ui.available_width();
     let stepper_size = vec2(outer_canvas_width, outer_canvas_height);
     let (mut response, painter) = ui.allocate_painter(stepper_size, Sense::click());
@@ -232,13 +224,15 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         if was_clicked && ui.rect_contains_pointer(step_rect) {
             *current_value = (step_index as i64) + 1;
         }
-        let (fill_color, stroke_color) = if is_selected {
-            (constants::FAVORITE_ICON_SELECTED_FILL, darker(constants::FAVORITE_ICON_SELECTED_FILL))
+        let base_color = if ui.is_enabled() {
+            constants::FAVORITE_ICON_SELECTED_FILL
         } else {
-            (
-                darker(constants::FAVORITE_ICON_SELECTED_FILL),
-                darker(darker(constants::FAVORITE_ICON_SELECTED_FILL)),
-            )
+            darker(constants::FAVORITE_ICON_SELECTED_FILL)
+        };
+        let (fill_color, stroke_color) = if is_selected {
+            (base_color, darker(base_color))
+        } else {
+            (darker(base_color), darker(darker(base_color)))
         };
         let shape = generate_star_shape(shape_radius, step_center, fill_color, Stroke::new(stroke_width, stroke_color));
         painter.add(shape);
@@ -304,7 +298,7 @@ pub fn shrink_rect_scaled2(rect: &Rect, scale: [f32; 2]) -> Rect {
 
 pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<RetainedImage> {
     let pixels = image_buffer.as_flat_samples();
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([pixels.extents().1, pixels. extents().2], pixels.as_slice());
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([pixels.extents().1, pixels.extents().2], pixels.as_slice());
     Ok(RetainedImage::from_color_image("", color_image))
 }
 #[derive(PartialEq)]
@@ -381,21 +375,21 @@ impl Default for RenderLoadingImageOptions {
     }
 }
 
-pub fn toast_info(toasts: &mut Toasts, caption: impl Into<String>) {
-    set_default_toast_options(toasts.info(caption));
+pub fn toast_info(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
+    set_default_toast_options(toasts.info(caption))
 }
-pub fn toast_success(toasts: &mut Toasts, caption: impl Into<String>) {
-    set_default_toast_options(toasts.success(caption));
+pub fn toast_success(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
+    set_default_toast_options(toasts.success(caption))
 }
-pub fn toast_warning(toasts: &mut Toasts, caption: impl Into<String>) {
-    set_default_toast_options(toasts.warning(caption));
+pub fn toast_warning(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
+    set_default_toast_options(toasts.warning(caption))
 }
-pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) {
-    set_default_toast_options(toasts.error(caption));
+pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
+    set_default_toast_options(toasts.error(caption))
 }
 
-pub fn set_default_toast_options(toast: &mut egui_notify::Toast) {
-    toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true);
+pub fn set_default_toast_options(toast: &mut egui_notify::Toast) -> &mut Toast {
+    toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true)
 }
 
 pub fn does_window_exist(title: &String, windows: &Vec<WindowContainer>) -> bool {
@@ -623,7 +617,7 @@ impl AppUI {
         }
     }
 
-    pub fn start(self) {
+    pub fn start(mut self) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
         options.icon_data = Some(load_icon(constants::APPLICATION_ICON_PATH));
@@ -633,12 +627,16 @@ impl AppUI {
             options,
             Box::new(|creation_context| {
                 Self::load_fonts(&creation_context.egui_ctx);
+                self.load_windows();
+
                 Box::new(self)
             }),
         );
     }
 
     pub fn load_windows(&mut self) {
+        let mut gallery_window = gallery_ui::GalleryUI::default();
+        gallery_window.load_gallery_entries();
         self.windows = vec![
             WindowContainer {
                 window: Box::new(import_ui::ImporterUI::default()),
@@ -646,7 +644,7 @@ impl AppUI {
                 title: format!("{} importer", constants::IMPORT_ICON),
             },
             WindowContainer {
-                window: Box::new(gallery_ui::GalleryUI::default()),
+                window: Box::new(gallery_window),
                 is_open: None,
 
                 title: format!("{} gallery", constants::GALLERY_ICON),

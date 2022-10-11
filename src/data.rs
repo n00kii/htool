@@ -38,6 +38,7 @@ pub struct RegistrationForm {
     // pub importation_result: Option<Promise<ImportationStatus>>,
     pub importation_result_sender: Sender<ImportationStatus>,
     pub linking_dir: Option<String>,
+    pub linking_value: Option<i32>,
     pub dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
 }
 
@@ -254,21 +255,19 @@ pub fn load_thumbnail(entry_id: &EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8
                         }
                     }
                     EntryId::PoolEntry(link_id) => {
-                        let hashes_of_link = get_hashes_of_media_link(*link_id)?;
+                        let max_constituent_thumbnails = 3;
+                        let mut hashes_of_link = get_hashes_of_media_link(*link_id)?;
+                        hashes_of_link.truncate(max_constituent_thumbnails);
+                        hashes_of_link.reverse();
+
                         if hashes_of_link.len() == 0 {
                             return Err(anyhow::Error::msg("no hashes in link"));
                         }
-                        let max_constituent_thumbnails = 3;
-                        let mut constituent_thumbnails = Vec::new();
+                        let constituent_thumbnails = hashes_of_link
+                            .into_iter()
+                            .filter_map(|hash| load_thumbnail(&EntryId::MediaEntry(hash)).ok())
+                            .collect::<Vec<_>>();
 
-                        for hash in hashes_of_link {
-                            if let Ok(constituent_thumbnail) = load_thumbnail(&EntryId::MediaEntry(hash)) {
-                                constituent_thumbnails.push(constituent_thumbnail);
-                                if constituent_thumbnails.len() == max_constituent_thumbnails {
-                                    break;
-                                }
-                            }
-                        }
                         if constituent_thumbnails.len() == 0 {
                             return Err(anyhow::Error::msg("couldnt load any thumbnails of hashes of link"));
                         }
@@ -430,7 +429,15 @@ pub fn load_entry_info(entry_id: &EntryId) -> Result<EntryInfo> {
 
     Ok(entry_info)
 }
-
+pub fn set_media_link_values_in_order(link_id: &i32, hashes: Vec<String>) -> Result<()> {
+    let mut conn = initialize_database_connection()?;
+    let tx = conn.transaction()?;
+    for (index, hash) in hashes.iter().enumerate() {
+        set_media_link_value_with_conn(&tx, link_id, hash, index as i64)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
 pub fn set_score(entry_id: &EntryId, new_score: i64) -> Result<()> {
     let conn = initialize_database_connection()?;
     match entry_id {
@@ -613,12 +620,13 @@ pub fn get_media_links_of_hash(hash: &String) -> Result<Vec<i32>> {
 }
 pub fn get_hashes_of_media_link(link_id: i32) -> Result<Vec<String>> {
     let conn = initialize_database_connection()?;
-    let mut statement = conn.prepare("SELECT hash FROM media_links WHERE id = ?1")?;
+    let mut statement = conn.prepare("SELECT hash FROM media_links WHERE id = ?1 ORDER BY value ASC")?;
     let rows = statement.query_map(params![link_id], |row| row.get(0))?;
     let mut hashes: Vec<String> = Vec::new();
     for hash_result in rows {
         hashes.push(hash_result?);
     }
+
     Ok(hashes)
 }
 
@@ -775,116 +783,9 @@ pub fn get_all_tag_data() -> Result<Vec<TagData>> {
     Ok(all_tag_data)
 }
 
-pub fn register_media(
-    bytes: &[u8],
-    filekind: Option<infer::Type>,
-    linking_dir: Option<String>,
-    dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-) -> ImportationStatus {
-    fn register(
-        bytes: &[u8],
-        filekind: Option<infer::Type>,
-        linking_dir: Option<String>,
-        dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-    ) -> Result<ImportationStatus> {
-        // println!("got {} kB for register", bytes.len() / 1000);
-        let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
-        let hasher = hasher_config.to_hasher();
-        let conn = initialize_database_connection()?;
-
-        let sha_hash = sha256::digest_bytes(bytes);
-        let mut perceptual_hash: Option<String> = None;
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let mime_type = match filekind {
-            Some(kind) => kind.mime_type(),
-            None => "",
-        };
-
-        if let Some(filekind) = filekind {
-            if filekind.matcher_type() == infer::MatcherType::Image {
-                let image = image::load_from_memory(bytes)?;
-                perceptual_hash = Some(hex::encode(hasher.hash_image(&image).as_bytes()));
-            }
-        }
-
-        let mut statement = conn.prepare("SELECT 1 FROM media_info WHERE hash = ?")?;
-        let exists = statement.exists(params![sha_hash])?;
-        if exists {
-            return Ok(ImportationStatus::Duplicate);
-        }
-        let insert_result = conn.execute(
-            "INSERT INTO media_info (perceptual_hash, hash, mime, date_registered, size, is_bookmarked, rating)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![perceptual_hash, sha_hash, mime_type, timestamp, bytes.len(), false, 0],
-        );
-
-        // let insert_result = if perceptual_hash.is_some() {
-        //     conn.execute(
-        //         "INSERT INTO media_info (perceptual_hash, hash, mime, date_registered, size, is_bookmarked, rating)
-        //             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        //         params![perceptual_hash.unwrap(), sha_hash, mime_type, timestamp, bytes.len(), false, 0],
-        //     )
-        // } else {
-        //     conn.execute(
-        //         "INSERT INTO media_info (hash, mime, date_registered, size, is_bookmarked, rating)
-        //             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        //         params![sha_hash, mime_type, timestamp, bytes.len(), false, 0],
-        //     )
-        // };
-
-        match insert_result {
-            Ok(_) => {
-                conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, bytes])?;
-                if let Some(linking_dir) = linking_dir {
-                    if let Ok(mut dir_link_map) = dir_link_map.lock() {
-                        if let Some(link_id) = dir_link_map.get(&linking_dir) {
-                            conn.execute(
-                                "INSERT INTO media_links (id, hash)
-                                            VALUES (?1, ?2)",
-                                params![link_id, sha_hash],
-                            )?;
-                        } else {
-                            // new link_id
-                            let next_id: i32 = conn.query_row("SELECT IFNULL(MAX(id), 0) + 1 FROM media_links ", [], |row| row.get(0))?;
-                            conn.execute(
-                                "INSERT INTO media_links (id, hash)
-                                VALUES (?1, ?2)",
-                                params![next_id, sha_hash],
-                            )?;
-                            conn.execute(
-                                "INSERT INTO media_info (perceptual_hash, hash, mime, date_registered, size, is_bookmarked, rating)
-                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                                params![perceptual_hash, sha_hash, mime_type, timestamp, bytes.len(), false, 0],
-                            )?;
-
-                            dir_link_map.insert(linking_dir, next_id);
-                        }
-                    }
-                }
-
-                return Ok(ImportationStatus::Success);
-            }
-            Err(error) => {
-                if let rusqlite::Error::SqliteFailure(e, _) = error {
-                    if e.code == rusqlite::ErrorCode::ConstraintViolation {
-                        return Ok(ImportationStatus::Duplicate);
-                    }
-                }
-                return Ok(ImportationStatus::Fail(error.into()));
-            }
-        }
-    }
-
-    match register(bytes, filekind, linking_dir, dir_link_map) {
-        Ok(status) => return status,
-        Err(error) => return ImportationStatus::Fail(error),
-    };
-}
-
 pub fn register_media_with_forms(reg_forms: Vec<RegistrationForm>) -> Result<()> {
     let mut conn = initialize_database_connection()?;
     let trans = conn.transaction()?;
-
     for reg_form in reg_forms {
         let status = register_media_with_conn(&trans, &reg_form);
         reg_form.importation_result_sender.send(status);
@@ -931,21 +832,11 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
                 conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, reg_form.bytes])?;
                 if let Some(linking_dir) = &reg_form.linking_dir {
                     if let Ok(mut dir_link_map) = reg_form.dir_link_map.lock() {
-                        if let Some(link_id) = dir_link_map.get(linking_dir) {
-                            conn.execute(
-                                "INSERT INTO media_links (id, hash)
-                                VALUES (?1, ?2)",
-                                params![link_id, sha_hash],
-                            )?;
+                        let link_id = if let Some(link_id) = dir_link_map.get(linking_dir) {
+                            *link_id
                         } else {
                             // new link_id
                             let next_id: i32 = conn.query_row("SELECT IFNULL(MAX(id), 0) + 1 FROM media_links ", [], |row| row.get(0))?;
-                            conn.execute(
-                                "INSERT INTO media_links (id, hash)
-                                VALUES (?1, ?2)",
-                                params![next_id, sha_hash],
-                            )?;
-
                             conn.execute("DELETE FROM media_info WHERE link_id = ?1", params![next_id])?;
 
                             conn.execute(
@@ -954,7 +845,14 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
                             )?;
 
                             dir_link_map.insert(linking_dir.clone(), next_id);
-                        }
+                            next_id
+                        };
+
+                        conn.execute(
+                            "INSERT INTO media_links (id, hash, value)
+                            VALUES (?1, ?2, ?3)",
+                            params![link_id, sha_hash, reg_form.linking_value],
+                        )?;
                     }
                 }
 
@@ -1003,4 +901,19 @@ fn load_tag_data_with_conn(conn: &Connection, tag: &Tag) -> Result<TagData> {
         }
     }
     Ok(tag_data)
+}
+
+fn set_media_link_value_with_conn(conn: &Connection, link_id: &i32, hash: &String, value: i64) -> Result<()>{
+    conn.execute("UPDATE media_links SET value = ?1 WHERE id = ?2 AND hash = ?3", params![value, link_id, hash])?;
+    Ok(())
+}
+
+pub fn delete_cached_thumbnail(entry_id: &EntryId) -> Result<()>{
+    let conn = initialize_database_connection()?;
+    match entry_id {
+        EntryId::MediaEntry(hash) => conn.execute("DELETE FROM thumbnail_cache WHERE hash = ?1", params![hash])?,
+        EntryId::PoolEntry(link_id) => conn.execute("DELETE FROM thumbnail_cache WHERE link_id = ?1", params![link_id])?,
+    };
+    
+    Ok(())
 }

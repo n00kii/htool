@@ -86,7 +86,6 @@ impl ui::UserInterface for TagsUI {
 }
 
 impl TagsUI {
-    
     fn render_modify_windows(&mut self, ctx: &egui::Context) {
         self.modify_windows.retain(|window| window.is_open.unwrap());
         for modify_window in self.modify_windows.iter_mut() {
@@ -412,10 +411,10 @@ impl TagsUI {
         }
     }
     fn toast_failed_check_link_exists(link: &TagLink, toasts: &mut Toasts) {
-        ui::toast_error(toasts, format!("error checking if link {} exists", link.to_string()))
+        ui::toast_error(toasts, format!("error checking if link {} exists", link.to_string()));
     }
     fn toast_failed_check_tag_exists(tagstring: &String, toasts: &mut Toasts) {
-        ui::toast_error(toasts, format!("error checking if tag \"{tagstring}\" exists"))
+        ui::toast_error(toasts, format!("error checking if tag \"{tagstring}\" exists"));
     }
     fn toast_failed_delete_link(link: &TagLink, error: &Error, toasts: &mut Toasts) {
         ui::toast_error(toasts, format!("failed to delete link {}: {error}", link.to_string()));
@@ -436,7 +435,7 @@ impl TagsUI {
         ui::toast_success(toasts, format!("successfully deleted link {}", link.to_string()));
     }
     fn toast_success_delete_tag(tagstring: &String, toasts: &mut Toasts) {
-        ui::toast_success(toasts, format!("successfully deleted tag\"{}\"", tagstring))
+        ui::toast_success(toasts, format!("successfully deleted tag\"{}\"", tagstring));
     }
     fn toast_success_modify_tag(old_tagstring: &String, new_tagstring: &String, toasts: &mut Toasts) {
         ui::toast_success(toasts, format!("successfully modified tag (\"{old_tagstring}\" --> \"{new_tagstring}\")"));
