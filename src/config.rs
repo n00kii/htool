@@ -57,8 +57,10 @@ impl Path {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Ui {
-    pub import: Import,
-    pub gallery: Gallery,
+    pub thumbnail_resolution: usize,
+    // pub import: Import,
+    // pub gallery: Gallery,
+    // pub short_id_length: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -68,6 +70,7 @@ pub struct Import {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Gallery {
     pub thumbnail_size: usize,
+    pub short_id_length: usize,
     pub preview_size: usize,
 }
 
@@ -81,6 +84,9 @@ pub struct Config {
     pub path: Path,
     pub namespaces: Vec<Namespace>,
     pub media: Media,
+    pub import: Import,
+    pub gallery: Gallery,
+    // pub short_id_len
     pub ui: Ui,
 }
 
@@ -95,12 +101,15 @@ impl Default for Config {
             namespaces: vec![],
             media: Media { max_score: 5 },
             ui: Ui {
-                import: Import { thumbnail_size: 100 },
-                gallery: Gallery {
-                    thumbnail_size: 100,
-                    preview_size: 500,
-                },
+                thumbnail_resolution: 100 
             },
+            import: Import { thumbnail_size: 100 },
+            gallery: Gallery {
+                thumbnail_size: 100,
+                preview_size: 500,
+                short_id_length: 6,
+            },
+            // },
         }
     }
 }

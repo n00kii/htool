@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+use anyhow::Error;
 use data::ImportationStatus;
+use egui::Context;
 use egui::Label;
 use egui::Layout;
 use egui::RichText;
@@ -34,12 +36,14 @@ use std::sync::{Arc, Mutex};
 const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
+    import_failures_list: Arc<Mutex<Vec<(String, Error)>>>,
     media_entries: Option<Vec<Rc<RefCell<MediaEntry>>>>,
     alternate_scan_dir: Option<PathBuf>,
     show_hidden_entries: bool,
     hide_errored_entries: bool,
     import_hidden_entries: bool,
     current_import_res: Option<Promise<Result<()>>>,
+    skip_thumbnails: bool,
     page_count: usize,
     page_index: usize,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
@@ -47,17 +51,18 @@ pub struct ImporterUI {
     total_import_status: Option<(usize, Vec<anyhow::Error>)>,
     is_import_status_window_open: bool,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-    load_buffer: PollBuffer<MediaEntry>,
+    thumbnail_buffer: PollBuffer<MediaEntry>,
     import_buffer: PollBuffer<MediaEntry>,
+    is_filters_window_open: bool,
 }
 
 impl Default for ImporterUI {
     fn default() -> Self {
-        let load_buffer = PollBuffer::new(
+        let thumbnail_buffer = PollBuffer::new(
             Some(5_000_000),
             None,
             Some(ImporterUI::buffer_add),
-            Some(ImporterUI::load_buffer_poll),
+            Some(ImporterUI::thumbnail_buffer_poll),
             Some(ImporterUI::buffer_entry_size),
         );
 
@@ -71,11 +76,14 @@ impl Default for ImporterUI {
 
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
+            import_failures_list: Arc::new(Mutex::new(vec![])),
             show_hidden_entries: false,
-            load_buffer,
+            thumbnail_buffer,
             total_import_status: None,
             import_buffer,
+            skip_thumbnails: false,
             is_import_status_window_open: false,
+            is_filters_window_open: false,
             hide_errored_entries: true,
             import_hidden_entries: true,
             batch_import_status: None,
@@ -108,17 +116,18 @@ impl ImporterUI {
         }
     }
 
-    fn load_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+    fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
         if media_entry.are_bytes_loaded() {
             if media_entry.thumbnail.is_none() {
                 media_entry.load_thumbnail(); //FIXME: replace w config
             }
-            if media_entry.mime_type.is_none() {
-                media_entry.load_mime_type();
-            }
+            // if media_entry.mime_type.is_none() {
+            //     media_entry.load_mime_type();
+            // }
         }
-        media_entry.is_loading_or_needs_to_load()
+        // dbg!(media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none());
+        media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none()
     }
     fn buffer_entry_size(media_entry: &Rc<RefCell<MediaEntry>>) -> usize {
         media_entry.borrow().file_size
@@ -199,7 +208,7 @@ impl ImporterUI {
                 if let Some(path) = FileDialog::new().pick_folder() {
                     self.alternate_scan_dir = Some(path);
                     self.media_entries = None;
-                    self.load_buffer.entries.clear();
+                    self.thumbnail_buffer.entries.clear();
                     self.import_buffer.entries.clear();
                 }
             }
@@ -231,11 +240,41 @@ impl ImporterUI {
                             }
                         }
                     }
-                    let media_entries = scan_directory(self.get_scan_dir(), 0, None, &extension_filter);
-                    if let Ok(media_entries) = media_entries {
-                        self.media_entries = Some(media_entries);
+                    match scan_directory(self.get_scan_dir(), 0, None, &extension_filter) {
+                        Ok(media_entries) => {
+                            let warning_amount = 15000;
+                            let amount_entries = media_entries.len();
+                            ui::toast_info(&mut self.toasts, format!("found {amount_entries} entries"));
+                            if amount_entries > warning_amount {
+                                ui::toast_warning(
+                                    &mut self.toasts,
+                                    format!(
+                                        "more than {warning_amount} entries: performance may be limited. \
+                                        disabling previews or splitting this directory into multiple \
+                                        directories may help."
+                                    ),
+                                )
+                                .set_closable(true)
+                                .set_duration(None);
+                            }
+                            // dbg!(media_entries.len());
+                            self.media_entries = Some(media_entries);
+                        }
+                        Err(e) => {
+                            ui::toast_error(&mut self.toasts, format!("failed to scan directory: {e}"));
+                        }
                     }
                 }
+                ui.add_space(ui::constants::SPACER_SIZE);
+
+                if ui.button("filters").clicked() {
+                    self.is_filters_window_open = !self.is_filters_window_open
+                }
+
+                ui.add_space(ui::constants::SPACER_SIZE);
+
+                ui.checkbox(&mut self.skip_thumbnails, "disable previews");
+
                 ui.add_space(ui::constants::SPACER_SIZE);
 
                 if ui.add_enabled(self.media_entries.is_some(), Button::new("select all")).clicked() {
@@ -256,34 +295,6 @@ impl ImporterUI {
                         media_entry.borrow_mut().is_selected = !current_state;
                     }
                 }
-
-                // ui.add_space(ui::constants::SPACER_SIZE);
-
-                // ui.collapsing("filters", |ui| {
-                //     if self.media_entries.is_some() {
-                //         let text = egui::RichText::new("rescan to apply filters").color(egui::Color32::RED);
-                //         ui.label(text);
-                //     }
-
-                //     egui::Grid::new("filters").max_col_width(100.).show(ui, |ui| {
-                //         for (extension_group, extensions) in self.scan_extension_filter.iter_mut() {
-                //             let mut any_selected = extensions.values().any(|&x| x);
-                //             if ui.checkbox(&mut any_selected, extension_group).changed() {
-                //                 for (_extension, do_include) in extensions.iter_mut() {
-                //                     *do_include = any_selected;
-                //                 }
-                //             }
-
-                //             ui.vertical(|ui| {
-                //                 for (extension, do_include) in extensions.iter_mut() {
-                //                     ui.checkbox(do_include, extension);
-                //                 }
-                //             });
-                //             ui.end_row();
-                //         }
-                //     });
-
-                // });
 
                 // ui.collapsing("page", |ui| {
                 // ui.horizontal(|ui| {
@@ -316,42 +327,6 @@ impl ImporterUI {
                 // );
                 // });
 
-                // ui.checkbox(&mut self.hide_errored_entries, "hide errored");
-                // ui.c
-                // ui.collapsing("hide", |ui| {
-                // ui.vertical(|ui| {
-
-                //         ui.checkbox(&mut self.show_hidden_entries, "show hidden");
-                //         ui.checkbox(&mut self.import_hidden_entries, "skip hidden");
-                //     });
-                //     ui.add_space(ui::constants::SPACER_SIZE);
-
-                // if ui.add_enabled(self.is_any_entry_selected(), Button::new("hide selected")).clicked() {
-                //     for media_entry in self.get_selected_media_entries() {
-                //         media_entry.borrow_mut().is_hidden = true;
-                //     }
-                // }
-
-                // if ui.add_enabled(self.is_any_entry_selected(), Button::new("unhide selected")).clicked() {
-                //     for media_entry in self.get_selected_media_entries() {
-                //         media_entry.borrow_mut().is_hidden = false;
-                //     }
-                // }
-
-                // if ui.add_enabled(self.is_any_entry_hidden(), Button::new("select hidden")).clicked() {
-                //     for media_entry in self.get_selected_media_entries() {
-                //         media_entry.borrow_mut().is_selected = true;
-                //     }
-                // }
-
-                // if ui.add_enabled(self.is_any_entry_hidden(), Button::new("deselect hidden")).clicked() {
-                //     for media_entry in self.get_hidden_media_entries() {
-                //         media_entry.borrow_mut().is_selected = false;
-                //     }
-                // }
-                // });
-
-                // ui.collapsing("import", |ui| {
                 ui.add_space(ui::constants::SPACER_SIZE);
 
                 if ui
@@ -393,13 +368,15 @@ impl ImporterUI {
                                 let mut label = media_entry.borrow().file_label.clone();
                                 let max_len = 25;
                                 let mut was_truncated = false;
-                                if label.len() > max_len {
-                                    was_truncated = true;
-                                    label = match label.char_indices().nth(max_len) {
-                                        None => label,
-                                        Some((idx, _)) => label[..idx].to_string(),
-                                    };
-                                    label.push_str("...");
+                                if !self.skip_thumbnails {
+                                    if label.len() > max_len {
+                                        was_truncated = true;
+                                        label = match label.char_indices().nth(max_len) {
+                                            None => label,
+                                            Some((idx, _)) => label[..idx].to_string(),
+                                        };
+                                        label.push_str("...");
+                                    }
                                 }
                                 if media_entry
                                     .borrow()
@@ -415,9 +392,10 @@ impl ImporterUI {
                                 let mut text = egui::RichText::new(format!("{}", label));
                                 if media_entry.borrow().is_hidden {
                                     text = text.weak();
-                                } else if media_entry.borrow().failed_to_load_type() {
-                                    text = text.strikethrough();
                                 }
+                                // } else if media_entry.borrow().failed_to_load_type() {
+                                //     text = text.strikethrough();
+                                // }
                                 let is_selected = media_entry.borrow().is_selected;
                                 let mut response = files_col_scroll.selectable_label(is_selected, text);
                                 if response.clicked() && is_importable {
@@ -441,29 +419,44 @@ impl ImporterUI {
     }
 
     fn process_media(&mut self) {
-        self.load_buffer.poll();
+        self.thumbnail_buffer.poll();
         self.import_buffer.poll();
 
         if let Some(media_entries) = self.media_entries.as_ref() {
             let mut no_more_pending_imports = true;
             for media_entry in media_entries {
-                if media_entry.borrow().is_loading_or_needs_to_load() {
-                    let _ = self.load_buffer.try_add_entry(Rc::clone(&media_entry));
+                // media_entry.borrow_mut().unload_bytes_if_unnecessary();
+                if media_entry.borrow().are_bytes_loaded() {
+                    // let media_entry = media_entry.borrow();
+                    if !media_entry.borrow().is_importing()
+                        && !((media_entry.borrow().is_thumbnail_loading() || media_entry.borrow().thumbnail.is_none()) && !self.skip_thumbnails)
+                    {
+                        media_entry.borrow_mut().bytes = None
+                    }
+                }
+                if !self.skip_thumbnails {
+                    if media_entry.borrow().thumbnail.is_none() && !self.thumbnail_buffer.is_full() {
+                        let _ = self.thumbnail_buffer.try_add_entry(Rc::clone(&media_entry));
+                    }
+                } else {
+                    self.thumbnail_buffer.entries.clear();
+                    // if media
+                    media_entry.borrow_mut().thumbnail = None;
                 }
                 if media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
                     // if something didn't get added to the buffer (buffer full), there are still pending imports
-                    if let Err(e) = self.import_buffer.try_add_entry(Rc::clone(media_entry)) {
+                    if let Err(_e) = self.import_buffer.try_add_entry(Rc::clone(media_entry)) {
                         if self.import_buffer.is_full() {
                             no_more_pending_imports = false;
                         }
                     }
                 }
             }
-            //FIXME: media importing a lot???
+
             let should_start_batch_import = !self.import_buffer.entries.is_empty() && (self.import_buffer.is_full() || no_more_pending_imports);
             let mut clear_batch_import_status = false;
             if let Some(batch_import_promise) = self.batch_import_status.as_ref() {
-                if let Some(batch_import_res) = batch_import_promise.ready() {
+                if let Some(_batch_import_res) = batch_import_promise.ready() {
                     clear_batch_import_status = true;
                 }
             }
@@ -500,8 +493,10 @@ impl ImporterUI {
                         let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                         ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                             ui.with_layout(layout, |ui| {
-                                for media_entry in scanned_dirs.iter() {
-                                    if media_entry.borrow().is_hidden && self.hide_errored_entries {
+                                for (index, media_entry) in scanned_dirs.iter().enumerate() {
+                                    let is_on_page =
+                                        (index >= (self.page_count * self.page_index)) && (index < (self.page_count * (self.page_index + 1)));
+                                    if media_entry.borrow().is_hidden && self.hide_errored_entries && !is_on_page {
                                         continue;
                                     }
                                     let mut media_entry = media_entry.borrow_mut();
@@ -514,7 +509,7 @@ impl ImporterUI {
                                     };
 
                                     let mut options = ui::RenderLoadingImageOptions::default();
-                                    let thumbnail_size = Config::global().ui.import.thumbnail_size as f32;
+                                    let thumbnail_size = Config::global().import.thumbnail_size as f32;
                                     options.widget_margin = [10., 10.];
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
                                     options.hover_text_on_loading_image =
@@ -569,6 +564,31 @@ impl ImporterUI {
         progress
     }
 
+    fn render_filters_window(&mut self, ctx: &Context) {
+        egui::Window::new("filters")
+            .open(&mut self.is_filters_window_open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("filters").max_col_width(100.).striped(true).show(ui, |ui| {
+                    for (extension_group, extensions) in self.scan_extension_filter.iter_mut() {
+                        let mut any_selected = extensions.values().any(|&x| x);
+                        if ui.checkbox(&mut any_selected, extension_group).changed() {
+                            for (_extension, do_include) in extensions.iter_mut() {
+                                *do_include = any_selected;
+                            }
+                        }
+
+                        ui.vertical(|ui| {
+                            for (extension, do_include) in extensions.iter_mut() {
+                                ui.checkbox(do_include, extension);
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+            });
+    }
+
     fn render_import_status_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("import status")
             .open(&mut self.is_import_status_window_open)
@@ -598,22 +618,8 @@ impl ImporterUI {
                         }
                     }
                     let total_selected_for_import = media_entries.len() - total_not_selected_for_import;
-                    // let info_label = ui::generate_layout_job(vec![
-                    //     // LayoutJobText::new(ui::constants::INFO_ICON).with_color(ui::constants::INFO_COLOR),
-                    //     " info".into(),
-                    // ]);
-                    // let warnings_label = ui::generate_layout_job(vec![
-                    //     // LayoutJobText::new(ui::constants::WARNING_ICON).with_color(ui::constants::WARNING_COLOR),
-                    //     " warnings".into(),
-                    // ]);
-                    // let errors_label = ui::generate_layout_job(vec![
-                    //     // LayoutJobText::new(ui::constants::ERROR_ICON).with_color(ui::constants::ERROR_COLOR),
-                    //     " errors".into(),
-                    // ]);
 
                     ui.vertical_centered(|ui| {
-                        // ui.label(info_label);
-                        // ui.indent("info_section", |ui| {
                         ui.label(format!(
                             "{} / {total_selected_for_import} entries processed",
                             total_succeeded + total_duplicates + total_failed
@@ -622,16 +628,10 @@ impl ImporterUI {
                         ui.label(format!("{total_currently_importing} entries currently processing"));
                         ui.label(format!("{total_not_started} entries in queue"));
                         ui.label(format!("{total_succeeded} import successes"));
-                        // ui.label(warnings_label);
                         ui.separator();
-                        // ui.indent("warnings_section", |ui| {
                         ui.label(format!("{total_duplicates} duplicate entries"));
-                        // });
                         ui.separator();
-                        // ui.label(errors_label);
-                        // ui.indent("errors_section", |ui| {
                         ui.label(format!("{total_failed} import failures"));
-                        // });
                     });
                 }
             });
@@ -649,56 +649,46 @@ impl ImporterUI {
 impl ui::UserInterface for ImporterUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_media();
+        self.render_scan_directory_selection(ui);
+        ui.separator();
 
-        ui.horizontal(|ui| {
-            self.render_scan_directory_selection(ui);
-            self.render_progress(ui);
-        });
-        StripBuilder::new(ui)
-            .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
-            .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
-            // .size(Size::exact(ui::constants::SPACER_SIZE))
-            .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH * 2.))
-            .size(Size::remainder())
-            .horizontal(|mut strip| {
-                strip.empty();
-                strip.cell(|ui| {
-                    self.render_options(ui);
-                });
-                // strip.cell(|ui| {
-                //     ui.with_layout(Layout::left_to_right(Align::Center).with_cross_justify(true), |ui| {
-                //         ui.separator();
-                //     });
-                // });
-                strip.cell(|ui| {
-                    // self.render_options(ui, ctx);
-                    // self.render_options(ui);
-                    self.render_files(ui);
-                });
-                strip.cell(|ui| {
-                    // ui.horizontal(|ui| {
-                    //     ui.label(format!("{} filter", ui::constants::SEARCH_ICON));
-                    //     ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
-                    //         let response = ui.text_edit_singleline(&mut self.filter_query);
-                    //         if response.changed() {
-                    //             self.filter_tagstrings = self.filter_query.split_whitespace().map(|str| str.to_string()).collect::<Vec<_>>();
-                    //         }
-                    //     });
-                    // });
-                    // ui.add_space(ui::constants::SPACER_SIZE);
-                    // self.render_tags(ui);
-                    self.render_previews(ui, ctx);
-                });
-            });
-        // self.toasts.borrow_mut().show(ctx);
-        // self.render_modify_windows(ctx);
+        if self.skip_thumbnails {
+            StripBuilder::new(ui)
+                .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
+                .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.empty();
+                    strip.cell(|ui| {
+                        self.render_options(ui);
+                    });
 
-        // ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
-        //     self.render_options(ui);
-        //     self.render_files(ui);
-        //     self.render_previews(ui, ctx);
-        // });
+                    strip.cell(|ui| {
+                        self.render_files(ui);
+                    });
+                });
+        } else {
+            StripBuilder::new(ui)
+                .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
+                .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
+                .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH * 2. + 10.))
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.empty();
+                    strip.cell(|ui| {
+                        self.render_options(ui);
+                    });
+
+                    strip.cell(|ui| {
+                        self.render_files(ui);
+                    });
+                    strip.cell(|ui| {
+                        self.render_previews(ui, ctx);
+                    });
+                });
+        }
         self.render_import_status_window(ctx);
+        self.render_filters_window(ctx);
         self.toasts.show(ctx);
     }
 }

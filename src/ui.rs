@@ -1,18 +1,23 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use downcast_rs as downcast;
-use egui::{pos2, text::LayoutJob, vec2, Align, FontData, FontDefinitions, FontFamily, Layout, Pos2, Rect, Shape, Stroke, TextFormat};
+use egui::{pos2, text::LayoutJob, vec2, Align, Context, FontData, FontDefinitions, FontFamily, Layout, Pos2, Rect, Shape, Stroke, TextFormat};
 use egui_notify::{Toast, Toasts};
 use std::{
+    borrow::Borrow,
     cell::{RefCell, RefMut},
     fmt::Display,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
     vec,
 };
 
-use crate::tags::tags_ui;
+use crate::{
+    autocomplete::AutocompleteOption,
+    gallery::gallery_ui::GalleryUI,
+    tags::{self, tags::TagDataRef, tags_ui},
+};
 
 use super::gallery::gallery_ui::PreviewUI;
 // use super::tags::tags_ui;
@@ -31,6 +36,8 @@ use eframe::{
 use egui_extras::RetainedImage;
 use image::{FlatSamples, ImageBuffer, Rgba};
 use poll_promise::Promise;
+
+pub type ToastsRef = Arc<Mutex<Toasts>>;
 
 pub mod constants {
     use eframe::epaint::Color32;
@@ -60,10 +67,19 @@ pub mod constants {
     pub const COPY_ICON: &str = "📋";
     pub const TOOL_ICON: &str = "🔨";
     pub const REORDER_ICON: &str = "↔";
+    pub const DATA_ICON: &str = "💽";
+    pub const CONFIG_ICON: &str = "⚙️";
+    pub const LINK_ICON: &str = "🔗";
 
+    pub const GALLERY_TITLE: &str = "gallery";
+    pub const IMPORT_TITLE: &str = "importer";
+    pub const TAGS_TITLE: &str = "tags";
+    pub const CONFIG_TITLE: &str = "config";
+    pub const DATA_TITLE: &str = "data";
+
+    pub const SPACER_SIZE: f32 = 10.;
     pub const APPLICATION_ICON_PATH: &str = "src/resources/icon.ico";
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
-    pub const SPACER_SIZE: f32 = 10.;
     pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
 
     pub const FAVORITE_ICON_SELECTED_FILL: Color32 = Color32::from_rgb(252, 191, 73);
@@ -212,6 +228,8 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         was_clicked = true;
     }
 
+    let mut paint_again = None;
+
     for step_index in 0..max_value {
         let is_selected = step_index < *current_value as usize;
         let left = response.rect.left() + step_index as f32 * outer_step_width;
@@ -221,9 +239,7 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         let step_center = [(left + right) / 2., (top + bottom) / 2.];
         let step_rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
         let shape_radius = inner_step_width / 1.5;
-        if was_clicked && ui.rect_contains_pointer(step_rect) {
-            *current_value = (step_index as i64) + 1;
-        }
+
         let base_color = if ui.is_enabled() {
             constants::FAVORITE_ICON_SELECTED_FILL
         } else {
@@ -234,8 +250,24 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         } else {
             (darker(base_color), darker(darker(base_color)))
         };
-        let shape = generate_star_shape(shape_radius, step_center, fill_color, Stroke::new(stroke_width, stroke_color));
+
+        let stroke = Stroke::new(stroke_width, stroke_color);
+        let shape = generate_star_shape(shape_radius, step_center, fill_color, stroke);
+
         painter.add(shape);
+
+        if ui.rect_contains_pointer(step_rect) {
+            if was_clicked {
+                *current_value = (step_index as i64) + 1;
+            } else {
+                paint_again = Some((shape_radius * 1.2, step_center, fill_color, stroke))
+            }
+        }
+
+        if let Some(paint_args) = paint_again {
+            ui.painter()
+                .add(generate_star_shape(paint_args.0, paint_args.1, paint_args.2, paint_args.3));
+        }
     }
     response
 }
@@ -388,6 +420,27 @@ pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toas
     set_default_toast_options(toasts.error(caption))
 }
 
+pub fn toast_info_lock(toasts: &ToastsRef, caption: impl Into<String>) {
+    if let Ok(mut toasts) = toasts.lock() {
+        set_default_toast_options(toasts.info(caption));
+    }
+}
+pub fn toast_success_lock(toasts: &ToastsRef, caption: impl Into<String>) {
+    if let Ok(mut toasts) = toasts.lock() {
+        set_default_toast_options(toasts.success(caption));
+    }
+}
+pub fn toast_warning_lock(toasts: &ToastsRef, caption: impl Into<String>) {
+    if let Ok(mut toasts) = toasts.lock() {
+        set_default_toast_options(toasts.warning(caption));
+    }
+}
+pub fn toast_error_lock(toasts: &ToastsRef, caption: impl Into<String>) {
+    if let Ok(mut toasts) = toasts.lock() {
+        set_default_toast_options(toasts.error(caption));
+    }
+}
+
 pub fn set_default_toast_options(toast: &mut egui_notify::Toast) -> &mut Toast {
     toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true)
 }
@@ -514,6 +567,42 @@ pub fn render_loading_image(
         },
     }
 }
+
+/// Here is the same code again, but a bit more compact:
+#[allow(dead_code)]
+fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, *on, ""));
+
+    if ui.is_rect_visible(rect) {
+        let how_on = ui.ctx().animate_bool(response.id, *on);
+        let visuals = ui.style().interact_selectable(&response, *on);
+        let rect = rect.expand(visuals.expansion);
+        let radius = 0.5 * rect.height();
+        ui.painter().rect(rect, radius, visuals.bg_fill, visuals.bg_stroke);
+        let circle_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+        let center = egui::pos2(circle_x, rect.center().y);
+        ui.painter().circle(center, 0.75 * radius, visuals.bg_fill, visuals.fg_stroke);
+    }
+
+    response
+}
+
+// A wrapper that allows the more idiomatic usage pattern: `ui.add(toggle(&mut my_bool))`
+/// iOS-style toggle switch.
+///
+/// ## Example:
+/// ``` ignore
+/// ui.add(toggle(&mut my_bool));
+/// ```
+pub fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| toggle_ui(ui, on)
+}
 pub struct WindowContainer {
     pub title: String,
     pub window: Box<dyn UserInterface>,
@@ -539,7 +628,27 @@ fn load_icon(path: &str) -> eframe::IconData {
         height: icon_height,
     }
 }
+
+pub type UpdateFlag = Arc<Mutex<bool>>;
+pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
+pub struct SharedState {
+    pub toasts: ToastsRef,
+    pub tag_data_ref: TagDataRef,
+    pub autocomplete_options: AutocompleteOptionsRef,
+
+    pub entry_info_update_flag: UpdateFlag,
+    pub tag_data_update_flag: UpdateFlag,
+}
+
+impl SharedState {
+    pub fn set_update_flag(flag: &UpdateFlag, new_state: bool) {
+        if let Ok(mut flag) = flag.lock() {
+            *flag = new_state;
+        }
+    }
+}
 pub struct AppUI {
+    shared_state: Rc<SharedState>,
     current_window: String,
     windows: Vec<WindowContainer>,
 }
@@ -548,11 +657,35 @@ impl eframe::App for AppUI {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.render_top_bar(ctx);
         self.render_current_window(ctx);
+        self.render_toasts(ctx);
+        self.process_state();
         ctx.request_repaint();
     }
 }
 
 impl AppUI {
+    fn process_state(&mut self) {
+        if let Ok(mut was_updated) = self.shared_state.entry_info_update_flag.try_lock() {
+            if *was_updated {
+                if let Some(gallery_container) = self
+                    .windows
+                    .iter_mut()
+                    .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
+                {
+                    let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
+                    gallery_window.refresh()
+                }
+            }
+            *was_updated = false;
+        }
+        if let Ok(mut was_updated) = self.shared_state.tag_data_update_flag.try_lock() {
+            if *was_updated {
+                tags::tags::reload_tag_data(&self.shared_state.tag_data_ref)
+            }
+            *was_updated = false;
+        }
+        *self.shared_state.autocomplete_options.borrow_mut() = tags::tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
+    }
     fn load_fonts(ctx: &egui::Context) {
         let mut fonts = FontDefinitions::default();
 
@@ -611,7 +744,15 @@ impl AppUI {
     }
 
     pub fn new() -> Self {
+        let shared_state = SharedState {
+            tag_data_ref: tags::tags::initialize_tag_data(),
+            autocomplete_options: Rc::new(RefCell::new(None)),
+            toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
+            entry_info_update_flag: Arc::new(Mutex::new(false)),
+            tag_data_update_flag: Arc::new(Mutex::new(false)),
+        };
         AppUI {
+            shared_state: Rc::new(shared_state),
             windows: vec![],
             current_window: "".into(),
         }
@@ -621,7 +762,7 @@ impl AppUI {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
         options.icon_data = Some(load_icon(constants::APPLICATION_ICON_PATH));
-        options.renderer = Renderer::Wgpu;
+        // options.renderer = Renderer::Wgpu;
         eframe::run_native(
             env!("CARGO_PKG_NAME"),
             options,
@@ -635,25 +776,25 @@ impl AppUI {
     }
 
     pub fn load_windows(&mut self) {
-        let mut gallery_window = gallery_ui::GalleryUI::default();
+        let mut gallery_window = gallery_ui::GalleryUI::new(&self.shared_state);
         gallery_window.load_gallery_entries();
         self.windows = vec![
             WindowContainer {
                 window: Box::new(import_ui::ImporterUI::default()),
                 is_open: None,
-                title: format!("{} importer", constants::IMPORT_ICON),
+                title: icon_text(constants::IMPORT_TITLE, constants::IMPORT_ICON),
             },
             WindowContainer {
                 window: Box::new(gallery_window),
                 is_open: None,
 
-                title: format!("{} gallery", constants::GALLERY_ICON),
+                title: icon_text(constants::GALLERY_TITLE, constants::GALLERY_ICON),
             },
             WindowContainer {
-                window: Box::new(tags_ui::TagsUI::default()),
+                window: Box::new(tags_ui::TagsUI::new(&self.shared_state)),
                 is_open: None,
 
-                title: format!("{} tags", constants::TAG_ICON),
+                title: icon_text(constants::TAGS_TITLE, constants::TAG_ICON),
             },
         ];
     }
@@ -689,5 +830,11 @@ impl AppUI {
                 }
             }
         });
+    }
+
+    fn render_toasts(&self, ctx: &Context) {
+        if let Ok(mut toasts) = self.shared_state.toasts.try_lock() {
+            toasts.show(ctx)
+        }
     }
 }

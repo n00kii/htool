@@ -184,11 +184,11 @@ impl MediaEntry {
                 None => fail("bytes are still loading".into()),
                 Some(Err(_error)) => fail("failed to load bytes".into()),
                 Some(Ok(bytes)) => {
-                    let filekind = match &self.mime_type {
-                        Some(Ok(kind)) => Some(kind.clone()),
-                        Some(Err(_error)) => None,
-                        None => None,
-                    };
+                    // let filekind = match &self.mime_type {
+                    //     Some(Ok(kind)) => Some(kind.clone()),
+                    //     Some(Err(_error)) => None,
+                    //     None => None,
+                    // };
 
                     let bytes = Arc::clone(bytes);
                     let dir_link_map = Arc::clone(&dir_link_map);
@@ -198,7 +198,7 @@ impl MediaEntry {
                     self.importation_status = Some(promise);
                     Ok(RegistrationForm {
                         bytes,
-                        filekind,
+                        mimetype: mime_guess::from_path(self.dir_entry.path()),
                         linking_value,
                         importation_result_sender: sender,
                         linking_dir,
@@ -236,12 +236,12 @@ impl MediaEntry {
             }
     }
 
-    pub fn failed_to_load_type(&self) -> bool {
-        if let Some(mime_type_res) = self.mime_type.as_ref() {
-            return mime_type_res.is_err();
-        }
-        false
-    }
+    // pub fn failed_to_load_type(&self) -> bool {
+    //     if let Some(mime_type_res) = self.mime_type.as_ref() {
+    //         return mime_type_res.is_err();
+    //     }
+    //     false
+    // }
 
     pub fn are_bytes_loaded(&self) -> bool {
         if let Some(bytes_promise) = self.bytes.as_ref() {
@@ -254,25 +254,12 @@ impl MediaEntry {
         false
     }
 
-    pub fn is_loading_or_needs_to_load(&self) -> bool {
-        let is_loading_thumbnail = if let Some(promise) = self.thumbnail.as_ref() {
+    pub fn is_thumbnail_loading(&self) -> bool {
+        if let Some(promise) = self.thumbnail.as_ref() {
             promise.ready().is_none()
         } else {
-            true
-        };
-
-        let is_loading_mime_type = self.mime_type.is_none();
-        let failed_mime_type = if let Some(mime_type_res) = self.mime_type.as_ref() {
-            if let Err(_) = mime_type_res {
-                true
-            } else {
-                false
-            }
-        } else {
             false
-        };
-
-        (is_loading_thumbnail || is_loading_mime_type) && !failed_mime_type
+        }
     }
 
     pub fn match_importation_status(&self, comparison_status: ImportationStatus) -> bool {
@@ -286,7 +273,7 @@ impl MediaEntry {
     }
 
     pub fn is_importable(&self) -> bool {
-        let allow_import_attempt = if let Some(importation_promise) = self.importation_status.as_ref() {
+       if let Some(importation_promise) = self.importation_status.as_ref() {
             if let Some(importation_status) = importation_promise.ready() {
                 match importation_status {
                     ImportationStatus::Fail(_) => true,
@@ -297,24 +284,24 @@ impl MediaEntry {
             }
         } else {
             true
-        };
-
-        return !self.failed_to_load_type() && allow_import_attempt;
-    }
-
-    pub fn unload_bytes_if_unnecessary(&mut self) {
-        // If bytes are loaded,
-        // we only need bytes to be loaded if thumbnail is still loading, or we are trying to import
-        if let Some(promise) = self.bytes.as_ref() {
-            if let Some(bytes_res) = promise.ready() {
-                if let Ok(_bytes) = bytes_res {
-                    if !(self.is_loading_or_needs_to_load() || self.is_importing()) {
-                        self.bytes = None;
-                    }
-                }
-            }
         }
+
+        // return !self.failed_to_load_type() && allow_import_attempt;
     }
+
+    // pub fn unload_bytes_if_unnecessary(&mut self) {
+    //     // If bytes are loaded,
+    //     // we only need bytes to be loaded if thumbnail is still loading, or we are trying to import
+    //     if self.are_bytes_loaded() && !(self.is_thumbnail_loading() || self.is_importing()) {
+    //         self.bytes = None;
+    //     }
+    //     // if let Some(promise) = self.bytes.as_ref() {
+    //     //     if let Some(bytes_res) = promise.ready() {
+    //     //         if let Ok(_bytes) = bytes_res {
+    //     //         }
+    //     //     }
+    //     // }
+    // }
 
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
@@ -325,9 +312,9 @@ impl MediaEntry {
         if self.is_importing() {
             add("importing...")
         }
-        if self.failed_to_load_type() {
-            add("unable to read file type")
-        };
+        // if self.failed_to_load_type() {
+        //     add("unable to read file type")
+        // };
         if self.match_importation_status(ImportationStatus::Success) {
             add("imported")
         }
@@ -349,7 +336,6 @@ impl MediaEntry {
                 error.unwrap_or("unknown importation error".to_string())
                 // "unknown error"
             };
-            // statuses.push(format!("import failed due to: {error_message}"));
             add(format!("import failed due to: {error_message}").as_str())
         }
         if let Some(result) = &self.thumbnail {

@@ -5,55 +5,76 @@ use super::super::data;
 use super::super::ui;
 use super::super::Config;
 use anyhow::{Context, Error, Result};
+use data::EntryInfo;
 use downcast_rs as downcast;
 use egui_extras::RetainedImage;
 use poll_promise::Promise;
 use std::any::Any;
 use std::fmt;
 use std::sync::Arc;
+// use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::thread;
-use data::EntryInfo;
 use std::time::Duration;
 
 pub struct GalleryEntry {
-    // pub entry_id: EntryId,
-    pub entry_info: EntryInfo,
+    pub is_info_dirty: bool,
+    pub entry_info: Arc<Mutex<EntryInfo>>,
+    pub updated_entry_info: Option<Promise<Result<EntryInfo>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
+}
+
+//eg exclude![score=5] bookmarked=true blue_eyes brown_hair include![independant=false] type=pool
+pub struct FilterOptions {
+
 }
 
 impl PartialEq for GalleryEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.entry_info == other.entry_info 
+        if let Some(self_info) = self.entry_info.try_lock() {
+            if let Some(other_info) = other.entry_info.try_lock() {
+                return *self_info == *other_info;
+            }
+        }
+        true
     }
 }
 
 impl GalleryEntry {
-    pub fn is_loading(&self) -> bool {
+    pub fn is_thumbnail_loading(&self) -> bool {
         if let Some(thumbnail_promise) = self.thumbnail.as_ref() {
             thumbnail_promise.ready().is_none()
         } else {
             false
         }
     }
-    pub fn is_loaded(&self) -> bool {
+    pub fn is_thumbnail_loaded(&self) -> bool {
         if let Some(thumbnail_promise) = self.thumbnail.as_ref() {
             thumbnail_promise.ready().is_some()
         } else {
             false
         }
     }
+    pub fn is_refreshing(&self) -> bool{
+        if let Some(info_promise) = self.updated_entry_info.as_ref() {
+            info_promise.ready().is_none()
+        } else {
+            false
+        }
+    }
     pub fn load_thumbnail(&mut self) {
-        let entry_id = self.entry_info.entry_id().clone();
-        self.thumbnail = Some(Promise::spawn_thread("load_gallery_entry_thumbail", move || {
-            match data::load_thumbnail(&entry_id) {
-                Ok(thumbnail_buffer) => {
-                    // let image
-                    let image = ui::generate_retained_image(&thumbnail_buffer);
-                    image
+        if let Some(entry_info) = self.entry_info.try_lock() {
+            let entry_id = entry_info.entry_id().clone();
+            self.thumbnail = Some(Promise::spawn_thread(format!("load_gallery_entry_thumbail_({:?})", self.entry_info.try_lock().map(|info| info.entry_id().clone())), move || {
+                match data::load_thumbnail(&entry_id) {
+                    Ok(thumbnail_buffer) => {
+                        let image = ui::generate_retained_image(&thumbnail_buffer);
+                        image
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            }
-        }));
+            }));
+        }
     }
 
     pub fn get_status_label(&self) -> Option<String> {
@@ -76,50 +97,15 @@ impl GalleryEntry {
     }
 }
 
+pub fn load_gallery_entries() -> Result<Vec<GalleryEntry>> {
 
-pub fn load_gallery_entries(search_string: &String) -> Result<Vec<GalleryEntry>> {
-    // TODO: this seems really inefficient
-
-
-    let all_hashes = data::get_all_hashes()?;
-    let mut gallery_entries: Vec<GalleryEntry> = Vec::new();
-    let mut resolved_links: Vec<i32> = Vec::new();
-    for hash in all_hashes {
-        let links = data::get_media_links_of_hash(&hash)?;
-        if links.len() > 0 {
-            for link_id in links {
-                if resolved_links.contains(&link_id) {
-                    continue;
-                } else {
-                    resolved_links.push(link_id);
-                }
-                let entry_id = EntryId::PoolEntry(link_id);
-                gallery_entries.push(GalleryEntry {
-                    entry_info: data::load_entry_info(&entry_id)?,
-                    thumbnail: None,
-                });
-            }
-        } else {
-            let entry_id = EntryId::MediaEntry(hash);
-            gallery_entries.push(GalleryEntry {
-                // entry_id: EntryId::MediaEntry(hash),
-                entry_info: data::load_entry_info(&entry_id)?,
-                thumbnail: None,
-            })
+    Ok(data::load_all_entry_info()?.into_iter().map(|entry_info| {
+        GalleryEntry {
+            is_info_dirty: false,
+            entry_info: Arc::new(Mutex::new(entry_info)),
+            thumbnail: None,
+            updated_entry_info: None
         }
-    }
+    }).collect())
 
-    // gallery_entries.retain(|gallery_entry| {
-    //     if let EntryId::MediaEntry(hash) = &gallery_entry.entry_info.entry_id() {
-    //         let media_info_res = data::load_media_info(hash);
-    //         if let Ok(media_info) = media_info_res {
-    //             if !media_info.details.includes_tags_and(&search_tags) {
-    //                 return false;
-    //             }
-    //         }
-    //     }
-    //     true
-    // });
-
-    Ok(gallery_entries)
 }

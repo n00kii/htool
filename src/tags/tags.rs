@@ -1,4 +1,8 @@
-use std::{fmt, cell::RefCell, rc::Rc};
+use std::{
+    cell::{Ref, RefCell},
+    fmt,
+    rc::Rc,
+};
 
 use anyhow::Result;
 use egui::{Color32, RichText};
@@ -7,8 +11,10 @@ use rusqlite::ToSql;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    autocomplete::AutocompleteOption,
     config::Config,
-    ui::{self, LayoutJobText}, data,
+    data,
+    ui::{self, LayoutJobText},
 };
 
 const TAG_DELIM: &str = "::";
@@ -221,24 +227,42 @@ impl TagLink {
         }
     }
 }
-pub type TagDataRef = Option<Rc<Promise<Result<Vec<TagData>>>>>;
+pub type TagDataRef = Rc<RefCell<Promise<Result<Vec<TagData>>>>>;
 
-
-pub fn clone_tag_data_ref(tag_data_ref: &TagDataRef) -> TagDataRef {
-    tag_data_ref.as_ref().map(|tag_data| Rc::clone(&tag_data))
-}
-
-pub fn load_tag_data(tag_data_ref: &mut TagDataRef) {
-    // pub fn load_tag_data(all_tag_data: &mut Option<Promise<Result<Vec<TagData>>>>) {
-    *tag_data_ref = Some(Rc::new(Promise::spawn_thread("load_tag_data", || data::get_all_tag_data())));
+pub fn reload_tag_data(tag_data_ref: &TagDataRef) {
+    // if let Some(tag_data_ref) = tag_data_ref {
+    // println!("start");
+    tag_data_ref.replace(load_tag_data());
     // }
 }
 
-pub fn unpack_tag_data(tag_data_ref: &TagDataRef) -> Option<&Result<Vec<TagData>>> {
-    if let Some(tag_data_promise) = tag_data_ref.as_ref() {
-        if let Some(tag_data_res) = tag_data_promise.ready() {
-            return Some(tag_data_res)
-        }
+pub fn initialize_tag_data() -> TagDataRef {
+    Rc::new(RefCell::new(load_tag_data()))
+}
+
+fn load_tag_data() -> Promise<Result<Vec<TagData>>> {
+    Promise::spawn_thread("load_tag_data", || {
+        // println!("before");
+        data::get_all_tag_data()
+        // println!("after");
+        
+    })
+}
+
+pub fn generate_autocomplete_options(tag_data_ref: &TagDataRef) -> Option<Vec<AutocompleteOption>> {
+    if let Some(Ok(tag_data)) = tag_data_ref.borrow().ready() {
+        Some(
+            tag_data
+                .iter()
+                .map(|tag_data| AutocompleteOption {
+                    label: tag_data.tag.name.clone(),
+                    value: tag_data.tag.to_tagstring(),
+                    color: tag_data.tag.namespace_color(),
+                    description: tag_data.occurances.to_string(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
     }
-    None
 }

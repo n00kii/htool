@@ -28,11 +28,13 @@ infer = "0.9.0"
 chrono = "0.4.22"
 downcast-rs = "1.2.0"
 rusqlite = { version = "0.28.0", features = [ "bundled", "blob" ] }
-egui-notify = "0.4.0"
+egui-notify = { git = "https://github.com/n00kii/egui-notify.git" }
 egui-modal = "0.1.5"
 once_cell = "1.15.0"
 arc-swap = "1.5.1"
 arboard = "3.1.0"
+mime_guess = "2.0.4"
+parking_lot = "0.12.1"
 
 [profile.dev]
 opt-level = 3
