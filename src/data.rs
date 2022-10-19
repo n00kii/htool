@@ -36,6 +36,11 @@ use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
 
 const GENERIC_RUSQLITE_ERROR: rusqlite::Error = rusqlite::Error::InvalidQuery;
 
+pub struct ThumbnailRequest {
+    pub entry_id: EntryId,
+    pub thumbnail_sender: Sender<Result<RetainedImage>>,
+}
+
 pub struct RegistrationForm {
     pub bytes: Arc<Vec<u8>>,
     pub mimetype: mime_guess::MimeGuess,
@@ -224,8 +229,8 @@ pub fn generate_pool_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>
     Ok(thumbnail)
 }
 
-pub fn load_thumbnail(entry_id: &EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let conn = initialize_database_connection()?;
+pub fn load_thumbnail_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    // let conn = initialize_database_connection()?;
     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1 OR link_id = ?2")?;
     let bytes_res: Result<Vec<u8>, rusqlite::Error> =
         statement.query_row(params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()], |row| row.get(0));
@@ -277,7 +282,7 @@ pub fn load_thumbnail(entry_id: &EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8
                         }
                         let mut constituent_thumbnails = hashes_of_link
                             .into_iter()
-                            .filter_map(|hash| load_thumbnail(&EntryId::MediaEntry(hash)).ok())
+                            .filter_map(|hash| load_thumbnail_with_conn(conn, &EntryId::MediaEntry(hash)).ok())
                             .collect::<Vec<_>>();
 
                         if constituent_thumbnails.len() == 0 {
@@ -595,11 +600,11 @@ fn delete_entry_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<()> {
             for hash in hashes_of_link {
                 if get_hashes_of_media_link(link_id)?.len() == 0 {
                     set_independance_with_conn(conn, &hash, true)?
-                } 
+                }
             }
-        },
+        }
     }
-    
+
     Ok(())
 }
 
@@ -929,6 +934,15 @@ pub fn get_all_tag_data() -> Result<Vec<TagData>> {
     Ok(all_tag_data)
 }
 
+pub fn load_thumbnail_with_requests(requests: Vec<ThumbnailRequest>) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    for request in requests {
+        let image = load_thumbnail_with_conn(&conn, &request.entry_id).and_then(|image| ui::generate_retained_image(&image));
+        request.thumbnail_sender.send(image);
+    }
+    Ok(())
+}
+
 pub fn register_media_with_forms(reg_forms: Vec<RegistrationForm>) -> Result<()> {
     let mut conn = initialize_database_connection()?;
     let trans = conn.transaction()?;
@@ -967,7 +981,14 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
         let insert_result = conn.execute(
             "INSERT INTO entry_info (hash, perceptual_hash, mime, date_registered, size, is_independant)
                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![sha_hash, perceptual_hash, serialized_mime, timestamp, reg_form.bytes.len(), reg_form.linking_dir.is_none()],
+            params![
+                sha_hash,
+                perceptual_hash,
+                serialized_mime,
+                timestamp,
+                reg_form.bytes.len(),
+                reg_form.linking_dir.is_none()
+            ],
         );
 
         match insert_result {

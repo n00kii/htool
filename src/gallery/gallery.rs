@@ -1,4 +1,5 @@
 use crate::data::EntryId;
+use crate::data::ThumbnailRequest;
 use crate::tags::tags::Tag;
 
 use super::super::data;
@@ -25,9 +26,7 @@ pub struct GalleryEntry {
 }
 
 //eg exclude![score=5] bookmarked=true blue_eyes brown_hair include![independant=false] type=pool
-pub struct FilterOptions {
-
-}
+pub struct FilterOptions {}
 
 impl PartialEq for GalleryEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -55,25 +54,38 @@ impl GalleryEntry {
             false
         }
     }
-    pub fn is_refreshing(&self) -> bool{
+    pub fn is_refreshing(&self) -> bool {
         if let Some(info_promise) = self.updated_entry_info.as_ref() {
             info_promise.ready().is_none()
         } else {
             false
         }
     }
-    pub fn load_thumbnail(&mut self) {
+    // pub fn load_thumbnail(&mut self) {
+    //     if let Some(entry_info) = self.entry_info.try_lock() {
+    //         let entry_id = entry_info.entry_id().clone();
+    //         self.thumbnail = Some(Promise::spawn_thread(format!("load_gallery_entry_thumbail_({:?})", self.entry_info.try_lock().map(|info| info.entry_id().clone())), move || {
+    //             match data::load_thumbnail_with_conn(&entry_id) {
+    //                 Ok(thumbnail_buffer) => {
+    //                     let image = ui::generate_retained_image(&thumbnail_buffer);
+    //                     image
+    //                 }
+    //                 Err(error) => Err(error),
+    //             }
+    //         }));
+    //     }
+    // }
+
+    pub fn generate_thumbnail_request(&mut self) -> Option<ThumbnailRequest> {
         if let Some(entry_info) = self.entry_info.try_lock() {
-            let entry_id = entry_info.entry_id().clone();
-            self.thumbnail = Some(Promise::spawn_thread(format!("load_gallery_entry_thumbail_({:?})", self.entry_info.try_lock().map(|info| info.entry_id().clone())), move || {
-                match data::load_thumbnail(&entry_id) {
-                    Ok(thumbnail_buffer) => {
-                        let image = ui::generate_retained_image(&thumbnail_buffer);
-                        image
-                    }
-                    Err(error) => Err(error),
-                }
-            }));
+            let (sender, promise) = Promise::new();
+            self.thumbnail = Some(promise);
+            Some(ThumbnailRequest {
+                entry_id: entry_info.entry_id().clone(),
+                thumbnail_sender: sender,
+            })
+        } else {
+            None
         }
     }
 
@@ -98,14 +110,13 @@ impl GalleryEntry {
 }
 
 pub fn load_gallery_entries() -> Result<Vec<GalleryEntry>> {
-
-    Ok(data::load_all_entry_info()?.into_iter().map(|entry_info| {
-        GalleryEntry {
+    Ok(data::load_all_entry_info()?
+        .into_iter()
+        .map(|entry_info| GalleryEntry {
             is_info_dirty: false,
             entry_info: Arc::new(Mutex::new(entry_info)),
             thumbnail: None,
-            updated_entry_info: None
-        }
-    }).collect())
-
+            updated_entry_info: None,
+        })
+        .collect())
 }

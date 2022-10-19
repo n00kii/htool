@@ -9,6 +9,8 @@ use egui_extras::Size;
 use egui_extras::StripBuilder;
 
 use crate::ui::LayoutJobText;
+use crate::util;
+use crate::util::BatchPollBuffer;
 use crate::util::PollBuffer;
 
 // hide console window on Windows in release
@@ -33,7 +35,7 @@ use std::time::Duration;
 use std::{fs, path::Path};
 
 use std::sync::{Arc, Mutex};
-const MAX_CONCURRENT_BYTE_LOADING: u32 = 25;
+
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
     import_failures_list: Arc<Mutex<Vec<(String, Error)>>>,
@@ -44,15 +46,13 @@ pub struct ImporterUI {
     import_hidden_entries: bool,
     current_import_res: Option<Promise<Result<()>>>,
     skip_thumbnails: bool,
-    page_count: usize,
-    page_index: usize,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
     batch_import_status: Option<Promise<Arc<Result<()>>>>,
     total_import_status: Option<(usize, Vec<anyhow::Error>)>,
     is_import_status_window_open: bool,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
     thumbnail_buffer: PollBuffer<MediaEntry>,
-    import_buffer: PollBuffer<MediaEntry>,
+    import_buffer: BatchPollBuffer<MediaEntry>,
     is_filters_window_open: bool,
 }
 
@@ -66,13 +66,15 @@ impl Default for ImporterUI {
             Some(ImporterUI::buffer_entry_size),
         );
 
-        let import_buffer = PollBuffer::new(
+        let import_poll_buffer = PollBuffer::new(
             Some(30_000_000),
-            Some(30),
+            Some(100),
             Some(ImporterUI::buffer_add),
             Some(ImporterUI::import_buffer_poll),
             Some(ImporterUI::buffer_entry_size),
         );
+
+        let import_buffer = BatchPollBuffer::new(import_poll_buffer);
 
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
@@ -90,8 +92,6 @@ impl Default for ImporterUI {
             media_entries: None,
             alternate_scan_dir: None,
             current_import_res: None,
-            page_count: 1000,
-            page_index: 0,
             scan_extension_filter: HashMap::from([
                 (
                     "image".into(),
@@ -122,11 +122,7 @@ impl ImporterUI {
             if media_entry.thumbnail.is_none() {
                 media_entry.load_thumbnail(); //FIXME: replace w config
             }
-            // if media_entry.mime_type.is_none() {
-            //     media_entry.load_mime_type();
-            // }
         }
-        // dbg!(media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none());
         media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none()
     }
     fn buffer_entry_size(media_entry: &Rc<RefCell<MediaEntry>>) -> usize {
@@ -209,7 +205,7 @@ impl ImporterUI {
                     self.alternate_scan_dir = Some(path);
                     self.media_entries = None;
                     self.thumbnail_buffer.entries.clear();
-                    self.import_buffer.entries.clear();
+                    self.import_buffer.poll_buffer.entries.clear();
                 }
             }
             if self.alternate_scan_dir.as_ref().is_some() && ui.button("remove").clicked() {
@@ -295,37 +291,6 @@ impl ImporterUI {
                         media_entry.borrow_mut().is_selected = !current_state;
                     }
                 }
-
-                // ui.collapsing("page", |ui| {
-                // ui.horizontal(|ui| {
-                //     let size = [ui.available_width() / 3. - 5., 10.];
-                //     ui.add_enabled_ui(self.page_index > 0, |ui| {
-                //         if ui.add_sized(size, Button::new("<")).clicked() {
-                //             self.page_index -= 1;
-                //         }
-                //     });
-                //     ui.add_sized(size, Label::new(format!("{}", self.page_index)));
-                //     ui.add_enabled_ui(
-                //         !(((self.page_index + 1) * self.page_count)
-                //             >= if let Some(media_entries) = self.media_entries.as_ref() {
-                //                 media_entries.len()
-                //             } else {
-                //                 0
-                //             }),
-                //         |ui| {
-                //             if ui.add_sized(size, Button::new(">")).clicked() {
-                //                 self.page_index += 1;
-                //             }
-                //         },
-                //     );
-                // });
-                // ui.add(
-                //     egui::DragValue::new(&mut self.page_count)
-                //         .speed(100)
-                //         .clamp_range(10..=10000)
-                //         .prefix("page count: "),
-                // );
-                // });
 
                 ui.add_space(ui::constants::SPACER_SIZE);
 
@@ -423,11 +388,9 @@ impl ImporterUI {
         self.import_buffer.poll();
 
         if let Some(media_entries) = self.media_entries.as_ref() {
-            let mut no_more_pending_imports = true;
             for media_entry in media_entries {
-                // media_entry.borrow_mut().unload_bytes_if_unnecessary();
+                //unload bytes if uneccesary
                 if media_entry.borrow().are_bytes_loaded() {
-                    // let media_entry = media_entry.borrow();
                     if !media_entry.borrow().is_importing()
                         && !((media_entry.borrow().is_thumbnail_loading() || media_entry.borrow().thumbnail.is_none()) && !self.skip_thumbnails)
                     {
@@ -436,45 +399,25 @@ impl ImporterUI {
                 }
                 if !self.skip_thumbnails {
                     if media_entry.borrow().thumbnail.is_none() && !self.thumbnail_buffer.is_full() {
-                        let _ = self.thumbnail_buffer.try_add_entry(Rc::clone(&media_entry));
+                        let _ = self.thumbnail_buffer.try_add_entry(&media_entry);
                     }
                 } else {
                     self.thumbnail_buffer.entries.clear();
-                    // if media
                     media_entry.borrow_mut().thumbnail = None;
                 }
                 if media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
-                    // if something didn't get added to the buffer (buffer full), there are still pending imports
-                    if let Err(_e) = self.import_buffer.try_add_entry(Rc::clone(media_entry)) {
-                        if self.import_buffer.is_full() {
-                            no_more_pending_imports = false;
-                        }
-                    }
+                    let _ = self.import_buffer.try_add_entry(&media_entry);
                 }
             }
-
-            let should_start_batch_import = !self.import_buffer.entries.is_empty() && (self.import_buffer.is_full() || no_more_pending_imports);
-            let mut clear_batch_import_status = false;
-            if let Some(batch_import_promise) = self.batch_import_status.as_ref() {
-                if let Some(_batch_import_res) = batch_import_promise.ready() {
-                    clear_batch_import_status = true;
-                }
-            }
-            if clear_batch_import_status {
-                self.batch_import_status = None;
-            }
-
-            if !self.is_importing() && should_start_batch_import {
+            if self.import_buffer.ready_for_batch_action() {
                 let reg_forms = self
-                    .import_buffer
+                    .import_buffer.poll_buffer
                     .entries
                     .iter()
                     .filter_map(|media_entry| media_entry.borrow_mut().generate_reg_form(Arc::clone(&self.dir_link_map)).ok())
                     .collect::<Vec<_>>();
 
-                self.batch_import_status = Some(Promise::spawn_thread("batch_import", || {
-                    Arc::new(data::register_media_with_forms(reg_forms))
-                }));
+                self.import_buffer.run_action("batch_import", || data::register_media_with_forms(reg_forms))
             }
         }
     }
@@ -494,9 +437,7 @@ impl ImporterUI {
                         ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                             ui.with_layout(layout, |ui| {
                                 for (index, media_entry) in scanned_dirs.iter().enumerate() {
-                                    let is_on_page =
-                                        (index >= (self.page_count * self.page_index)) && (index < (self.page_count * (self.page_index + 1)));
-                                    if media_entry.borrow().is_hidden && self.hide_errored_entries && !is_on_page {
+                                    if media_entry.borrow().is_hidden && self.hide_errored_entries {
                                         continue;
                                     }
                                     let mut media_entry = media_entry.borrow_mut();
@@ -654,7 +595,7 @@ impl ui::UserInterface for ImporterUI {
 
         if self.skip_thumbnails {
             StripBuilder::new(ui)
-                .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
+                .size(Size::exact(0.))
                 .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
                 .size(Size::remainder())
                 .horizontal(|mut strip| {
@@ -669,7 +610,7 @@ impl ui::UserInterface for ImporterUI {
                 });
         } else {
             StripBuilder::new(ui)
-                .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
+                .size(Size::exact(0.))
                 .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
                 .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH * 2. + 10.))
                 .size(Size::remainder())

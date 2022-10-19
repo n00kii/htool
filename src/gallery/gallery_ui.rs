@@ -11,6 +11,7 @@ use crate::tags::tags_ui::TagsUI;
 use crate::ui::AutocompleteOptionsRef;
 use crate::ui::SharedState;
 use crate::util;
+use crate::util::BatchPollBuffer;
 use arboard::Clipboard;
 use chrono::TimeZone;
 use chrono::Utc;
@@ -79,6 +80,7 @@ use rand::Rng;
 use std::any::Any;
 use std::cell::RefCell;
 use std::cell::RefMut;
+use std::ops::Rem;
 use std::rc::Rc;
 use std::sync::Arc;
 // use std::sync::Mutex;
@@ -87,7 +89,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
 pub struct GalleryUI {
-    pub thumbnail_buffer: PollBuffer<GalleryEntry>,
+    pub thumbnail_buffer: BatchPollBuffer<GalleryEntry>,
     pub refresh_buffer: PollBuffer<GalleryEntry>,
     pub toasts: Toasts,
     // pub toasts_arc: Arc<Mutex<Toasts>>,
@@ -100,6 +102,8 @@ pub struct GalleryUI {
     pub preview_windows: Vec<ui::WindowContainer>,
     // pub search_options: Option<Vec<autocomplete::AutocompleteOption>>,
     pub search_string: String,
+    last_gallery_entry_index: usize,
+    max_processed_gallery_entries_per_frame: usize,
 
     include_dependants: bool,
     include_pools: bool,
@@ -112,12 +116,12 @@ pub enum PreviewStatus {
     Next(EntryId),
     Previous(EntryId),
     Deleted(EntryId),
+    DeletedWithUpdate(EntryId),
     Updated,
 }
 
 pub struct PreviewUI {
     pub tag_data: TagDataRef,
-    // pub toasts: egui_notify::Toasts,
     pub arc_toast: ToastsRef,
     pub preview: Option<Preview>,
     pub entry_info: Arc<Mutex<EntryInfo>>,
@@ -158,47 +162,10 @@ impl ui::UserInterface for PreviewUI {
             .num_columns(3)
             .min_col_width(120.)
             .show(ui, |ui| {
-                // StripBuilder::new(ui)
-                //     .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
-                //     .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH + 20.))
-                //     .size(Size::exact(0.))
-                //     .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH * 2.5))
-                //     .size(Size::remainder())
-                //     .horizontal(|mut strip| {
-                //         strip.empty();
-                //         strip.cell(|ui| {
-                //             self.render_options(ui, ctx);
-                //         });
-                //         // strip.cell(|ui| {
-                //         //     ui.with_layout(Layout::left_to_right(Align::Center).with_cross_justify(true), |ui| {
-                //         //         ui.separator();
-                //         //     });
-                //         // });
-                //         strip.empty();
-                //         strip.cell(|ui| {
-                //             // ui.horizontal(|ui| {
-                //             //     ui.label(format!("{} filter", ui::constants::SEARCH_ICON));
-                //             //     ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
-                //             //         let response = ui.text_edit_singleline(&mut self.filter_query);
-                //             //         if response.changed() {
-                //             //             self.filter_tagstrings = self.filter_query.split_whitespace().map(|str| str.to_string()).collect::<Vec<_>>();
-                //             //         }
-                //             //     });
-                //             // });
-                //             // ui.add_space(ui::constants::SPACER_SIZE);
-                //             self.render_info(ui, ctx);
-                //             // self.render_tags(ui);
-                //         });
-                //         strip.cell(|ui| {
-                //             // ctx.set_debug_on_hover(debug_on_hover)
-                //             self.render_image(ui, ctx);
-                //         });
-                //     });
                 self.render_options(ui, ctx);
                 self.render_info(ui, ctx);
                 self.render_image(ui, ctx);
             });
-        // self.toasts.show(ctx);
     }
 }
 
@@ -1122,6 +1089,8 @@ impl GalleryUI {
                     }
                     PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
                 }
+                //todo handle deletedandupdated
+                // chunkinglist up every frame?
                 if let Some(PreviewStatus::Deleted(entry_id)) = &preview_status {
                     if let Some(gallery_entries) = self.gallery_entries.as_mut() {
                         gallery_entries.retain(|gallery_entry| {
@@ -1151,19 +1120,25 @@ impl GalleryUI {
         // if an item takes >5 sec to load. you should make a data::load_thumbnails that results in one
         // db access at a time, instead of how it is rn where #data accesses is limited by count
         // of buffer
-        let mut is_thumbnail_buffer_full = false;
-        let mut is_refresh_buffer_full = false;
-        if let Some(gallery_entries) = self.gallery_entries.as_ref() {
+        self.refresh_buffer.poll();
+        self.thumbnail_buffer.poll();
 
-            for gallery_entry in gallery_entries.iter() {
+        let mut is_thumbnail_buffer_full = self.thumbnail_buffer.poll_buffer.is_full();
+        let mut is_refresh_buffer_full = false;
+        if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
+            let gallery_entries_len = gallery_entries.len();
+            for mut gallery_entry_index in self.last_gallery_entry_index..self.last_gallery_entry_index + self.max_processed_gallery_entries_per_frame
+            {
+                gallery_entry_index = gallery_entry_index.rem(gallery_entries_len);
+                let gallery_entry = gallery_entries.get(gallery_entry_index).unwrap();
                 if !is_thumbnail_buffer_full && !gallery_entry.borrow().is_thumbnail_loaded() {
-                    let _ = self.thumbnail_buffer.try_add_entry(Rc::clone(gallery_entry));
-                    if self.thumbnail_buffer.is_full() {
+                    let _ = self.thumbnail_buffer.try_add_entry(&gallery_entry);
+                    if self.thumbnail_buffer.poll_buffer.is_full() {
                         is_thumbnail_buffer_full = true;
                     }
                 }
                 if !is_refresh_buffer_full && gallery_entry.borrow().is_info_dirty {
-                    let _ = self.refresh_buffer.try_add_entry(Rc::clone(gallery_entry));
+                    let _ = self.refresh_buffer.try_add_entry(&gallery_entry);
                     if self.refresh_buffer.is_full() {
                         is_refresh_buffer_full = true;
                     }
@@ -1183,13 +1158,15 @@ impl GalleryUI {
                         }
                     }
                 }
+                self.last_gallery_entry_index = gallery_entry_index + 1;
             }
-            
-            if is_thumbnail_buffer_full {
-                self.thumbnail_buffer.poll()
+            if self.thumbnail_buffer.ready_for_batch_action() {
+                let requests = gallery_entries
+                    .iter()
+                    .filter_map(|gallery_entry| gallery_entry.borrow_mut().generate_thumbnail_request())
+                    .collect::<Vec<_>>();
+                self.thumbnail_buffer.run_action("load_thumbnails", || data::load_thumbnail_with_requests(requests))
             }
-            
-            self.refresh_buffer.poll()
         } else {
         }
 
@@ -1387,11 +1364,11 @@ impl GalleryUI {
         }
     }
 
-    fn thumbnail_buffer_add(gallery_entry: &Rc<RefCell<GalleryEntry>>) {
-        if gallery_entry.borrow().thumbnail.is_none() {
-            gallery_entry.borrow_mut().load_thumbnail();
-        }
-    }
+    // fn thumbnail_buffer_add(gallery_entry: &Rc<RefCell<GalleryEntry>>) {
+    //     // if gallery_entry.borrow().thumbnail.is_none() {
+    //     //     gallery_entry.borrow_mut().load_thumbnail();
+    //     // }
+    // }
 
     fn thumbnail_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
         gallery_entry.borrow().is_thumbnail_loading()
@@ -1444,24 +1421,13 @@ impl GalleryUI {
                 })
                 .collect()
         });
-        // } else {
-        //     self.filtered_gallery_entries = self
-        //         .gallery_entries
-        //         .as_ref()
-        //         .map(|gallery_entries| gallery_entries.iter().map(|gallery_entry| Rc::clone(&gallery_entry)).collect())
-        // }
     }
 }
 
 impl GalleryUI {
     pub fn new(shared_state: &Rc<SharedState>) -> Self {
-        let thumbnail_buffer = PollBuffer::<GalleryEntry>::new(
-            None,
-            Some(30),
-            Some(GalleryUI::thumbnail_buffer_add),
-            Some(GalleryUI::thumbnail_buffer_poll),
-            None,
-        );
+        let thumbnail_poll_buffer = PollBuffer::<GalleryEntry>::new(None, Some(100), None, Some(GalleryUI::thumbnail_buffer_poll), None);
+        let thumbnail_buffer = BatchPollBuffer::new(thumbnail_poll_buffer);
         let refresh_buffer = PollBuffer::<GalleryEntry>::new(
             None,
             Some(10),
@@ -1470,31 +1436,25 @@ impl GalleryUI {
             None,
         );
         Self {
-            // tag_data: Rc::clone(tag_data_ref),
             preview_windows: vec![],
             search_string: String::new(),
             loading_gallery_entries: None,
             shared_state: Rc::clone(&shared_state),
-            // was_media_info_db_updated: Arc::clone(db_update_ref),
             toasts: Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
-            // arc_toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
             thumbnail_buffer,
             refresh_buffer,
             gallery_entries: None,
             filtered_gallery_entries: None,
-
+            last_gallery_entry_index: 0,
+            max_processed_gallery_entries_per_frame: 100,
             include_dependants: false,
             include_pools: true,
-            // search_options: None,
         }
     }
 }
 
 impl ui::UserInterface for GalleryUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Window::new("title").show(ctx, |ui| {
-            ctx.inspection_ui(ui);
-        });
         self.process_previews();
         self.process_gallery_entries();
         self.render_preview_windows(ctx);

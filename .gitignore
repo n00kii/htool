@@ -53,5 +53,6 @@ Thumbs.db
 
 # htool db
 *.db
+*.db-journal
     
 Cargo.lock

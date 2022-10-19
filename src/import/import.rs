@@ -26,7 +26,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub struct MediaEntry {
+pub struct  MediaEntry {
     pub is_hidden: bool,
     pub is_selected: bool,
 
@@ -110,7 +110,6 @@ pub fn scan_directory(
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>,
 ) -> Result<Vec<Rc<RefCell<MediaEntry>>>> {
-    // println!("{extension_filter:?}");
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
     'dir_entries: for (_index, dir_entry_res) in dir_entries_iter.enumerate() {
@@ -152,9 +151,6 @@ pub fn scan_directory(
                     .replace("\\", "/");
 
                 let file_size = dir_entry.metadata()?.len();
-                // let file_type = dir_entry.metadata()?.file_type();
-                // file_type.
-
                 scanned_dir_entries.push(Rc::new(RefCell::new(MediaEntry {
                     is_hidden: false,
                     thumbnail: None,
@@ -184,12 +180,6 @@ impl MediaEntry {
                 None => fail("bytes are still loading".into()),
                 Some(Err(_error)) => fail("failed to load bytes".into()),
                 Some(Ok(bytes)) => {
-                    // let filekind = match &self.mime_type {
-                    //     Some(Ok(kind)) => Some(kind.clone()),
-                    //     Some(Err(_error)) => None,
-                    //     None => None,
-                    // };
-
                     let bytes = Arc::clone(bytes);
                     let dir_link_map = Arc::clone(&dir_link_map);
                     let linking_value: Option<i32> = self.dir_entry.file_name().to_string_lossy().parse().ok();
@@ -218,13 +208,6 @@ impl MediaEntry {
             Ok(Arc::new(bytes))
         });
         self.bytes = Some(promise)
-        //         let mut file = File::open(path)?;
-        //         let mut bytes: Vec<u8> = vec![];
-        //         file.read_to_end(&mut bytes)?;
-        //         Ok(Arc::new(bytes))
-        //     });
-        //     promise
-        // })
     }
 
     pub fn is_importing(&self) -> bool {
@@ -235,13 +218,6 @@ impl MediaEntry {
                 false
             }
     }
-
-    // pub fn failed_to_load_type(&self) -> bool {
-    //     if let Some(mime_type_res) = self.mime_type.as_ref() {
-    //         return mime_type_res.is_err();
-    //     }
-    //     false
-    // }
 
     pub fn are_bytes_loaded(&self) -> bool {
         if let Some(bytes_promise) = self.bytes.as_ref() {
@@ -285,23 +261,8 @@ impl MediaEntry {
         } else {
             true
         }
-
-        // return !self.failed_to_load_type() && allow_import_attempt;
     }
 
-    // pub fn unload_bytes_if_unnecessary(&mut self) {
-    //     // If bytes are loaded,
-    //     // we only need bytes to be loaded if thumbnail is still loading, or we are trying to import
-    //     if self.are_bytes_loaded() && !(self.is_thumbnail_loading() || self.is_importing()) {
-    //         self.bytes = None;
-    //     }
-    //     // if let Some(promise) = self.bytes.as_ref() {
-    //     //     if let Some(bytes_res) = promise.ready() {
-    //     //         if let Ok(_bytes) = bytes_res {
-    //     //         }
-    //     //     }
-    //     // }
-    // }
 
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
@@ -398,67 +359,5 @@ impl MediaEntry {
         }
     }
 
-    // pub fn get_thumbnail(&mut self, thumbnail_size: u8) -> Option<&Promise<Result<RetainedImage, Error>>> {
-    //     match &self.thumbnail {
-    //         None => match self.get_bytes().ready() {
-    //             None => {
-    //                 // println!("hmm");
-    //                 None
-    //             }
-    //             Some(result) => {
-    //                 let (sender, promise) = Promise::new();
-    //                 match result {
-    //                     Err(_error) => {
-    //                         // self.is_disabled = true;
-    //                         sender.send(Err(anyhow::Error::msg("no bytes provided to load thumbnail")))
-    //                     }
-    //                     Ok(bytes) => {
-    //                         let bytes = Arc::clone(bytes);
-    //                         // let arc = Arc::new(bytes);
-    //                         thread::spawn(move || {
-    //                             let bytes = &bytes as &[u8];
-    //                             // println!("{:?}", bytes.len());
-    //                             let image_res = MediaEntry::load_thumbnail(bytes, thumbnail_size);
-    //                             // println!("{:?}", image_res.is_err());
-    //                             sender.send(image_res);
-    //                         });
-    //                     }
-    //                 }
-    //                 self.thumbnail = Some(promise);
-    //                 self.thumbnail.as_ref()
-    //             }
-    //         },
-    //         Some(_promise) => self.thumbnail.as_ref(),
-    //     }
-    // }
 
-    // pub fn try_check_if_is_to_be_loaded(&self) -> bool {
-    //     let (lock, _cond_var) = &*self.is_to_be_loaded;
-    //     let is_to_be_loaded = lock.try_lock();
-    //     match is_to_be_loaded {
-    //         Err(_error) => {
-    //             // lock being aquired by something else
-    //             false
-    //         }
-    //         Ok(is_to_be_loaded) => *is_to_be_loaded,
-    //     }
-    // }
-
-    // pub fn set_load_status(&mut self, load_status: bool) {
-    //     // if !load_status {
-    //     //     self.unload_bytes();
-    //     // } else {
-    //     //     // self.get_bytes();
-    //     // }
-    //     let (lock, cond_var) = &*self.is_to_be_loaded;
-    //     let mut is_to_be_loaded = lock.lock().unwrap();
-    //     *is_to_be_loaded = load_status;
-    //     cond_var.notify_all();
-    // }
-
-    // pub fn load_thumbnail(image_data: &[u8], thumbnail_size: u8) -> Result<RetainedImage> {
-    //     let pixels = data::generate_thumbnail(image_data, thumbnail_size)?;
-    //     let img = ui::generate_retained_image(&pixels)?;
-    //     Ok(img)
-    // }
 }

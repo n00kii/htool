@@ -32,21 +32,19 @@ pub struct PollBuffer2<T> {
 
 impl<T: PartialEq> PollBuffer2<T> {
     fn contains_entry(&self, entry: &BufferEntry<T>) -> bool {
-        self.entries.iter().any(|other_entry| {
-            match entry {
-                BufferEntry::NotSync(entry) => {
-                    if let BufferEntry::NotSync(other_entry) = other_entry {
-                        entry == other_entry
-                    } else {
-                        false
-                    }
+        self.entries.iter().any(|other_entry| match entry {
+            BufferEntry::NotSync(entry) => {
+                if let BufferEntry::NotSync(other_entry) = other_entry {
+                    entry == other_entry
+                } else {
+                    false
                 }
-                BufferEntry::Sync(entry) => {
-                    if let BufferEntry::Sync(other_entry) = other_entry {
-                        entry.data_ptr() == other_entry.data_ptr()
-                    } else {
-                        false
-                    }
+            }
+            BufferEntry::Sync(entry) => {
+                if let BufferEntry::Sync(other_entry) = other_entry {
+                    entry.data_ptr() == other_entry.data_ptr()
+                } else {
+                    false
                 }
             }
         })
@@ -54,6 +52,8 @@ impl<T: PartialEq> PollBuffer2<T> {
     fn current_size(&self) -> usize {
         self.entries.iter().map(|entry| (self.get_entry_size)(entry)).sum()
     }
+
+    //FIXME optimize this
     pub fn is_full(&self) -> bool {
         let is_full_by_size = if let Some(size_limit) = self.size_limit.as_ref() {
             self.current_size() > *size_limit
@@ -119,6 +119,49 @@ impl<T: PartialEq> PollBuffer2<T> {
     }
 }
 
+pub struct BatchPollBuffer<T> {
+    pub poll_buffer: PollBuffer<T>,
+    pending_additions_exist: bool,
+    batch_action_promise: Option<Promise<Result<()>>>,
+}
+
+impl<T: PartialEq> BatchPollBuffer<T> {
+    pub fn new(poll_buffer: PollBuffer<T>) -> Self{
+        Self {
+            poll_buffer,
+            pending_additions_exist: false,
+            batch_action_promise: None
+        }
+    }
+    pub fn try_add_entry(&mut self, entry: &Rc<RefCell<T>>) -> Result<()> {
+        //FIXME: assumes error is bcz was full, (but what about contains?)
+        if let Err(_e) = self.poll_buffer.try_add_entry(&entry) {
+            if self.poll_buffer.is_full() {
+                self.pending_additions_exist = true;
+            }
+        } else {
+            self.pending_additions_exist = false;
+        }
+        Ok(())
+    }
+    pub fn ready_for_batch_action(&self) -> bool {
+        (self.batch_action_promise.is_none() || is_opt_promise_ready(&self.batch_action_promise))
+            && (self.poll_buffer.is_full() || (!self.pending_additions_exist && !self.poll_buffer.entries.is_empty()))
+    }
+    pub fn run_action<F>(&mut self, action_name: impl Into<String>, f: F)
+    where
+        F: FnOnce() -> Result<()> + Send + 'static,
+    {
+        self.batch_action_promise = Some(Promise::spawn_thread(action_name, f));
+    }
+    pub fn poll(&mut self) {
+        self.poll_buffer.poll();
+        if is_opt_promise_ready(&self.batch_action_promise) {
+            self.batch_action_promise = None
+        }
+    }
+}
+
 impl<T: PartialEq> PollBuffer<T> {
     fn contains_entry(&self, entry: &Rc<RefCell<T>>) -> bool {
         self.entries.contains(entry)
@@ -141,7 +184,7 @@ impl<T: PartialEq> PollBuffer<T> {
 
         is_full_by_count || is_full_by_size
     }
-    pub fn try_add_entry(&mut self, entry: Rc<RefCell<T>>) -> Result<()> {
+    pub fn try_add_entry(&mut self, entry: &Rc<RefCell<T>>) -> Result<()> {
         if let Some(count_limit) = self.count_limit.as_ref() {
             if self.entries.len() == *count_limit {
                 return Err(anyhow::Error::msg("buffer full (count)"));
@@ -149,17 +192,17 @@ impl<T: PartialEq> PollBuffer<T> {
         }
 
         if let Some(size_limit) = self.size_limit.as_ref() {
-            if (self.current_size() + (self.get_entry_size)(&entry) > *size_limit) && !self.entries.is_empty() {
+            if (self.current_size() + (self.get_entry_size)(entry) > *size_limit) && !self.entries.is_empty() {
                 return Err(anyhow::Error::msg("buffer full (size)"));
             }
         }
 
-        if self.contains_entry(&entry) {
+        if self.contains_entry(entry) {
             return Err(anyhow::Error::msg("already added"));
         }
 
-        (self.on_add)(&entry);
-        self.entries.push(entry);
+        (self.on_add)(entry);
+        self.entries.push(Rc::clone(entry));
         Ok(())
     }
     pub fn poll(&mut self) {

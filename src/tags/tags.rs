@@ -230,10 +230,7 @@ impl TagLink {
 pub type TagDataRef = Rc<RefCell<Promise<Result<Vec<TagData>>>>>;
 
 pub fn reload_tag_data(tag_data_ref: &TagDataRef) {
-    // if let Some(tag_data_ref) = tag_data_ref {
-    // println!("start");
     tag_data_ref.replace(load_tag_data());
-    // }
 }
 
 pub fn initialize_tag_data() -> TagDataRef {
@@ -241,12 +238,7 @@ pub fn initialize_tag_data() -> TagDataRef {
 }
 
 fn load_tag_data() -> Promise<Result<Vec<TagData>>> {
-    Promise::spawn_thread("load_tag_data", || {
-        // println!("before");
-        data::get_all_tag_data()
-        // println!("after");
-        
-    })
+    Promise::spawn_thread("load_tag_data", || data::get_all_tag_data())
 }
 
 pub fn generate_autocomplete_options(tag_data_ref: &TagDataRef) -> Option<Vec<AutocompleteOption>> {
