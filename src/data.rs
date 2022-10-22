@@ -1,5 +1,6 @@
 use crate::config;
-use crate::import::import::MediaEntry;
+use crate::gallery::gallery_ui::EntrySearch;
+use crate::import::import::ImportationEntry;
 use crate::tags::tags::Tag;
 use crate::tags::tags::TagData;
 use crate::tags::tags::TagLink;
@@ -28,20 +29,18 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
 
-// config: Arc<Config>,
-// bytes: &[u8],
-// filekind: Option<infer::Type>,
-// linking_dir: Option<String>,
-// dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-
 const GENERIC_RUSQLITE_ERROR: rusqlite::Error = rusqlite::Error::InvalidQuery;
 
 pub struct ThumbnailRequest {
     pub entry_id: EntryId,
     pub thumbnail_sender: Sender<Result<RetainedImage>>,
 }
+pub struct DataRequest<T> {
+    pub entry_id: EntryId,
+    pub sender: Sender<Result<T>>,
+}
 
-pub struct RegistrationForm {
+pub struct RegistrationForm { 
     pub bytes: Arc<Vec<u8>>,
     pub mimetype: mime_guess::MimeGuess,
     // pub importation_result: Option<Promise<ImportationStatus>>,
@@ -124,6 +123,59 @@ impl EntryInfo {
     pub fn entry_id(&self) -> &EntryId {
         &self.details().id
     }
+    pub fn passes_entry_search(&self, search: &EntrySearch) -> bool {
+        if !search.is_valid {
+            return false;
+        }
+        let fails_opt_xor = |opt: Option<bool>, self_value: bool| -> bool {
+            if let Some(opt_value) = opt {
+                if opt_value ^ self_value {
+                    return true;
+                }
+            }
+            false
+        };
+        if fails_opt_xor(search.is_media, self.entry_id().as_media_entry_id().is_some())
+            || fails_opt_xor(search.is_pool, self.entry_id().as_pool_entry_id().is_some())
+            || fails_opt_xor(search.is_bookmarked, self.details().is_bookmarked)
+            || fails_opt_xor(search.is_independant, self.details().is_independant)
+        {
+            return false
+        }
+        let score = self.details().score;
+        if let Some(exact_score) = search.score_exact {
+            if score != exact_score {
+                return false;
+            }
+        }
+        if let Some((min_score, inclusive)) = search.score_min {
+            if (score < min_score) || ((score == min_score) && !inclusive) {
+                return false;
+            }
+        }
+        if let Some((max_score, inclusive)) = search.score_max {
+            if (score > max_score) || ((score == max_score) && !inclusive) {
+                return false;
+            }
+        }
+        for tags in &search.not_relations {
+            if !self.details().not_includes_any_tags(tags) {
+                return false;
+            }
+        }
+        for tags in &search.and_relations {
+            if !self.details().includes_all_tags(tags) {
+                return false;
+            }
+        }
+        for tags in &search.or_relations {
+            if !self.details().includes_any_tag(tags) {
+                return false;
+            }
+        }
+ 
+        true
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -169,11 +221,28 @@ impl PartialEq for EntryDetails {
 }
 
 impl EntryDetails {
-    pub fn includes_tags_or(&self) {}
-    pub fn includes_tags_and(&self, tags: &Vec<Tag>) -> bool {
+    pub fn includes_tag(&self, tag: &Tag) -> bool {
+        self.tags.iter().any(|included_tag| included_tag == tag)
+    }
+    pub fn includes_any_tag(&self, tags: &Vec<Tag>) -> bool {
         for tag in tags {
-            let includes_tag = self.tags.iter().any(|included_tag| included_tag == tag);
-            if !includes_tag {
+            if self.includes_tag(tag) {
+                return true;
+            }
+        }
+        false
+    }
+    pub fn includes_all_tags(&self, tags: &Vec<Tag>) -> bool {
+        for tag in tags {
+            if !self.includes_tag(tag) {
+                return false;
+            }
+        }
+        true
+    }
+    pub fn not_includes_any_tags(&self, tags: &Vec<Tag>) -> bool {
+        for tag in tags {
+            if self.includes_tag(tag) {
                 return false;
             }
         }
@@ -392,7 +461,6 @@ pub fn load_bytes(hash: &String) -> Result<Vec<u8>> {
     let mut statement = conn.prepare("SELECT bytes FROM media_bytes WHERE hash = ?1")?;
     let bytes: Vec<u8> = statement.query_row(params![hash], |row| row.get(0))?;
     Ok(bytes)
-    // todo!()
 }
 
 fn construct_entry_info_with_row(entry_id: &EntryId, row: &Row) -> Result<EntryInfo> {
@@ -420,11 +488,11 @@ fn construct_entry_info_with_row(entry_id: &EntryId, row: &Row) -> Result<EntryI
 
 fn fill_entry_info_tags_with_conn(conn: &Connection, entry_info: &mut EntryInfo) -> Result<()> {
     let id_param = params![entry_info.entry_id().as_media_entry_id(), entry_info.entry_id().as_pool_entry_id()];
-
+    // println!("id_param: {:?} {:?}", entry_info.entry_id().as_media_entry_id(), entry_info.entry_id().as_pool_entry_id());
     let mut tags_statement = conn.prepare("SELECT tag FROM entry_tags WHERE hash = ?1 OR link_id = ?2")?;
     let tag_rows = tags_statement.query_map(id_param, |row| row.get(0))?;
-
     for tag_res in tag_rows {
+        // dbg!(&tag_res);
         if let Ok(tagstring) = tag_res {
             entry_info.details_mut().tags.push(Tag::from_tagstring(&tagstring));
         }
@@ -472,72 +540,22 @@ pub fn load_all_entry_info() -> Result<Vec<EntryInfo>> {
     Ok(all_entry_info)
 }
 
-pub fn load_entry_info(entry_id: &EntryId) -> Result<EntryInfo> {
+pub fn load_entry_info(entry_id: &EntryId) -> Result<EntryInfo>  {
     let conn = initialize_database_connection()?;
+    load_entry_info_with_conn(&conn, entry_id)
+}
+fn load_entry_info_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<EntryInfo> {
     let mut entry_info_statement = conn.prepare("SELECT * FROM entry_info WHERE hash = ?1 OR link_id = ?2")?;
     let id_param = params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()];
-    // let mut entry_info_statement = match entry_id {
-    //     EntryId::MediaEntry(hash) => conn.prepare("SELECT * FROM entry_info WHERE hash = ?1")?,
-    //     EntryId::PoolEntry(link_id) => conn.prepare("SELECT * FROM entry_info WHERE link_id = ?1")?,
-    // };
 
-    // let id_param = match entry_id {
-    //     EntryId::MediaEntry(hash) => {
-    //         let h = hash.clone();
-    //         params![h].to_owned()
-    //     }
-    //     EntryId::PoolEntry(link_id) => params![link_id],
-    // };
 
     let mut entry_info = entry_info_statement.query_row(id_param, |row| {
         construct_entry_info_with_row(entry_id, row).map_err(|_| GENERIC_RUSQLITE_ERROR)
-        // let details = EntryDetails {
-        //     id: entry_id.clone(),
-        //     date_registered: row.get("date_registered")?,
-        //     score: row.get("score")?,
-        //     is_bookmarked: row.get("is_bookmarked")?,
-        //     size: row.get("size")?,
-        //     tags: vec![],
-        // };
 
-        // let entry_info = match entry_id {
-        //     EntryId::MediaEntry(_) => EntryInfo::MediaEntry(MediaInfo {
-        //         p_hash: row.get("perceptual_hash")?,
-        //         mime: row.get("mime")?,
-        //         details,
-        //     }),
-        //     EntryId::PoolEntry(_) => EntryInfo::PoolEntry(PoolInfo { details, hashes: vec![] }),
-        // };
-
-        // Ok(entry_info)
     })?;
 
     fill_entry_info_tags_with_conn(&conn, &mut entry_info)?;
     fill_pool_info_with_conn(&conn, &mut entry_info)?;
-    // let mut tags_statement = conn.prepare("SELECT tag FROM entry_tags WHERE hash = ?1 OR link_id = ?2")?;
-    // // let mut tags_statement = match entry_id {
-    // //     EntryId::MediaEntry(hash) => conn.prepare("SELECT tag FROM entry_tags WHERE hash = ?1")?,
-    // //     EntryId::PoolEntry(link_id) => conn.prepare("SELECT tag FROM entry_tags WHERE link_id = ?1")?,
-    // // };
-
-    // let tag_rows = tags_statement.query_map(id_param, |row| row.get(0))?;
-
-    // for tag_res in tag_rows {
-    //     if let Ok(tagstring) = tag_res {
-    //         entry_info.details_mut().tags.push(Tag::from_tagstring(&tagstring));
-    //     }
-    // }
-
-    // if let EntryInfo::PoolEntry(pool_info) = &mut entry_info {
-    //     pool_info.hashes = get_hashes_of_media_link_with_conn(&conn, *pool_info.details.id.as_pool_entry_id().unwrap())?;
-    //     let mut sizes_stmt = conn.prepare("SELECT size FROM entry_info WHERE hash = ?1")?;
-    //     let mut total_size = 0;
-    //     for hash in &pool_info.hashes {
-    //         let size: i64 = sizes_stmt.query_row(params![hash], |row| row.get(0))?;
-    //         total_size += size;
-    //     }
-    //     pool_info.details.size = total_size;
-    // }
 
     Ok(entry_info)
 }
@@ -800,17 +818,18 @@ fn delete_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
 }
 
 pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
-    let conn = initialize_database_connection()?;
+    let mut conn = initialize_database_connection()?;
+    let tx = conn.transaction()?;
     let old_tag = old_tag.someified();
     let new_tag = new_tag.someified();
     let old_tagstring = old_tag.to_tagstring();
     let new_tagstring = new_tag.to_tagstring();
 
-    register_tag_with_conn(&conn, &new_tag)?;
+    register_tag_with_conn(&tx, &new_tag)?;
     if old_tagstring == new_tagstring {
         Ok(())
     } else {
-        let old_tag_data = load_tag_data_with_conn(&conn, &old_tag)?;
+        let old_tag_data = load_tag_data_with_conn(&tx, &old_tag)?;
         for old_link in old_tag_data.links {
             let mut new_link = old_link.clone();
             if new_link.from_tagstring == old_tagstring {
@@ -818,13 +837,13 @@ pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
             } else {
                 new_link.to_tagstring = new_tagstring.clone();
             }
-            register_tag_link_with_conn(&conn, &new_link)?;
+            register_tag_link_with_conn(&tx, &new_link)?;
         }
 
-        let mut media_stmt = conn.prepare("SELECT hash FROM entry_tags WHERE tag = ?1")?;
-        let mut pool_stmt = conn.prepare("SELECT link_id FROM entry_tags WHERE tag = ?1")?;
-        let hash_results = media_stmt.query_map(params![old_tagstring], |row| row.get(0))?;
-        let link_id_results = pool_stmt.query_map(params![old_tagstring], |row| row.get(1))?;
+        let mut media_stmt = tx.prepare("SELECT hash FROM entry_tags WHERE tag = ?1")?;
+        let mut pool_stmt = tx.prepare("SELECT link_id FROM entry_tags WHERE tag = ?1")?;
+        let hash_results = media_stmt.query_map(params![old_tagstring], |row| row.get("hash"))?;
+        let link_id_results = pool_stmt.query_map(params![old_tagstring], |row| row.get("link_id"))?;
 
         let mut associated_entries: Vec<EntryId> = Vec::new();
 
@@ -842,15 +861,17 @@ pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
         for entry in associated_entries.iter() {
             match entry {
                 EntryId::MediaEntry(hash) => {
-                    conn.execute("INSERT INTO entry_tags (hash, tag) VALUES (?1, ?2)", params![hash, new_tagstring])?;
+                    tx.execute("INSERT INTO entry_tags (hash, tag) VALUES (?1, ?2)", params![hash, new_tagstring])?;
                 }
                 EntryId::PoolEntry(link_id) => {
-                    conn.execute("INSERT INTO entry_tags (link_id, tag) VALUES (?1, ?2)", params![link_id, new_tagstring])?;
+                    tx.execute("INSERT INTO entry_tags (link_id, tag) VALUES (?1, ?2)", params![link_id, new_tagstring])?;
                 }
             }
         }
-
-        delete_tag_with_conn(&conn, &old_tag)?;
+        drop(media_stmt);
+        drop(pool_stmt);
+        delete_tag_with_conn(&tx, &old_tag)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -939,6 +960,14 @@ pub fn load_thumbnail_with_requests(requests: Vec<ThumbnailRequest>) -> Result<(
     for request in requests {
         let image = load_thumbnail_with_conn(&conn, &request.entry_id).and_then(|image| ui::generate_retained_image(&image));
         request.thumbnail_sender.send(image);
+    }
+    Ok(())
+}
+pub fn load_entry_info_with_requests(requests: Vec<DataRequest<EntryInfo>>) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    for request in requests {
+        let entry_info =  load_entry_info_with_conn(&conn, &request.entry_id);
+        request.sender.send(entry_info);
     }
     Ok(())
 }

@@ -20,7 +20,7 @@ use super::super::ui::UserInterface;
 use super::super::Config;
 use super::import::scan_directory;
 // use super::import::{import_media, MediaEntry};
-use super::import::MediaEntry;
+use super::import::ImportationEntry;
 use anyhow::Result;
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
@@ -39,20 +39,16 @@ use std::sync::{Arc, Mutex};
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
     import_failures_list: Arc<Mutex<Vec<(String, Error)>>>,
-    media_entries: Option<Vec<Rc<RefCell<MediaEntry>>>>,
+    importation_entries: Option<Vec<Rc<RefCell<ImportationEntry>>>>,
     alternate_scan_dir: Option<PathBuf>,
-    show_hidden_entries: bool,
     hide_errored_entries: bool,
-    import_hidden_entries: bool,
-    current_import_res: Option<Promise<Result<()>>>,
     skip_thumbnails: bool,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
     batch_import_status: Option<Promise<Arc<Result<()>>>>,
-    total_import_status: Option<(usize, Vec<anyhow::Error>)>,
-    is_import_status_window_open: bool,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
-    thumbnail_buffer: PollBuffer<MediaEntry>,
-    import_buffer: BatchPollBuffer<MediaEntry>,
+    thumbnail_buffer: PollBuffer<ImportationEntry>,
+    import_buffer: BatchPollBuffer<ImportationEntry>,
+    is_import_status_window_open: bool,
     is_filters_window_open: bool,
 }
 
@@ -79,19 +75,15 @@ impl Default for ImporterUI {
         Self {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             import_failures_list: Arc::new(Mutex::new(vec![])),
-            show_hidden_entries: false,
             thumbnail_buffer,
-            total_import_status: None,
             import_buffer,
             skip_thumbnails: false,
             is_import_status_window_open: false,
             is_filters_window_open: false,
             hide_errored_entries: true,
-            import_hidden_entries: true,
             batch_import_status: None,
-            media_entries: None,
+            importation_entries: None,
             alternate_scan_dir: None,
-            current_import_res: None,
             scan_extension_filter: HashMap::from([
                 (
                     "image".into(),
@@ -110,13 +102,13 @@ impl Default for ImporterUI {
 }
 
 impl ImporterUI {
-    fn buffer_add(media_entry: &Rc<RefCell<MediaEntry>>) {
+    fn buffer_add(media_entry: &Rc<RefCell<ImportationEntry>>) {
         if media_entry.borrow().bytes.is_none() {
             media_entry.borrow_mut().load_bytes();
         }
     }
 
-    fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+    fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<ImportationEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
         if media_entry.are_bytes_loaded() {
             if media_entry.thumbnail.is_none() {
@@ -125,11 +117,11 @@ impl ImporterUI {
         }
         media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none()
     }
-    fn buffer_entry_size(media_entry: &Rc<RefCell<MediaEntry>>) -> usize {
+    fn buffer_entry_size(media_entry: &Rc<RefCell<ImportationEntry>>) -> usize {
         media_entry.borrow().file_size
     }
 
-    fn import_buffer_poll(media_entry: &Rc<RefCell<MediaEntry>>) -> bool {
+    fn import_buffer_poll(media_entry: &Rc<RefCell<ImportationEntry>>) -> bool {
         media_entry.borrow().is_importing()
         // true
     }
@@ -158,12 +150,8 @@ impl ImporterUI {
         self.get_selected_media_entries().len() > 0
     }
 
-    fn is_any_entry_hidden(&self) -> bool {
-        self.get_hidden_media_entries().len() > 0
-    }
-
-    fn filter_media_entries(&self, predicate: impl Fn(&Rc<RefCell<MediaEntry>>) -> bool) -> Vec<Rc<RefCell<MediaEntry>>> {
-        if let Some(media_entries) = self.media_entries.as_ref() {
+    fn filter_media_entries(&self, predicate: impl Fn(&Rc<RefCell<ImportationEntry>>) -> bool) -> Vec<Rc<RefCell<ImportationEntry>>> {
+        if let Some(media_entries) = self.importation_entries.as_ref() {
             media_entries
                 .iter()
                 .filter(|media_entry| predicate(media_entry))
@@ -174,19 +162,15 @@ impl ImporterUI {
         }
     }
 
-    fn get_importable_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
+    fn get_importable_media_entries(&self) -> Vec<Rc<RefCell<ImportationEntry>>> {
         self.filter_media_entries(|media_entry| media_entry.borrow().is_importable())
     }
 
-    fn get_selected_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
+    fn get_selected_media_entries(&self) -> Vec<Rc<RefCell<ImportationEntry>>> {
         self.filter_media_entries(|media_entry| media_entry.borrow().is_selected)
     }
 
-    fn get_hidden_media_entries(&self) -> Vec<Rc<RefCell<MediaEntry>>> {
-        self.filter_media_entries(|media_entry| media_entry.borrow().is_hidden)
-    }
-
-    fn get_number_of_loading_bytes(media_entries: &Vec<MediaEntry>) -> u32 {
+    fn get_number_of_loading_bytes(media_entries: &Vec<ImportationEntry>) -> u32 {
         let mut num_loading = 0;
         for media_entry in media_entries {
             if media_entry.are_bytes_loaded() {
@@ -203,14 +187,14 @@ impl ImporterUI {
             if ui.button("change").clicked() {
                 if let Some(path) = FileDialog::new().pick_folder() {
                     self.alternate_scan_dir = Some(path);
-                    self.media_entries = None;
+                    self.importation_entries = None;
                     self.thumbnail_buffer.entries.clear();
                     self.import_buffer.poll_buffer.entries.clear();
                 }
             }
             if self.alternate_scan_dir.as_ref().is_some() && ui.button("remove").clicked() {
                 self.alternate_scan_dir = None;
-                self.media_entries = None
+                self.importation_entries = None
             }
             ui.label(format!("{}", self.get_scan_dir().display()));
         });
@@ -224,7 +208,7 @@ impl ImporterUI {
                     .button(format!(
                         "{} {}",
                         ui::constants::SEARCH_ICON,
-                        if self.media_entries.is_some() { "re-scan" } else { "scan" }
+                        if self.importation_entries.is_some() { "re-scan" } else { "scan" }
                     ))
                     .clicked()
                 {
@@ -254,7 +238,7 @@ impl ImporterUI {
                                 .set_duration(None);
                             }
                             // dbg!(media_entries.len());
-                            self.media_entries = Some(media_entries);
+                            self.importation_entries = Some(media_entries);
                         }
                         Err(e) => {
                             ui::toast_error(&mut self.toasts, format!("failed to scan directory: {e}"));
@@ -273,19 +257,19 @@ impl ImporterUI {
 
                 ui.add_space(ui::constants::SPACER_SIZE);
 
-                if ui.add_enabled(self.media_entries.is_some(), Button::new("select all")).clicked() {
+                if ui.add_enabled(self.importation_entries.is_some(), Button::new("select all")).clicked() {
                     for media_entry in self.get_importable_media_entries() {
                         media_entry.borrow_mut().is_selected = true;
                     }
                 }
 
-                if ui.add_enabled(self.media_entries.is_some(), Button::new("deselect all")).clicked() {
+                if ui.add_enabled(self.importation_entries.is_some(), Button::new("deselect all")).clicked() {
                     for media_entry in self.get_importable_media_entries() {
                         media_entry.borrow_mut().is_selected = false;
                     }
                 }
 
-                if ui.add_enabled(self.media_entries.is_some(), Button::new("invert")).clicked() {
+                if ui.add_enabled(self.importation_entries.is_some(), Button::new("invert")).clicked() {
                     for media_entry in self.get_importable_media_entries() {
                         let current_state = media_entry.borrow().is_selected;
                         media_entry.borrow_mut().is_selected = !current_state;
@@ -306,7 +290,6 @@ impl ImporterUI {
                     ui::toast_info(&mut self.toasts, format!("marked {} media for importing", selected_media_entries.len()));
                     for media_entry in self.get_selected_media_entries() {
                         media_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
-                        media_entry.borrow_mut().is_hidden = false;
                         media_entry.borrow_mut().is_selected = false;
                     }
                 }
@@ -318,15 +301,12 @@ impl ImporterUI {
     fn render_files(&mut self, ui: &mut Ui) {
         ui.vertical(|files_col| {
             files_col.label("file");
-            if let Some(scanned_dirs) = &mut self.media_entries {
+            if let Some(scanned_dirs) = &mut self.importation_entries {
                 ScrollArea::vertical()
                     .id_source("files_col")
                     .auto_shrink([false; 2])
                     .show(files_col, |files_col_scroll| {
                         for media_entry in scanned_dirs.iter_mut() {
-                            if media_entry.borrow().is_hidden && !self.show_hidden_entries {
-                                continue;
-                            }
                             // display label stuff
                             let is_importable = media_entry.borrow().is_importable();
                             files_col_scroll.add_enabled_ui(is_importable, |files_col_scroll| {
@@ -355,9 +335,6 @@ impl ImporterUI {
                                 }
 
                                 let mut text = egui::RichText::new(format!("{}", label));
-                                if media_entry.borrow().is_hidden {
-                                    text = text.weak();
-                                }
                                 // } else if media_entry.borrow().failed_to_load_type() {
                                 //     text = text.strikethrough();
                                 // }
@@ -368,11 +345,9 @@ impl ImporterUI {
                                     media_entry.borrow_mut().is_selected = new_state;
                                 };
                                 let disabled_reason = media_entry.borrow().get_status_label();
-                                if media_entry.borrow().is_hidden {
-                                    response = response.on_hover_text("(hidden)");
+                                if let Some(status) = media_entry.borrow().get_status_label() {
+                                    response = response.on_hover_text(format!("({status})"));
                                 }
-                                response = response.on_disabled_hover_text(format!("({})", disabled_reason.unwrap_or("unknown error".to_string())));
-                                // .on_hover_text_at_pointer(&media_entry.borrow().file_label);
                                 if was_truncated {
                                     response = response.on_hover_text_at_pointer(&media_entry.borrow().file_label)
                                 }
@@ -387,7 +362,7 @@ impl ImporterUI {
         self.thumbnail_buffer.poll();
         self.import_buffer.poll();
 
-        if let Some(media_entries) = self.media_entries.as_ref() {
+        if let Some(media_entries) = self.importation_entries.as_ref() {
             for media_entry in media_entries {
                 //unload bytes if uneccesary
                 if media_entry.borrow().are_bytes_loaded() {
@@ -426,7 +401,7 @@ impl ImporterUI {
         ui.vertical(|ui| {
             ui.label("preview");
 
-            if let Some(scanned_dirs) = self.media_entries.as_mut() {
+            if let Some(importation_entries) = self.importation_entries.as_mut() {
                 // iterate through each mediaentry to draw its name on the sidebar, and to load its image
                 // wrapped in an arc mutex for multithreading purposes
                 ScrollArea::vertical()
@@ -436,49 +411,40 @@ impl ImporterUI {
                         let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                         ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                             ui.with_layout(layout, |ui| {
-                                for (index, media_entry) in scanned_dirs.iter().enumerate() {
-                                    if media_entry.borrow().is_hidden && self.hide_errored_entries {
-                                        continue;
-                                    }
-                                    let mut media_entry = media_entry.borrow_mut();
-                                    let file_label = media_entry.file_label.clone();
+                                for (index, importation_entry) in importation_entries.iter().enumerate() {
+
+                                    let mut importation_entry = importation_entry.borrow_mut();
+                                    let file_label = importation_entry.file_label.clone();
                                     let file_label_clone = file_label.clone();
-                                    let mime_type_label = match media_entry.mime_type.as_ref() {
-                                        Some(Ok(mime_type)) => mime_type.to_string(),
-                                        Some(Err(err)) => format!("failed to read file type: {err}"),
-                                        None => String::from("?"),
-                                    };
 
                                     let mut options = ui::RenderLoadingImageOptions::default();
                                     let thumbnail_size = Config::global().import.thumbnail_size as f32;
                                     options.widget_margin = [10., 10.];
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
                                     options.hover_text_on_loading_image =
-                                        Some(format!("{file_label} [{mime_type_label}] (loading thumbnail...)",).into());
+                                        Some(format!("{file_label} (loading thumbnail...)",).into());
                                     options.hover_text_on_error_image = Some(Box::new(move |error| format!("{file_label_clone} ({error})").into()));
                                     options.hover_text_on_none_image = Some(format!("{file_label} (waiting to load image...)").into());
-                                    options.hover_text = Some(if let Some(status_label) = media_entry.get_status_label() {
-                                        format!("{file_label} [{mime_type_label}] ({status_label})").into()
+                                    options.hover_text = Some(if let Some(status_label) = importation_entry.get_status_label() {
+                                        format!("{file_label} ({status_label})").into()
                                     } else {
-                                        format!("{file_label} [{mime_type_label}]").into()
+                                        format!("{file_label}").into()
                                     });
-                                    options.image_tint = if media_entry.is_hidden {
-                                        Some(ui::constants::IMPORT_IMAGE_HIDDEN_TINT)
-                                    } else if media_entry.match_importation_status(data::ImportationStatus::Success) {
+                                    options.image_tint = if importation_entry.match_importation_status(data::ImportationStatus::Success) {
                                         Some(ui::constants::IMPORT_IMAGE_SUCCESS_TINT)
-                                    } else if media_entry.match_importation_status(data::ImportationStatus::Fail(anyhow::Error::msg(""))) {
+                                    } else if importation_entry.match_importation_status(data::ImportationStatus::Fail(anyhow::Error::msg(""))) {
                                         Some(ui::constants::IMPORT_IMAGE_FAIL_TINT)
-                                    } else if media_entry.match_importation_status(data::ImportationStatus::Duplicate) {
+                                    } else if importation_entry.match_importation_status(data::ImportationStatus::Duplicate) {
                                         Some(ui::constants::IMPORT_IMAGE_DUPLICATE_TINT)
                                     } else {
                                         None
                                     };
-                                    options.is_button = media_entry.is_importable();
-                                    options.is_button_selected = Some(media_entry.is_selected);
-                                    let response = ui::render_loading_image(ui, ctx, media_entry.thumbnail.as_ref(), &options);
+                                    options.is_button = importation_entry.is_importable();
+                                    options.is_button_selected = Some(importation_entry.is_selected);
+                                    let response = ui::render_loading_image(ui, ctx, importation_entry.thumbnail.as_ref(), &options);
                                     if let Some(response) = response.as_ref() {
-                                        if response.clicked() && media_entry.is_importable() {
-                                            media_entry.is_selected = !media_entry.is_selected
+                                        if response.clicked() && importation_entry.is_importable() {
+                                            importation_entry.is_selected = !importation_entry.is_selected
                                         }
                                     }
                                 }
@@ -489,21 +455,6 @@ impl ImporterUI {
         });
     }
 
-    fn get_load_progress(&mut self) -> f32 {
-        let mut progress = 0.0;
-        if let Some(scanned_dirs) = &mut self.media_entries {
-            let mut loaded_count: f32 = 0.0;
-            let total_count = scanned_dirs.len() as f32;
-            for media_entry in scanned_dirs.iter_mut() {
-                if media_entry.borrow().mime_type.is_some() {
-                    loaded_count += 1.0;
-                }
-            }
-            progress = loaded_count / total_count;
-        }
-
-        progress
-    }
 
     fn render_filters_window(&mut self, ctx: &Context) {
         egui::Window::new("filters")
@@ -535,7 +486,7 @@ impl ImporterUI {
             .open(&mut self.is_import_status_window_open)
             .resizable(false)
             .show(ctx, |ui| {
-                if let Some(media_entries) = &mut self.media_entries {
+                if let Some(media_entries) = &mut self.importation_entries {
                     let mut total_failed = 0;
                     let mut total_succeeded = 0;
                     let mut total_duplicates = 0;
@@ -576,14 +527,6 @@ impl ImporterUI {
                     });
                 }
             });
-    }
-
-    fn render_progress(&mut self, ui: &mut Ui) {
-        let progress = self.get_load_progress();
-        if self.media_entries.is_some() && progress < 1.0 {
-            let progress_bar = ProgressBar::new(progress).text("loading media...").show_percentage();
-            ui.add(progress_bar);
-        }
     }
 }
 

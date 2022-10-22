@@ -28,14 +28,9 @@ use std::{
 };
 use ui::ToastsRef;
 
-// type ToastsRef = Rc<RefCell<egui_notify::Toasts>>;
-
 pub struct TagsUI {
-    // toasts: ToastsRef,
     filter_query: String,
     filter_tagstrings: Vec<String>,
-    // loaded_tag_data: TagDataRef,
-    // entry_info_update_flag: Arc<Mutex<bool>>,
     modify_windows: Vec<WindowContainer>,
     register_unknown_tags: bool,
     shared_state: Rc<SharedState>,
@@ -89,7 +84,6 @@ impl ui::UserInterface for TagsUI {
                     self.render_tags(ui);
                 });
             });
-        // self.shared_state.toasts.show(ctx);
         self.render_modify_windows(ctx);
     }
 }
@@ -157,7 +151,6 @@ impl TagsUI {
         });
     }
     fn load_tag_description(tag: &mut Tag, loaded_tag_data: &TagDataRef) {
-        // if let Some(tag_data_promise) = loaded_tag_data.as_ref() {
         if let Some(Ok(tag_data)) = loaded_tag_data.borrow().ready() {
             for tag_data in tag_data {
                 if tag_data.tag == *tag {
@@ -168,9 +161,6 @@ impl TagsUI {
         // }
     }
     fn render_tags(&mut self, ui: &mut egui::Ui) {
-        // if self.loaded_tag_data.is_none() {
-        //     tags::reload_tag_data(&mut self.loaded_tag_data);
-        // }
         let mut do_reload_data = false;
         let delete_tag_modal = Modal::new(ui.ctx(), "tag_delete_modal");
         let link_delete_modal = Modal::new(ui.ctx(), "link_delete_modal");

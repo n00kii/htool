@@ -78,7 +78,6 @@ pub mod constants {
     pub const DATA_TITLE: &str = "data";
 
     pub const SPACER_SIZE: f32 = 10.;
-    pub const APPLICATION_ICON_PATH: &str = "src/resources/icon.ico";
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
     pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
 
@@ -614,9 +613,10 @@ pub trait UserInterface: downcast::Downcast {
 }
 
 downcast::impl_downcast!(UserInterface);
-fn load_icon(path: &str) -> eframe::IconData {
+fn load_icon() -> eframe::IconData {
     let (icon_rgba, icon_width, icon_height) = {
-        let image = image::open(path).expect("failed to application load icon").into_rgba8();
+        let icon_bytes = include_bytes!("resources/icon.ico");
+        let image = image::load_from_memory(icon_bytes).expect("failed to application load icon").into_rgba8();
         let (width, height) = image.dimensions();
         let rgba = image.into_raw();
         (rgba, width, height)
@@ -673,7 +673,7 @@ impl AppUI {
                     .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
                 {
                     let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
-                    gallery_window.refresh()
+                    gallery_window.refresh();
                 }
             }
             *was_updated = false;
@@ -761,7 +761,7 @@ impl AppUI {
     pub fn start(mut self) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
-        options.icon_data = Some(load_icon(constants::APPLICATION_ICON_PATH));
+        options.icon_data = Some(load_icon());
         // options.renderer = Renderer::Wgpu;
         eframe::run_native(
             env!("CARGO_PKG_NAME"),

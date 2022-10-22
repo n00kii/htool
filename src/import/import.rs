@@ -26,12 +26,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub struct  MediaEntry {
-    pub is_hidden: bool,
+pub struct  ImportationEntry {
     pub is_selected: bool,
 
     pub dir_entry: DirEntry,
-    pub mime_type: Option<Result<Type>>,
     pub file_label: String,
     pub file_size: usize,
 
@@ -42,7 +40,7 @@ pub struct  MediaEntry {
     pub importation_status: Option<Promise<ImportationStatus>>,
 }
 
-impl PartialEq for MediaEntry {
+impl PartialEq for ImportationEntry {
     fn eq(&self, other: &Self) -> bool {
         self.dir_entry.path() == other.dir_entry.path()
     }
@@ -109,7 +107,7 @@ pub fn scan_directory(
     directory_level: u8,
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>,
-) -> Result<Vec<Rc<RefCell<MediaEntry>>>> {
+) -> Result<Vec<Rc<RefCell<ImportationEntry>>>> {
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
     'dir_entries: for (_index, dir_entry_res) in dir_entries_iter.enumerate() {
@@ -151,11 +149,9 @@ pub fn scan_directory(
                     .replace("\\", "/");
 
                 let file_size = dir_entry.metadata()?.len();
-                scanned_dir_entries.push(Rc::new(RefCell::new(MediaEntry {
-                    is_hidden: false,
+                scanned_dir_entries.push(Rc::new(RefCell::new(ImportationEntry {
                     thumbnail: None,
                     file_size: file_size as usize,
-                    mime_type: None,
                     dir_entry,
                     file_label,
                     bytes: None,
@@ -170,7 +166,7 @@ pub fn scan_directory(
     Ok(scanned_dir_entries)
 }
 
-impl MediaEntry {
+impl ImportationEntry {
     pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) -> Result<RegistrationForm> {
         let bytes = self.bytes.as_ref();
         let mut fail = |message: String| -> Result<_, Error> { Err(anyhow::Error::msg("bytes not loaded")) };
@@ -267,9 +263,6 @@ impl MediaEntry {
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
         let mut add = |message: &str| statuses.push(message.to_string());
-        if self.is_hidden {
-            add("hidden");
-        };
         if self.is_importing() {
             add("importing...")
         }
@@ -311,26 +304,6 @@ impl MediaEntry {
             Some(label)
         } else {
             None
-        }
-    }
-
-    pub fn load_mime_type(&mut self) {
-        if let Some(bytes_promise) = self.bytes.as_ref() {
-            if let Some(bytes_res) = bytes_promise.ready() {
-                match bytes_res {
-                    Err(_error) => {
-                        self.mime_type = Some(Err(anyhow::Error::msg("failed to load bytes")));
-                    }
-                    Ok(bytes) => match infer::get(&bytes) {
-                        Some(kind) => {
-                            self.mime_type = Some(Ok(kind));
-                        }
-                        None => {
-                            self.mime_type = Some(Err(anyhow::Error::msg("unknown file type")));
-                        }
-                    },
-                }
-            }
         }
     }
 

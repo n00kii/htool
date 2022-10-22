@@ -1,7 +1,7 @@
 use anyhow::Result;
 use parking_lot::Mutex;
 use poll_promise::Promise;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc, thread};
 
 pub struct PollBuffer<T> {
     pub entries: Vec<Rc<RefCell<T>>>,
@@ -126,11 +126,11 @@ pub struct BatchPollBuffer<T> {
 }
 
 impl<T: PartialEq> BatchPollBuffer<T> {
-    pub fn new(poll_buffer: PollBuffer<T>) -> Self{
+    pub fn new(poll_buffer: PollBuffer<T>) -> Self {
         Self {
             poll_buffer,
             pending_additions_exist: false,
-            batch_action_promise: None
+            batch_action_promise: None,
         }
     }
     pub fn try_add_entry(&mut self, entry: &Rc<RefCell<T>>) -> Result<()> {
@@ -160,6 +160,28 @@ impl<T: PartialEq> BatchPollBuffer<T> {
             self.batch_action_promise = None
         }
     }
+}
+
+pub struct PromiseGroup {
+    promises: Vec<Promise<()>>
+}
+
+impl PromiseGroup {
+    pub fn is_all_done(&self) -> bool {
+        self.promises.iter().all(|promise| promise.ready().is_some())
+    }
+}
+
+pub fn do_with_threads<F>( num_threads: usize, f: F) -> PromiseGroup
+where
+    F: FnOnce() + Send + 'static + Clone,
+{
+    let mut promises = vec![];
+    for i in 0..num_threads {
+        let promise = Promise::spawn_thread("thread_name", f.clone());
+        promises.push(promise);
+    }
+    PromiseGroup { promises }
 }
 
 impl<T: PartialEq> PollBuffer<T> {

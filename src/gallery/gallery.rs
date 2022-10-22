@@ -1,3 +1,4 @@
+use crate::data::DataRequest;
 use crate::data::EntryId;
 use crate::data::ThumbnailRequest;
 use crate::tags::tags::Tag;
@@ -61,20 +62,30 @@ impl GalleryEntry {
             false
         }
     }
-    // pub fn load_thumbnail(&mut self) {
-    //     if let Some(entry_info) = self.entry_info.try_lock() {
-    //         let entry_id = entry_info.entry_id().clone();
-    //         self.thumbnail = Some(Promise::spawn_thread(format!("load_gallery_entry_thumbail_({:?})", self.entry_info.try_lock().map(|info| info.entry_id().clone())), move || {
-    //             match data::load_thumbnail_with_conn(&entry_id) {
-    //                 Ok(thumbnail_buffer) => {
-    //                     let image = ui::generate_retained_image(&thumbnail_buffer);
-    //                     image
-    //                 }
-    //                 Err(error) => Err(error),
-    //             }
-    //         }));
-    //     }
-    // }
+
+    pub fn generate_data_request<T: Send>(&self) -> Option<(DataRequest<T>, Promise<Result<T>>)> {
+        if let Some(entry_info) = self.entry_info.try_lock() {
+            let (sender, promise) = Promise::new();
+            Some((
+                DataRequest {
+                    entry_id: entry_info.entry_id().clone(),
+                    sender,
+                },
+                promise,
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn generate_entry_info_request(&mut self) -> Option<DataRequest<EntryInfo>> {
+        if let Some((request, promise)) = self.generate_data_request() {
+            self.updated_entry_info = Some(promise);
+            Some(request)
+        } else {
+            None
+        }
+    }
 
     pub fn generate_thumbnail_request(&mut self) -> Option<ThumbnailRequest> {
         if let Some(entry_info) = self.entry_info.try_lock() {

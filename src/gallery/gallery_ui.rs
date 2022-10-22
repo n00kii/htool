@@ -11,7 +11,9 @@ use crate::tags::tags_ui::TagsUI;
 use crate::ui::AutocompleteOptionsRef;
 use crate::ui::SharedState;
 use crate::util;
+use crate::util::do_with_threads;
 use crate::util::BatchPollBuffer;
+use anyhow::Context;
 use arboard::Clipboard;
 use chrono::TimeZone;
 use chrono::Utc;
@@ -45,6 +47,7 @@ use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_notify::Toasts;
 use image::FlatSamples;
+use regex::Regex;
 use ui::ToastsRef;
 // use crate::modal;
 use crate::tags::tags::Tag;
@@ -84,23 +87,20 @@ use std::ops::Rem;
 use std::rc::Rc;
 use std::sync::Arc;
 // use std::sync::Mutex;
+use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::SystemTime;
 pub struct GalleryUI {
     pub thumbnail_buffer: BatchPollBuffer<GalleryEntry>,
-    pub refresh_buffer: PollBuffer<GalleryEntry>,
+    pub refresh_buffer: BatchPollBuffer<GalleryEntry>,
     pub toasts: Toasts,
-    // pub toasts_arc: Arc<Mutex<Toasts>>,
     pub loading_gallery_entries: Option<Promise<Result<Vec<GalleryEntry>>>>,
     pub shared_state: Rc<SharedState>,
-    // pub tag_data: TagDataRef,
-    // pub was_media_info_db_updated: Arc<Mutex<bool>>,
     pub gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
     pub filtered_gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
     pub preview_windows: Vec<ui::WindowContainer>,
-    // pub search_options: Option<Vec<autocomplete::AutocompleteOption>>,
     pub search_string: String,
     last_gallery_entry_index: usize,
     max_processed_gallery_entries_per_frame: usize,
@@ -108,7 +108,123 @@ pub struct GalleryUI {
     include_dependants: bool,
     include_pools: bool,
 }
+#[derive(Debug)]
+pub struct EntrySearch {
+    pub and_relations: Vec<Vec<Tag>>,
+    pub not_relations: Vec<Vec<Tag>>,
+    pub or_relations: Vec<Vec<Tag>>,
+    pub score_min: Option<(i64, bool)>, //value, inclusive
+    pub score_max: Option<(i64, bool)>, //value, inclusive
+    pub score_exact: Option<i64>,
+    pub is_bookmarked: Option<bool>,
+    pub is_independant: Option<bool>,
+    pub is_pool: Option<bool>,
+    pub is_media: Option<bool>,
+    pub is_valid: bool,
+}
 
+impl Default for EntrySearch {
+    fn default() -> Self {
+        Self {
+            and_relations: vec![],
+            not_relations: vec![],
+            or_relations: vec![],
+            score_max: None,
+            score_min: None,
+            score_exact: None,
+            is_bookmarked: None,
+            is_independant: None,
+            is_media: None,
+            is_pool: None,
+            is_valid: true,
+        }
+    }
+}
+
+const OR_QUANTIFIER: &str = "or";
+const NOT_QUANTIFIER: &str = "not";
+const TYPE_QUANTIFIER: &str = "type";
+const INDEPENDANT_QUANTIFIER: &str = "independant";
+const BOOKMARKED_QUANTIFIER: &str = "bookmarked";
+const SCORE_QUANTIFIER: &str = "score";
+const SCORE_Q_QUANTIFIER: &str = "score_q";
+
+fn grouping_re(q: impl Into<String>) -> String {
+    format!(r"{0}\((?P<{0}>.+?)\)", q.into())
+}
+fn value_re(q: impl Into<String>) -> String {
+    format!(r"{0}=(?P<{0}>.+?)\s", q.into())
+}
+
+fn regex(re_string: &String) -> Regex {
+    Regex::new(re_string).context("couldn't form regex").unwrap()
+}
+///or(hey babe how going) not(bruh mo_::ment) type=poo_ff bookmarked=false score>3 score<=23 or(nope)
+impl From<String> for EntrySearch {
+    fn from(search: String) -> Self {
+        lazy_static! {
+            static ref OR_RE: Regex = regex(&grouping_re(OR_QUANTIFIER));
+            static ref NOT_RE: Regex = regex(&grouping_re(NOT_QUANTIFIER));
+            static ref TYPE_RE: Regex = regex(&value_re(TYPE_QUANTIFIER));
+            static ref BOOKMARKED_RE: Regex = regex(&value_re(BOOKMARKED_QUANTIFIER));
+            static ref INDEPENDANT_RE: Regex = regex(&value_re(INDEPENDANT_QUANTIFIER));
+            static ref SCORE_RE: Regex = regex(&format!(r"{SCORE_QUANTIFIER}(?P<{SCORE_Q_QUANTIFIER}>.+?)(?P<{SCORE_QUANTIFIER}>\d+)"));
+        }
+        fn str_to_bool(st: &str) -> Option<bool> {
+            match st {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            }
+        }
+        let mut entry_search = EntrySearch::default();
+        for cap in OR_RE.captures_iter(&search) {
+            let tags = Tag::from_tagstrings(&cap[OR_QUANTIFIER]);
+            entry_search.or_relations.push(tags)
+        }
+        for cap in NOT_RE.captures_iter(&search) {
+            let tags = Tag::from_tagstrings(&cap[NOT_QUANTIFIER]);
+            entry_search.not_relations.push(tags)
+        }
+        for cap in TYPE_RE.captures_iter(&search) {
+            match &cap[TYPE_QUANTIFIER] {
+                "pool" => entry_search.is_pool = Some(true),
+                "media" => entry_search.is_media = Some(true),
+                _ => entry_search.is_valid = false,
+            }
+        }
+        for cap in BOOKMARKED_RE.captures_iter(&search) {
+            entry_search.is_bookmarked = str_to_bool(&cap[BOOKMARKED_QUANTIFIER])
+        }
+        for cap in INDEPENDANT_RE.captures_iter(&search) {
+            entry_search.is_independant = str_to_bool(&cap[INDEPENDANT_QUANTIFIER])
+        }
+        for cap in SCORE_RE.captures_iter(&search) {
+            let score = (&cap[SCORE_QUANTIFIER]).parse().ok();
+            if let Some(score) = score {
+                match &cap[SCORE_Q_QUANTIFIER] {
+                    "<" => entry_search.score_max = Some((score, false)),
+                    "<=" => entry_search.score_max = Some((score, true)),
+                    ">" => entry_search.score_min = Some((score, false)),
+                    ">=" => entry_search.score_min = Some((score, true)),
+                    "=" => entry_search.score_exact = Some(score),
+                    _ => entry_search.is_valid = false,
+                }
+            } else {
+                entry_search.is_valid = false;
+            }
+        }
+        let mut stripped = search.clone();
+        stripped = OR_RE.replace_all(&stripped, "").to_string();
+        stripped = NOT_RE.replace_all(&stripped, "").to_string();
+        stripped = TYPE_RE.replace_all(&stripped, "").to_string();
+        stripped = BOOKMARKED_RE.replace_all(&stripped, "").to_string();
+        stripped = INDEPENDANT_RE.replace_all(&stripped, "").to_string();
+        stripped = SCORE_RE.replace_all(&stripped, "").to_string();
+        entry_search.and_relations.push(Tag::from_tagstrings(&stripped));
+        entry_search
+    }
+}
 #[derive(Clone)]
 pub enum PreviewStatus {
     None,
@@ -180,7 +296,6 @@ impl PreviewUI {
         let mut short_id = id.clone();
         short_id.truncate(Config::global().gallery.short_id_length);
         Box::new(PreviewUI {
-            // toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             preview: None,
             updated_entry_info: None,
             id,
@@ -353,6 +468,16 @@ impl PreviewUI {
             ui.label("options");
 
             if let Some(mut entry_info) = self.entry_info.try_lock() {
+                if ui.button("text").clicked() {
+                    let entry_id = entry_info.entry_id().clone();
+                    // if let Some(entry_id) = entry_id {
+                    self.updated_entry_info = Some(Promise::spawn_thread("update_gall_entry", move || {
+                        // thread::sleep(Duration::from_secs(5));
+                        let l = data::load_entry_info(&entry_id);
+                        dbg!(&l);
+                        l
+                    }));
+                }
                 ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
                     if ui
                         .button(if !entry_info.details().is_bookmarked {
@@ -1115,59 +1240,88 @@ impl GalleryUI {
         }
     }
 
+    fn load_all_thumbnails(&mut self) {
+        if let Some(gallery_entries) = self.gallery_entries.as_ref() {
+            let requests = gallery_entries
+                .iter()
+                .filter_map(|gallery_entry| gallery_entry.borrow_mut().generate_thumbnail_request())
+                .collect::<Vec<_>>();
+            // let requests = Arc::new(Mutex::new(requests));
+            let pg = do_with_threads(1, || {
+                data::load_thumbnail_with_requests(requests);
+                requests;
+            });
+        }
+    }
+
     fn process_gallery_entries(&mut self) {
         // FIXME: Make the buffering here better. right now it can still fail on some entries
         // if an item takes >5 sec to load. you should make a data::load_thumbnails that results in one
         // db access at a time, instead of how it is rn where #data accesses is limited by count
         // of buffer
-        self.refresh_buffer.poll();
         self.thumbnail_buffer.poll();
+        self.refresh_buffer.poll();
 
         let mut is_thumbnail_buffer_full = self.thumbnail_buffer.poll_buffer.is_full();
         let mut is_refresh_buffer_full = false;
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
             let gallery_entries_len = gallery_entries.len();
-            for mut gallery_entry_index in self.last_gallery_entry_index..self.last_gallery_entry_index + self.max_processed_gallery_entries_per_frame
-            {
-                gallery_entry_index = gallery_entry_index.rem(gallery_entries_len);
-                let gallery_entry = gallery_entries.get(gallery_entry_index).unwrap();
-                if !is_thumbnail_buffer_full && !gallery_entry.borrow().is_thumbnail_loaded() {
-                    let _ = self.thumbnail_buffer.try_add_entry(&gallery_entry);
-                    if self.thumbnail_buffer.poll_buffer.is_full() {
-                        is_thumbnail_buffer_full = true;
-                    }
-                }
-                if !is_refresh_buffer_full && gallery_entry.borrow().is_info_dirty {
-                    let _ = self.refresh_buffer.try_add_entry(&gallery_entry);
-                    if self.refresh_buffer.is_full() {
-                        is_refresh_buffer_full = true;
-                    }
-                }
-
-                let mut gallery_entry = gallery_entry.borrow_mut();
-                if util::is_opt_promise_ready(&gallery_entry.updated_entry_info) {
-                    if let Some(updated_info_promise) = gallery_entry.updated_entry_info.take() {
-                        match updated_info_promise.try_take() {
-                            Ok(Ok(updated_info)) => {
-                                if let Some(mut entry_info) = gallery_entry.entry_info.try_lock() {
-                                    *entry_info = updated_info
-                                }
-                            }
-                            Ok(Err(e)) => {}
-                            _ => (),
+            if gallery_entries_len > 0 {
+                for mut gallery_entry_index in
+                    self.last_gallery_entry_index..self.last_gallery_entry_index + self.max_processed_gallery_entries_per_frame
+                {
+                    gallery_entry_index = gallery_entry_index.rem(gallery_entries_len);
+                    let gallery_entry = gallery_entries.get(gallery_entry_index).unwrap();
+                    if !is_thumbnail_buffer_full && !gallery_entry.borrow().is_thumbnail_loaded() {
+                        let _ = self.thumbnail_buffer.try_add_entry(&gallery_entry);
+                        if self.thumbnail_buffer.poll_buffer.is_full() {
+                            is_thumbnail_buffer_full = true;
                         }
                     }
+
+                    if !is_refresh_buffer_full && gallery_entry.borrow().is_info_dirty {
+                        let _ = self.refresh_buffer.try_add_entry(&gallery_entry);
+                        if self.refresh_buffer.poll_buffer.is_full() {
+                            is_refresh_buffer_full = true;
+                        }
+                    }
+
+                    let mut gallery_entry = gallery_entry.borrow_mut();
+                    if util::is_opt_promise_ready(&gallery_entry.updated_entry_info) {
+                        if let Some(updated_info_promise) = gallery_entry.updated_entry_info.take() {
+                            match updated_info_promise.try_take() {
+                                Ok(Ok(updated_info)) => {
+                                    let mut gallery_entry_info = gallery_entry.entry_info.lock();
+                                    *gallery_entry_info = updated_info
+                                }
+                                Ok(Err(e)) => {
+                                    // print!("failed {e}")
+                                }
+                                Err(p) => {
+                                    // print!("wasnt ready!")
+                                }
+                            }
+                        }
+                    }
+                    self.last_gallery_entry_index = gallery_entry_index + 1;
                 }
-                self.last_gallery_entry_index = gallery_entry_index + 1;
+                if self.thumbnail_buffer.ready_for_batch_action() {
+                    let requests = gallery_entries
+                        .iter()
+                        .filter_map(|gallery_entry| gallery_entry.borrow_mut().generate_thumbnail_request())
+                        .collect::<Vec<_>>();
+                    self.thumbnail_buffer
+                        .run_action("load_thumbnails", || data::load_thumbnail_with_requests(requests))
+                }
+                if self.refresh_buffer.ready_for_batch_action() {
+                    let requests = gallery_entries
+                        .iter()
+                        .filter_map(|gallery_entry| gallery_entry.borrow_mut().generate_entry_info_request())
+                        .collect::<Vec<_>>();
+                    self.refresh_buffer
+                        .run_action("reload_entryinfo", || data::load_entry_info_with_requests(requests))
+                }
             }
-            if self.thumbnail_buffer.ready_for_batch_action() {
-                let requests = gallery_entries
-                    .iter()
-                    .filter_map(|gallery_entry| gallery_entry.borrow_mut().generate_thumbnail_request())
-                    .collect::<Vec<_>>();
-                self.thumbnail_buffer.run_action("load_thumbnails", || data::load_thumbnail_with_requests(requests))
-            }
-        } else {
         }
 
         if self.gallery_entries.is_some() && self.filtered_gallery_entries.is_none() {
@@ -1249,15 +1403,6 @@ impl GalleryUI {
         if let Some(gallery_entries) = self.gallery_entries.as_mut() {
             for gallery_entry in gallery_entries.iter_mut() {
                 gallery_entry.borrow_mut().is_info_dirty = true;
-                // let mut gallery_entry = gallery_entry.borrow_mut();
-                // let entry_id = if let Ok(entry_info) = gallery_entry.entry_info.try_lock() {
-                //     Some(entry_info.entry_id().clone())
-                // } else {
-                //     None
-                // };
-                // if let Some(entry_id) = entry_id {
-                //     gallery_entry.updated_entry_info = Some(Promise::spawn_thread("update_gall_entry", move || data::load_entry_info(&entry_id)));
-                // }
             }
         }
     }
@@ -1371,46 +1516,56 @@ impl GalleryUI {
     // }
 
     fn thumbnail_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
-        gallery_entry.borrow().is_thumbnail_loading()
+        gallery_entry.borrow().thumbnail.is_none() || gallery_entry.borrow().is_thumbnail_loading()
     }
 
     fn refresh_buffer_add(gallery_entry: &Rc<RefCell<GalleryEntry>>) {
+        // println!("added");
         gallery_entry.borrow_mut().is_info_dirty = false;
-        let mut gallery_entry = gallery_entry.borrow_mut();
-        let entry_id = if let Some(entry_info) = gallery_entry.entry_info.try_lock() {
-            Some(entry_info.entry_id().clone())
-        } else {
-            None
-        };
-        // if let Ok(entry_info) = gallery_entry.entry_info.try_lock() {
-        // let entry_id = entry_info.entry_id().clone();
-        if let Some(entry_id) = entry_id {
-            gallery_entry.updated_entry_info = Some(Promise::spawn_thread("update_gall_entry", move || data::load_entry_info(&entry_id)));
-        }
-        // };
+        // let mut gallery_entry = gallery_entry.borrow_mut();
+        // let entry_id = gallery_entry.entry_info.lock().entry_id().clone();
+        // // if let Some(entry_id) = entry_id {
+        // gallery_entry.updated_entry_info = Some(Promise::spawn_thread("update_gall_entry", move || {
+        //     thread::sleep(Duration::from_secs(15));
+        //     let l = data::load_entry_info(&entry_id);
+        //     dbg!(&l);
+        //     l
+        // }));
+        // // }
+        // // };
     }
 
     fn refresh_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
-        gallery_entry.borrow().is_refreshing()
+        gallery_entry.borrow().updated_entry_info.is_none() || gallery_entry.borrow().is_refreshing()
     }
 
     fn filter_entries(&mut self) {
-        let search_tags = self
-            .search_string
-            .split_whitespace()
-            .map(|tagstring| Tag::from_tagstring(&tagstring.to_string()))
-            .collect::<Vec<_>>();
+        // let search_tags = self
+        //     .search_string
+        //     .split_whitespace()
+        //     .map(|tagstring| Tag::from_tagstring(&tagstring.to_string()))
+        //     .collect::<Vec<_>>();
         // if !search_tags.is_empty() {
+        let BASE_SEARCH = "independant=true";
+        let mut search = self.search_string.clone();
+        search.insert_str(0, &format!("{BASE_SEARCH} "));
+        let entry_search = EntrySearch::from(search);
+        // dbg!(&entry_search);
+        // print!("{:?}", entry_search);
         self.filtered_gallery_entries = self.gallery_entries.as_ref().map(|gallery_entries| {
             gallery_entries
                 .iter()
                 .filter_map(|gallery_entry| {
                     if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                        let pass_tags = entry_info.details().includes_tags_and(&search_tags);
-                        let pass_incld_depts = entry_info.details().is_independant || self.include_dependants;
-                        let pass_pools = matches!(*entry_info, EntryInfo::MediaEntry(_)) || self.include_pools;
+                        // let pass_tags = entry_info.details().includes_all_tags(&search_tags);
+                        // let pass_incld_depts = entry_info.details().is_independant || self.include_dependants;
+                        // let pass_pools = matches!(*entry_info, EntryInfo::MediaEntry(_)) || self.include_pools;
 
-                        if pass_tags && pass_incld_depts && pass_pools {
+                        // if pass_tags && pass_incld_depts && pass_pools {
+                        // } else {
+                        //     None
+                        // }
+                        if entry_info.passes_entry_search(&entry_search) {
                             Some(Rc::clone(&gallery_entry))
                         } else {
                             None
@@ -1428,13 +1583,14 @@ impl GalleryUI {
     pub fn new(shared_state: &Rc<SharedState>) -> Self {
         let thumbnail_poll_buffer = PollBuffer::<GalleryEntry>::new(None, Some(100), None, Some(GalleryUI::thumbnail_buffer_poll), None);
         let thumbnail_buffer = BatchPollBuffer::new(thumbnail_poll_buffer);
-        let refresh_buffer = PollBuffer::<GalleryEntry>::new(
+        let refresh_poll_buffer = PollBuffer::<GalleryEntry>::new(
             None,
-            Some(10),
+            Some(1),
             Some(GalleryUI::refresh_buffer_add),
             Some(GalleryUI::refresh_buffer_poll),
             None,
         );
+        let refresh_buffer = BatchPollBuffer::new(refresh_poll_buffer);
         Self {
             preview_windows: vec![],
             search_string: String::new(),

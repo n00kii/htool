@@ -32,16 +32,15 @@ struct AutocompleteState {
 
 #[derive(Clone)]
 pub struct AutocompleteOption {
-    pub label: String,
-    pub color: Option<Color32>,
+    pub label: String, 
     pub value: String,
+    pub color: Option<Color32>,
     pub description: String,
 }
 
 impl Default for AutocompleteState {
     fn default() -> Self {
         Self {
-            // last_ccursor_range: None,
             selected_index: 0,
             option_matches: vec![],
             are_matches_dirty: false,
@@ -284,11 +283,12 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
         if up_arrow_pressed {
             insert_key(ui, Key::ArrowUp);
         }
-        if tab_pressed {
-            insert_key(ui, Key::Tab);
-        }
+    }
+    if tab_pressed {
+        insert_key(ui, Key::Tab);
     }
 
+    // tedit_response.
     tedit_response
 }
 

@@ -1,38 +1,22 @@
 #![allow(dead_code)]
-
-mod util;
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod autocomplete;
 mod config;
 mod data;
 mod gallery;
 mod import;
 mod tags;
 mod ui;
-mod autocomplete;
+mod util;
 // mod modal;
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use config::Config;
 
 use std::{env, sync::Arc};
 
-
-fn main() -> Result<()> {
+fn main() {
     Config::load();
-    let args: Vec<String> = env::args().collect();
-    if let Some(command) = args.get(1) {
-        match command.as_str() {
-            "test_ui" => {
-                let app = ui::AppUI::new();
-                app.start();
-                Config::save();
-                }
-
-            _ => println!("unknown command {command}"),
-        }
-    } else {
-        println!("no command")
-    }
-
-    Ok(())
+    ui::AppUI::new().start();
+    Config::save().context("failed to save config").unwrap();
 }
-

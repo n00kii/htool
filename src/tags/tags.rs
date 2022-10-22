@@ -195,7 +195,7 @@ impl Tag {
             },
         }
     }
-    pub fn from_tagstrings(tagstrings: &String) -> Vec<Self> {
+    pub fn from_tagstrings(tagstrings: &str) -> Vec<Self> {
         let tagstrings = tagstrings.split_whitespace().collect::<Vec<_>>();
         let tagstrings = tagstrings.iter().map(|tagstring| Tag::from_tagstring(&tagstring.to_string()));
         tagstrings.collect::<Vec<_>>()
