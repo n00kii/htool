@@ -13,9 +13,13 @@ use anyhow::{anyhow, Context, Error, Result};
 use egui_extras::RetainedImage;
 use image::{imageops, EncodableLayout, FlatSamples, ImageBuffer, Rgba};
 use image_hasher::{HashAlg, HasherConfig};
-use infer;
+// use infer;
+use once_cell::sync::OnceCell;
 use poll_promise::Promise;
 use poll_promise::Sender;
+use r2d2::Pool;
+use r2d2::PooledConnection;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Row;
 use rusqlite::ToSql;
 use rusqlite::{named_params, params, Connection, Result as SqlResult};
@@ -26,24 +30,45 @@ use std::hash;
 use std::io::Cursor;
 use std::mem::discriminant;
 use std::sync::Mutex;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{num::IntErrorKind, path::PathBuf, sync::Arc};
 
 const GENERIC_RUSQLITE_ERROR: rusqlite::Error = rusqlite::Error::InvalidQuery;
+static POOLS: OnceCell<Pool<SqliteConnectionManager>> = OnceCell::new();
 
-pub struct ThumbnailRequest {
-    pub entry_id: EntryId,
-    pub thumbnail_sender: Sender<Result<RetainedImage>>,
+
+pub fn create_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
+    let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?);
+    r2d2::Pool::builder().max_size((Config::global().misc.concurrent_db_operations * 3) as u32).build(manager).context("failed to create conn pool")
 }
+
+pub fn init() {
+    POOLS.set(create_conn_pool().expect("couldn't initialize database connections")).expect("failed to set database instance");
+}
+
+pub fn get_conn_pool() -> &'static Pool<SqliteConnectionManager> {
+    // DB_MANAGER_INSTANCE.get().expect("uninitialized db")
+    POOLS.get().expect("uninitialized db")
+}
+
 pub struct DataRequest<T> {
     pub entry_id: EntryId,
     pub sender: Sender<Result<T>>,
 }
+pub struct CompleteDataRequest {
+    pub info_request: DataRequest<EntryInfo>,
+    pub thumbnail_request: DataRequest<RetainedImage> 
+}
+// pub struct GalleryEntryLoadRequest {
+//     pub entry_id: EntryId,
+//     pub info_sender: Sender<Result<EntryInfo>>,
+//     pub thumbnail_sender: Sender<Result<RetainedImage>>,
+// }
 
-pub struct RegistrationForm { 
+pub struct RegistrationForm {
     pub bytes: Arc<Vec<u8>>,
     pub mimetype: mime_guess::MimeGuess,
-    // pub importation_result: Option<Promise<ImportationStatus>>,
     pub importation_result_sender: Sender<ImportationStatus>,
     pub linking_dir: Option<String>,
     pub linking_value: Option<i32>,
@@ -140,7 +165,7 @@ impl EntryInfo {
             || fails_opt_xor(search.is_bookmarked, self.details().is_bookmarked)
             || fails_opt_xor(search.is_independant, self.details().is_independant)
         {
-            return false
+            return false;
         }
         let score = self.details().score;
         if let Some(exact_score) = search.score_exact {
@@ -173,7 +198,7 @@ impl EntryInfo {
                 return false;
             }
         }
- 
+
         true
     }
 }
@@ -515,20 +540,33 @@ fn fill_pool_info_with_conn(conn: &Connection, entry_info: &mut EntryInfo) -> Re
     Ok(())
 }
 
+pub fn entry_info_row_to_id(row: &Row) -> Result<EntryId, rusqlite::Error> {
+    let hash: Option<String> = row.get("hash")?;
+    let link_id: Option<i32> = row.get("link_id")?;
+    if hash.is_some() {
+        Ok(EntryId::MediaEntry(hash.unwrap()))
+    } else if link_id.is_some() {
+        Ok(EntryId::PoolEntry(link_id.unwrap()))
+    } else {
+        Err(GENERIC_RUSQLITE_ERROR)
+    }
+}
+
 pub fn load_all_entry_info() -> Result<Vec<EntryInfo>> {
     let conn = initialize_database_connection()?;
     let mut entry_info_statement = conn.prepare("SELECT * FROM entry_info")?;
     let all_entry_info = entry_info_statement
         .query_map([], |row| {
-            let hash: Option<String> = row.get("hash")?;
-            let link_id: Option<i32> = row.get("link_id")?;
-            let entry_id = if hash.is_some() {
-                EntryId::MediaEntry(hash.unwrap())
-            } else if link_id.is_some() {
-                EntryId::PoolEntry(link_id.unwrap())
-            } else {
-                return Err(GENERIC_RUSQLITE_ERROR);
-            };
+            // let hash: Option<String> = row.get("hash")?;
+            // let link_id: Option<i32> = row.get("link_id")?;
+            // let entry_id = if hash.is_some() {
+            //     EntryId::MediaEntry(hash.unwrap())
+            // } else if link_id.is_some() {
+            //     EntryId::PoolEntry(link_id.unwrap())
+            // } else {
+            //     return Err(GENERIC_RUSQLITE_ERROR);
+            // };
+            let entry_id = entry_info_row_to_id(row)?;
             let mut entry_info = construct_entry_info_with_row(&entry_id, row).map_err(|_| GENERIC_RUSQLITE_ERROR)?;
             fill_entry_info_tags_with_conn(&conn, &mut entry_info).map_err(|_| GENERIC_RUSQLITE_ERROR)?;
             fill_pool_info_with_conn(&conn, &mut entry_info).map_err(|_| GENERIC_RUSQLITE_ERROR)?;
@@ -540,7 +578,7 @@ pub fn load_all_entry_info() -> Result<Vec<EntryInfo>> {
     Ok(all_entry_info)
 }
 
-pub fn load_entry_info(entry_id: &EntryId) -> Result<EntryInfo>  {
+pub fn load_entry_info(entry_id: &EntryId) -> Result<EntryInfo> {
     let conn = initialize_database_connection()?;
     load_entry_info_with_conn(&conn, entry_id)
 }
@@ -548,10 +586,8 @@ fn load_entry_info_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<En
     let mut entry_info_statement = conn.prepare("SELECT * FROM entry_info WHERE hash = ?1 OR link_id = ?2")?;
     let id_param = params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()];
 
-
     let mut entry_info = entry_info_statement.query_row(id_param, |row| {
         construct_entry_info_with_row(entry_id, row).map_err(|_| GENERIC_RUSQLITE_ERROR)
-
     })?;
 
     fill_entry_info_tags_with_conn(&conn, &mut entry_info)?;
@@ -575,6 +611,24 @@ pub fn set_score(entry_id: &EntryId, new_score: i64) -> Result<()> {
         EntryId::PoolEntry(link_id) => conn.execute("UPDATE entry_info SET score = ?1 WHERE link_id = ?2", params![new_score, link_id])?,
     };
     Ok(())
+}
+
+// fn try_get_conn_from_pool() -> PooledConnection<SqliteConnectionManager> {
+//     if let Some(pool_conn) = get_conn_pool().try_get() {
+//         pool_conn
+//     } else {
+//         initialize_database_connection().unwrap()
+//     }
+// }
+
+pub fn get_entries_with_tag(tag: &Tag) -> Result<Vec<EntryId>> {
+    let conn = initialize_database_connection()?;
+    let mut stmt = conn.prepare("SELECT hash, link_id FROM entry_tags WHERE tag = ?1")?;
+    let id_results = stmt.query_map(params![tag.to_tagstring()], |row| {
+        entry_info_row_to_id(row)
+    })?;
+
+    Ok(id_results.into_iter().filter_map(|id_res| {id_res.ok()}).collect::<Vec<_>>())
 }
 
 pub fn set_independance_with_conn(conn: &Connection, hash: &String, new_state: bool) -> Result<()> {
@@ -616,9 +670,18 @@ fn delete_entry_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<()> {
             let hashes_of_link = get_hashes_of_media_link_with_conn(conn, link_id)?;
             conn.execute("DELETE FROM media_links WHERE link_id = ?1", params![link_id])?;
             for hash in hashes_of_link {
-                if get_hashes_of_media_link(link_id)?.len() == 0 {
-                    set_independance_with_conn(conn, &hash, true)?
+                match get_media_links_of_hash(&hash)?.as_slice() {
+                    [single_id] => {
+                        if single_id == link_id {
+                            set_independance_with_conn(conn, &hash, true)?
+                        }
+                    }
+                    [] => {
+                        set_independance_with_conn(conn, &hash, true)?
+                    }
+                    _ => ()
                 }
+                
             }
         }
     }
@@ -775,7 +838,7 @@ pub fn get_all_hashes() -> Result<Vec<String>> {
 }
 pub fn get_media_links_of_hash(hash: &String) -> Result<Vec<i32>> {
     let conn = initialize_database_connection()?;
-    let mut statement = conn.prepare("SELECT DISTINCT id FROM media_links WHERE hash = ?1")?;
+    let mut statement = conn.prepare("SELECT DISTINCT link_id FROM media_links WHERE hash = ?1")?;
     let rows = statement.query_map(params![hash], |row| row.get(0))?;
     let mut link_ids: Vec<i32> = Vec::new();
     for id_result in rows {
@@ -955,26 +1018,96 @@ pub fn get_all_tag_data() -> Result<Vec<TagData>> {
     Ok(all_tag_data)
 }
 
-pub fn load_thumbnail_with_requests(requests: Vec<ThumbnailRequest>) -> Result<()> {
-    let conn = initialize_database_connection()?;
-    for request in requests {
-        let image = load_thumbnail_with_conn(&conn, &request.entry_id).and_then(|image| ui::generate_retained_image(&image));
-        request.thumbnail_sender.send(image);
-    }
-    Ok(())
+fn delegate_to_conn_pool<F>(f: F) -> Result<()>
+where
+    F: Fn() + Send + 'static + Clone,
+{
+    (0..Config::global().misc.concurrent_db_operations)
+        .map(|_| thread::spawn(f.clone()))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(thread::JoinHandle::join)
+        .collect::<Result<(), _>>()
+        .map_err(|_| anyhow::Error::msg("db operation failed"))
+}
+
+fn open_conn(conn_pool: &Pool<SqliteConnectionManager>) -> PooledConnection<SqliteConnectionManager> {
+   conn_pool.get().expect("pool too busy")
+}
+
+pub fn load_gallery_entries_with_requests(requests: Vec<CompleteDataRequest>) -> Result<()> {
+    let conn_pool = get_conn_pool();
+    let requests = Arc::new(Mutex::new(requests));
+    delegate_to_conn_pool(move || {
+        let conn = open_conn(conn_pool);
+        loop {
+            let mut requests = requests.lock().unwrap();
+            if requests.len() > 0 {
+                let CompleteDataRequest { info_request, thumbnail_request } = requests.remove(0);
+                drop(requests);
+                let entry_id = info_request.entry_id;
+                let entry_info = load_entry_info_with_conn(&conn, &entry_id);
+                let image = load_thumbnail_with_conn(&conn, &entry_id).and_then(|image| ui::generate_retained_image(&image));
+                thumbnail_request.sender.send(image);
+                info_request.sender.send(entry_info);
+            } else {
+                break;
+            }
+        }
+    })
+}
+// pub fn load_thumbnail_with_requests(requests: Vec<DataRequest<RetainedImage>>) -> Result<()> {
+//     let conn_pool = get_conn_pool();
+//     let requests = Arc::new(Mutex::new(requests));
+//     delegate_to_conn_pool(move || {
+//         let conn = open_conn(conn_pool);
+//         loop {
+//             let mut requests = requests.lock().unwrap();
+//             if requests.len() > 0 {
+//                 let next_request = requests.remove(0);
+//                 drop(requests);
+//                 let image = load_thumbnail_with_conn(&conn, &next_request.entry_id).and_then(|image| ui::generate_retained_image(&image));
+//                 next_request.sender.send(image);
+                
+//             } else {
+//                 break;
+//             }
+//         }
+//     })
+// }
+fn arc_mut<T>(t: T) -> Arc<Mutex<T>> {
+    Arc::new(Mutex::new(t))
 }
 pub fn load_entry_info_with_requests(requests: Vec<DataRequest<EntryInfo>>) -> Result<()> {
-    let conn = initialize_database_connection()?;
-    for request in requests {
-        let entry_info =  load_entry_info_with_conn(&conn, &request.entry_id);
-        request.sender.send(entry_info);
-    }
-    Ok(())
+    // let conn = initialize_database_connection()?;
+    // for request in requests {
+    //     let entry_info = load_entry_info_with_conn(&conn, &request.entry_id);
+    //     request.sender.send(entry_info);
+    // }
+    // dbg!(&requests.len());
+    let conn_pool = get_conn_pool();
+    let requests = Arc::new(Mutex::new(requests));
+    delegate_to_conn_pool(move || {
+        let conn = open_conn(conn_pool);
+        loop {
+            let mut requests = requests.lock().unwrap();
+            if requests.len() > 0 {
+                let next_request = requests.remove(0);
+                drop(requests);
+                let entry_info = load_entry_info_with_conn(&conn, &next_request.entry_id);
+                next_request.sender.send(entry_info);
+            } else {
+                break;
+            }
+        }
+    })
 }
 
 pub fn register_media_with_forms(reg_forms: Vec<RegistrationForm>) -> Result<()> {
     let mut conn = initialize_database_connection()?;
     let trans = conn.transaction()?;
+    // let reg_forms = arc_mut(reg_forms);
+
     for reg_form in reg_forms {
         let status = register_media_with_conn(&trans, &reg_form);
         reg_form.importation_result_sender.send(status);
@@ -984,21 +1117,44 @@ pub fn register_media_with_forms(reg_forms: Vec<RegistrationForm>) -> Result<()>
     Ok(())
 }
 
+/* FIXME: why fails? 
+    let reg_forms = arc_mut(reg_forms);
+    let conn_pool = get_conn_pool();
+    delegate_to_conn_pool(move || {
+        let mut conn = open_conn(conn_pool);
+        let tx = conn.transaction().unwrap();
+        loop {
+            let mut reg_forms = reg_forms.lock().unwrap();
+            if reg_forms.len() > 0 {
+                let next_reg_form = reg_forms.remove(0);
+                drop(reg_forms);
+                let status = register_media_with_conn(&tx, &next_reg_form);
+                next_reg_form.importation_result_sender.send(status);
+            } else {
+                break;
+            }
+        }
+    })
+    
+    */
+
 fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> ImportationStatus {
     let register = || -> Result<ImportationStatus> {
         let hasher_config = HasherConfig::new().hash_alg(HashAlg::DoubleGradient);
         let hasher = hasher_config.to_hasher();
-
-        let sha_hash = sha256::digest_bytes(&reg_form.bytes);
         let mut perceptual_hash: Option<String> = None;
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let serialized_mime = reg_form.mimetype.first().map(|mime| mime.to_string());
         if let Some(mime) = reg_form.mimetype.first() {
             if mime.type_() == mime_guess::mime::IMAGE {
                 let image = image::load_from_memory(&reg_form.bytes)?;
                 perceptual_hash = Some(hex::encode(hasher.hash_image(&image).as_bytes()));
+            } else if mime.type_() == mime_guess::mime::APPLICATION {
+
             }
         }
+
+        let sha_hash = sha256::digest_bytes(&reg_form.bytes);
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let serialized_mime = reg_form.mimetype.first().map(|mime| mime.to_string());
         // }
 
         let mut statement = conn.prepare("SELECT 1 FROM entry_info WHERE hash = ?")?;

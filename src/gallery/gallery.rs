@@ -1,6 +1,7 @@
+use crate::data::CompleteDataRequest;
 use crate::data::DataRequest;
 use crate::data::EntryId;
-use crate::data::ThumbnailRequest;
+// use crate::data::GalleryEntryLoadRequest;
 use crate::tags::tags::Tag;
 
 use super::super::data;
@@ -21,6 +22,7 @@ use std::time::Duration;
 
 pub struct GalleryEntry {
     pub is_info_dirty: bool,
+    pub did_complete_request: bool,
     pub entry_info: Arc<Mutex<EntryInfo>>,
     pub updated_entry_info: Option<Promise<Result<EntryInfo>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
@@ -63,42 +65,77 @@ impl GalleryEntry {
         }
     }
 
-    pub fn generate_data_request<T: Send>(&self) -> Option<(DataRequest<T>, Promise<Result<T>>)> {
-        if let Some(entry_info) = self.entry_info.try_lock() {
-            let (sender, promise) = Promise::new();
-            Some((
-                DataRequest {
-                    entry_id: entry_info.entry_id().clone(),
-                    sender,
-                },
-                promise,
-            ))
-        } else {
-            None
-        }
-    }
-
-    pub fn generate_entry_info_request(&mut self) -> Option<DataRequest<EntryInfo>> {
-        if let Some((request, promise)) = self.generate_data_request() {
-            self.updated_entry_info = Some(promise);
-            Some(request)
-        } else {
-            None
-        }
-    }
-
-    pub fn generate_thumbnail_request(&mut self) -> Option<ThumbnailRequest> {
-        if let Some(entry_info) = self.entry_info.try_lock() {
-            let (sender, promise) = Promise::new();
-            self.thumbnail = Some(promise);
-            Some(ThumbnailRequest {
+    pub fn generate_data_request<T: Send>(&self) -> (DataRequest<T>, Promise<Result<T>>) {
+        let entry_info = self.entry_info.lock();
+        let (sender, promise) = Promise::new();
+        (
+            DataRequest {
                 entry_id: entry_info.entry_id().clone(),
-                thumbnail_sender: sender,
-            })
-        } else {
-            None
+                sender,
+            },
+            promise,
+        )
+    }
+
+    pub fn generate_load_request(&mut self) -> CompleteDataRequest {
+        let entry_info = self.entry_info.lock();
+        let (info_sender, info_promise) = Promise::new();
+        let (thumbnail_sender, thumbnail_promise) = Promise::new();
+        self.updated_entry_info = Some(info_promise);
+        self.thumbnail = Some(thumbnail_promise);
+        self.did_complete_request = true;
+        CompleteDataRequest {
+            info_request: DataRequest { entry_id: entry_info.entry_id().clone(), sender: info_sender },
+            thumbnail_request: DataRequest { entry_id: entry_info.entry_id().clone(), sender: thumbnail_sender }
         }
     }
+    // pub fn generate_data_request<T: Send>(&self) -> Option<(DataRequest<T>, Promise<Result<T>>)> {
+    //     if let Some(entry_info) = self.entry_info.try_lock() {
+    //         let (sender, promise) = Promise::new();
+    //         Some((
+    //             DataRequest {
+    //                 entry_id: entry_info.entry_id().clone(),
+    //                 sender,
+    //             },
+    //             promise,
+    //         ))
+    //     } else {
+    //         None
+    //     }
+    // }
+
+    pub fn generate_entry_info_request(&mut self) -> DataRequest<EntryInfo> {
+        let (request, promise) = self.generate_data_request();
+        self.updated_entry_info = Some(promise);
+        request
+        // if let Some((request, promise)) = self.generate_data_request() {
+        //     self.updated_entry_info = Some(promise);
+        //     Some(request)
+        // } else {
+        //     None
+        // }
+    }
+    // pub fn generate_entry_info_request(&mut self) -> Option<DataRequest<EntryInfo>> {
+    //     if let Some((request, promise)) = self.generate_data_request() {
+    //         self.updated_entry_info = Some(promise);
+    //         Some(request)
+    //     } else {
+    //         None
+    //     }
+    // }
+
+    // pub fn generate_thumbnail_request(&mut self) -> Option<DataRequest<RetainedImage>> {
+    //     if let Some(entry_info) = self.entry_info.try_lock() {
+    //         let (sender, promise) = Promise::new();
+    //         self.thumbnail = Some(promise);
+    //         Some(DataRequest {
+    //             entry_id: entry_info.entry_id().clone(),
+    //             sender,
+    //         })
+    //     } else {
+    //         None
+    //     }
+    // }
 
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
@@ -125,6 +162,7 @@ pub fn load_gallery_entries() -> Result<Vec<GalleryEntry>> {
         .into_iter()
         .map(|entry_info| GalleryEntry {
             is_info_dirty: false,
+            did_complete_request: false,
             entry_info: Arc::new(Mutex::new(entry_info)),
             thumbnail: None,
             updated_entry_info: None,

@@ -1,11 +1,11 @@
 [path]
 root = "./"
 landing = "testing_files/"
-database = "data.db"
+database = "data1.db"
 
 [[namespaces]]
 name = "artist"
-color = [1.0, 0.6609525, 0.15238094]
+color = [1.0, 0.60000014, 0.0]
 
 [[namespaces]]
 name = "species"
@@ -33,6 +33,10 @@ thumbnail_size = 100
 thumbnail_size = 100
 short_id_length = 6
 preview_size = 500
+base_search = "independant=true limit=5000"
+
+[misc]
+concurrent_db_operations = 20
 
 [ui]
 thumbnail_resolution = 100

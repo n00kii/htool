@@ -10,7 +10,7 @@ use egui_extras::RetainedImage;
 use image::io::Reader as ImageReader;
 use image::{error, imageops};
 use image_hasher::{HashAlg, HasherConfig};
-use infer::Type;
+// use infer::Type;
 use poll_promise::Promise;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::cell::RefCell;
@@ -26,17 +26,19 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+// #[derive(Clone)]
 pub struct  ImportationEntry {
     pub is_selected: bool,
 
     pub dir_entry: DirEntry,
     pub file_label: String,
     pub file_size: usize,
+    pub keep_bytes_loaded: bool,
 
     pub linking_dir: Option<String>,
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
     pub thumbnail: Option<Promise<Result<RetainedImage>>>,
-
+    pub is_archive: bool,
     pub importation_status: Option<Promise<ImportationStatus>>,
 }
 
@@ -107,7 +109,7 @@ pub fn scan_directory(
     directory_level: u8,
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>,
-) -> Result<Vec<Rc<RefCell<ImportationEntry>>>> {
+) -> Result<Vec<ImportationEntry>> {
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
     'dir_entries: for (_index, dir_entry_res) in dir_entries_iter.enumerate() {
@@ -133,8 +135,11 @@ pub fn scan_directory(
                 scanned_dir_entries.extend(media_entries);
             } else {
                 let dir_entry_path = dir_entry.path();
-
+                let mut is_archive = false;
                 if let Some(ext) = dir_entry_path.extension() {
+                    if ext == "zip" {
+                        is_archive = true;
+                    }
                     for exclude_ext in extension_filter {
                         if ext.to_str().unwrap_or("") == exclude_ext.as_str() {
                             continue 'dir_entries;
@@ -149,16 +154,18 @@ pub fn scan_directory(
                     .replace("\\", "/");
 
                 let file_size = dir_entry.metadata()?.len();
-                scanned_dir_entries.push(Rc::new(RefCell::new(ImportationEntry {
+                scanned_dir_entries.push(ImportationEntry {
                     thumbnail: None,
+                    keep_bytes_loaded: false,
                     file_size: file_size as usize,
                     dir_entry,
                     file_label,
                     bytes: None,
                     is_selected: false,
+                    is_archive,
                     importation_status: None,
                     linking_dir: linking_dir.clone(),
-                })));
+                });
             }
         }
     }
@@ -178,7 +185,7 @@ impl ImportationEntry {
                 Some(Ok(bytes)) => {
                     let bytes = Arc::clone(bytes);
                     let dir_link_map = Arc::clone(&dir_link_map);
-                    let linking_value: Option<i32> = self.dir_entry.file_name().to_string_lossy().parse().ok();
+                    let linking_value: Option<i32> = self.dir_entry.path().file_stem().and_then(|fs| fs.to_string_lossy().parse().ok());
                     let linking_dir = self.linking_dir.clone();
                     let (sender, promise) = Promise::new();
                     self.importation_status = Some(promise);

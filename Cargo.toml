@@ -14,15 +14,15 @@ figment = { version = "0.10.6", features = [ "toml", "env" ] }
 serde = "1.0.137"
 path-absolutize = "3.0.13"
 toml = "0.5.9"
-rand = "0.8.5"
+# rand = "0.8.5"
 anyhow = "1.0"
 eframe = { version = "0.19.0", features = [ "wgpu" ] }
 egui = { version = "0.19.0", features = [ "color-hex" ] }
 rfd = "0.10.0"
-crossbeam-utils = "0.8.9"
+# crossbeam-utils = "0.8.9"
 egui_extras = "0.19.0"
 poll-promise = "0.1.0"
-infer = "0.9.0"
+# infer = "0.9.0"/
 chrono = "0.4.22"
 downcast-rs = "1.2.0"
 rusqlite = { version = "0.28.0", features = [ "bundled", "blob", "modern_sqlite" ] }
@@ -35,6 +35,13 @@ mime_guess = "2.0.4"
 parking_lot = "0.12.1"
 regex = "1.6.0"
 lazy_static = "1.4.0"
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.21.0"
+# piz = "0.5.1"
+zip = "0.6.3"
+# zip-extract = "0.1.1"
+tempfile = "3.3.0"
+# crossbeam-queue = "0.3"
 
 [profile.dev]
 opt-level = 3

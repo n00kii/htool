@@ -17,6 +17,7 @@ use std::{env, sync::Arc};
 
 fn main() {
     Config::load();
+    data::init();
     ui::AppUI::new().start();
     Config::save().context("failed to save config").unwrap();
 }

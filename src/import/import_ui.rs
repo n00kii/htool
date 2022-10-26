@@ -7,6 +7,10 @@ use egui::Layout;
 use egui::RichText;
 use egui_extras::Size;
 use egui_extras::StripBuilder;
+use egui_modal::Icon;
+use egui_modal::Modal;
+use tempfile::tempdir;
+use zip::ZipArchive;
 
 use crate::ui::LayoutJobText;
 use crate::util;
@@ -28,9 +32,15 @@ use poll_promise::Promise;
 use rfd::FileDialog;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::env::current_exe;
+use std::fs::DirEntry;
+use std::fs::File;
+use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Condvar;
+use std::thread;
+use std::thread::current;
 use std::time::Duration;
 use std::{fs, path::Path};
 
@@ -50,6 +60,15 @@ pub struct ImporterUI {
     import_buffer: BatchPollBuffer<ImportationEntry>,
     is_import_status_window_open: bool,
     is_filters_window_open: bool,
+    pending_archive_extracts: Option<Vec<ArchiveExtractionProgress>>, // TODO: doesnt need to be an option
+    waiting_for_extracts: bool,
+}
+
+struct ArchiveExtractionProgress {
+    current_progress: Arc<Mutex<f32>>,
+    import_entry_path: PathBuf,
+    // current_archive: Arc<String>,
+    promise: Promise<Result<Vec<ImportationEntry>>>,
 }
 
 impl Default for ImporterUI {
@@ -76,12 +95,14 @@ impl Default for ImporterUI {
             toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             import_failures_list: Arc::new(Mutex::new(vec![])),
             thumbnail_buffer,
+            pending_archive_extracts: None,
             import_buffer,
             skip_thumbnails: false,
             is_import_status_window_open: false,
             is_filters_window_open: false,
             hide_errored_entries: true,
             batch_import_status: None,
+            waiting_for_extracts: false,
             importation_entries: None,
             alternate_scan_dir: None,
             scan_extension_filter: HashMap::from([
@@ -107,6 +128,10 @@ impl ImporterUI {
             media_entry.borrow_mut().load_bytes();
         }
     }
+
+    // fn is_pending_extractions(&self) -> bool {
+    //     self.pending_archive_extracts.is_some()
+    // }
 
     fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<ImportationEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
@@ -170,6 +195,20 @@ impl ImporterUI {
         self.filter_media_entries(|media_entry| media_entry.borrow().is_selected)
     }
 
+    fn get_archive_import_entries(&self) -> Vec<Rc<RefCell<ImportationEntry>>> {
+        self.filter_media_entries(|import_entry| import_entry.borrow().is_archive)
+    }
+
+    fn get_pending_archive_import_entries(&self) -> Vec<Rc<RefCell<ImportationEntry>>> {
+        self.filter_media_entries(|import_entry| {
+            import_entry.borrow().is_archive && import_entry.borrow().match_importation_status(ImportationStatus::Pending)
+        })
+    }
+
+    fn get_pending_import_entries(&self) -> Vec<Rc<RefCell<ImportationEntry>>> {
+        self.filter_media_entries(|import_entry| import_entry.borrow().match_importation_status(ImportationStatus::Pending))
+    }
+
     fn get_number_of_loading_bytes(media_entries: &Vec<ImportationEntry>) -> u32 {
         let mut num_loading = 0;
         for media_entry in media_entries {
@@ -200,7 +239,7 @@ impl ImporterUI {
         });
     }
 
-    fn render_options(&mut self, ui: &mut Ui) {
+    fn render_options(&mut self, ui: &mut Ui, ctx: &Context) {
         ui.vertical_centered_justified(|ui| {
             ui.label("options");
             ScrollArea::vertical().id_source("options").auto_shrink([false, false]).show(ui, |ui| {
@@ -238,7 +277,7 @@ impl ImporterUI {
                                 .set_duration(None);
                             }
                             // dbg!(media_entries.len());
-                            self.importation_entries = Some(media_entries);
+                            self.importation_entries = Some(media_entries.into_iter().map(|i| Rc::new(RefCell::new(i))).collect());
                         }
                         Err(e) => {
                             ui::toast_error(&mut self.toasts, format!("failed to scan directory: {e}"));
@@ -246,14 +285,14 @@ impl ImporterUI {
                     }
                 }
                 ui.add_space(ui::constants::SPACER_SIZE);
-
                 if ui.button("filters").clicked() {
                     self.is_filters_window_open = !self.is_filters_window_open
                 }
 
                 ui.add_space(ui::constants::SPACER_SIZE);
-
-                ui.checkbox(&mut self.skip_thumbnails, "disable previews");
+                ui.group(|ui| {
+                    ui.checkbox(&mut self.skip_thumbnails, "disable previews");
+                });
 
                 ui.add_space(ui::constants::SPACER_SIZE);
 
@@ -277,6 +316,7 @@ impl ImporterUI {
                 }
 
                 ui.add_space(ui::constants::SPACER_SIZE);
+                let prompt = self.render_extraction_prompt(ctx);
 
                 if ui
                     .add_enabled(
@@ -286,16 +326,120 @@ impl ImporterUI {
                     .clicked()
                 {
                     let selected_media_entries = self.get_selected_media_entries();
-                    self.is_import_status_window_open = true;
+                    let mut selected_archives_exist = false;
                     ui::toast_info(&mut self.toasts, format!("marked {} media for importing", selected_media_entries.len()));
                     for media_entry in self.get_selected_media_entries() {
                         media_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
                         media_entry.borrow_mut().is_selected = false;
+                        if media_entry.borrow().is_archive {
+                            selected_archives_exist = true;
+                        }
+                    }
+                    if selected_archives_exist {
+                        self.waiting_for_extracts = true;
+                        prompt.open();
+                    } else {
+                        self.is_import_status_window_open = true;
                     }
                 }
                 // });
             });
         });
+    }
+
+    fn process_extractions(&mut self) {
+        let max_concurrent_extractions = 2;
+        let mut new_entries = vec![];
+        let mut set_none = false;
+        let mut pending_import_entries = self.get_pending_archive_import_entries();
+        let next_pending = pending_import_entries.pop();
+        if let Some(pending_extractions) = self.pending_archive_extracts.as_mut() {
+            
+            if (pending_import_entries.len() == 0) && (pending_extractions.len() == 0) && next_pending.is_none() {
+                set_none = true;
+                self.is_import_status_window_open = true;
+                self.waiting_for_extracts = false;
+            }
+
+            let mut i = 0;
+            while i < pending_extractions.len() {
+                if pending_extractions[i].promise.ready().is_some() {
+                    let finished_extraction = pending_extractions.remove(i);
+                    if let Ok(import_entries_res) = finished_extraction.promise.try_take() {
+                        match import_entries_res {
+                            Ok(import_entries) => {
+                                let import_entries = import_entries.into_iter().map(|i| Rc::new(RefCell::new(i)));
+                                new_entries.extend(import_entries);
+                            }
+                            Err(e) => {
+                                ui::toast_error(&mut self.toasts, "failed extraction");
+                                //FIXME: better messagew
+                            }
+                        }
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            if pending_extractions.len() < max_concurrent_extractions {
+                if let Some(next_pending) = next_pending {
+                    let (sender, promise) = Promise::new();
+                    let prog = ArchiveExtractionProgress {
+                        current_progress: Arc::new(Mutex::new(0.)),
+                        import_entry_path: next_pending.borrow().dir_entry.path(),
+                        promise,
+                    };
+                    let current_progress = Arc::clone(&prog.current_progress);
+                    let entry_path = prog.import_entry_path.clone();
+                    pending_extractions.push(prog);
+
+                    thread::spawn(move || {
+                        let extract = || -> Result<()> {
+                            let temp_dir = tempdir()?;
+
+                            let file = File::open(entry_path)?;
+                            let mut archive = ZipArchive::new(file)?;
+                            for i in 0..archive.len() {
+                                let mut current_progress = current_progress.lock().unwrap();
+                                *current_progress = i as f32 / archive.len() as f32;
+                                drop(current_progress);
+
+                                let mut next_inner_file = archive.by_index(i)?;
+                                if let Some(next_inner_file_name) = next_inner_file.enclosed_name() {
+                                    let next_inner_file_path = temp_dir.path().join(next_inner_file_name);
+                                    let mut output_file = File::create(&next_inner_file_path)?;
+                                    io::copy(&mut next_inner_file, &mut output_file)?;
+                                }
+                            }
+
+                            let mut import_entries = scan_directory(temp_dir.path().to_path_buf(), 0, Some(temp_dir.path().as_os_str().to_string_lossy().to_string()), &vec![]);
+                            if let Ok(import_entries) = import_entries.as_mut() {
+                                import_entries.iter_mut().for_each(|i| {
+                                    i.keep_bytes_loaded = true;
+                                    i.importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
+                                    i.load_bytes();
+                                    i.bytes.as_ref().unwrap().block_until_ready();
+                                })
+                            }
+                            sender.send(import_entries);
+                            temp_dir.close()?;
+                            Ok(())
+                        };
+                        extract()
+                    });
+                    // remove extracting entry
+                    if let Some(import_entries) = self.importation_entries.as_mut() {
+                        import_entries.retain(|i| &*i.borrow() != &*next_pending.borrow())
+                    }
+                }
+            }
+        }
+        if let Some(import_entries) = self.importation_entries.as_mut() {
+            import_entries.append(&mut new_entries);
+        }
+        if set_none {
+            self.pending_archive_extracts = None;
+        }
     }
 
     fn render_files(&mut self, ui: &mut Ui) {
@@ -365,10 +509,11 @@ impl ImporterUI {
         if let Some(media_entries) = self.importation_entries.as_ref() {
             for media_entry in media_entries {
                 //unload bytes if uneccesary
-                if media_entry.borrow().are_bytes_loaded() {
+                if !media_entry.borrow().keep_bytes_loaded && media_entry.borrow().are_bytes_loaded() {
                     if !media_entry.borrow().is_importing()
                         && !((media_entry.borrow().is_thumbnail_loading() || media_entry.borrow().thumbnail.is_none()) && !self.skip_thumbnails)
                     {
+                        // dbg!("bytes unloaded");
                         media_entry.borrow_mut().bytes = None
                     }
                 }
@@ -380,19 +525,21 @@ impl ImporterUI {
                     self.thumbnail_buffer.entries.clear();
                     media_entry.borrow_mut().thumbnail = None;
                 }
-                if media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
+                if !self.waiting_for_extracts && media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
                     let _ = self.import_buffer.try_add_entry(&media_entry);
                 }
             }
             if self.import_buffer.ready_for_batch_action() {
                 let reg_forms = self
-                    .import_buffer.poll_buffer
+                    .import_buffer
+                    .poll_buffer
                     .entries
                     .iter()
                     .filter_map(|media_entry| media_entry.borrow_mut().generate_reg_form(Arc::clone(&self.dir_link_map)).ok())
                     .collect::<Vec<_>>();
 
-                self.import_buffer.run_action("batch_import", || data::register_media_with_forms(reg_forms))
+                self.import_buffer
+                    .run_action("batch_import", || data::register_media_with_forms(reg_forms))
             }
         }
     }
@@ -412,7 +559,6 @@ impl ImporterUI {
                         ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                             ui.with_layout(layout, |ui| {
                                 for (index, importation_entry) in importation_entries.iter().enumerate() {
-
                                     let mut importation_entry = importation_entry.borrow_mut();
                                     let file_label = importation_entry.file_label.clone();
                                     let file_label_clone = file_label.clone();
@@ -421,8 +567,7 @@ impl ImporterUI {
                                     let thumbnail_size = Config::global().import.thumbnail_size as f32;
                                     options.widget_margin = [10., 10.];
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
-                                    options.hover_text_on_loading_image =
-                                        Some(format!("{file_label} (loading thumbnail...)",).into());
+                                    options.hover_text_on_loading_image = Some(format!("{file_label} (loading thumbnail...)",).into());
                                     options.hover_text_on_error_image = Some(Box::new(move |error| format!("{file_label_clone} ({error})").into()));
                                     options.hover_text_on_none_image = Some(format!("{file_label} (waiting to load image...)").into());
                                     options.hover_text = Some(if let Some(status_label) = importation_entry.get_status_label() {
@@ -455,7 +600,6 @@ impl ImporterUI {
         });
     }
 
-
     fn render_filters_window(&mut self, ctx: &Context) {
         egui::Window::new("filters")
             .open(&mut self.is_filters_window_open)
@@ -479,6 +623,80 @@ impl ImporterUI {
                     }
                 });
             });
+    }
+
+    fn render_extraction_prompt(&mut self, ctx: &Context) -> Modal {
+        let prompt_show = Modal::new(ctx, "extraction_progress");
+        let prompt_ask = Modal::new(ctx, "extraction_prompt");
+        // need to prompt_show before pr
+        prompt_show.show(|ui| {
+            prompt_show.title(ui, "extracting");
+            prompt_show.frame(ui, |ui| {
+                if let Some(pending_extractions) = self.pending_archive_extracts.as_ref() {
+                    if pending_extractions.len() == 0 {
+                        prompt_show.close();
+                    }
+                    for pending_extraction in pending_extractions {
+                        if let Ok(progress) = pending_extraction.current_progress.try_lock() {
+                            ui.label(format!(
+                                "extracting {}...",
+                                pending_extraction.import_entry_path.as_os_str().to_string_lossy()
+                            ));
+                            ui.add(ProgressBar::new(*progress));
+                            ui.separator();
+                        }
+                    }
+                }
+            });
+            prompt_show.buttons(ui, |ui| {
+                if prompt_show.button(ui, "cancel import").clicked() {
+                    self.waiting_for_extracts = false;
+                    for entry in self.get_pending_import_entries() {
+                        entry.borrow_mut().is_selected = true;
+                        entry.borrow_mut().importation_status = None;
+                    }
+                }
+                if prompt_show.button(ui, "stop, and continue importation").clicked() {
+                    self.waiting_for_extracts = false;
+                    self.pending_archive_extracts = None;
+                }
+            });
+        });
+        prompt_ask.show(|ui| {
+            prompt_ask.title(ui, "extract?");
+            prompt_ask.frame(ui, |ui| {
+                prompt_ask.body_and_icon(
+                    ui,
+                    format!(
+                        "there are {} selected entries that are archives; extract them? if no, they will not be imported.",
+                        self.get_pending_archive_import_entries().len()
+                    ),
+                    Icon::Info,
+                );
+            });
+            prompt_ask.buttons(ui, |ui| {
+                if prompt_ask.button(ui, "cancel import").clicked() {
+                    self.waiting_for_extracts = false;
+                    for entry in self.get_pending_import_entries() {
+                        entry.borrow_mut().is_selected = true;
+                        entry.borrow_mut().importation_status = None;
+                    }
+                }
+                if prompt_ask.button(ui, "don't extract").clicked() {
+                    self.waiting_for_extracts = false;
+                    self.is_import_status_window_open = true;
+                    for entry in self.get_pending_archive_import_entries() {
+                        entry.borrow_mut().importation_status = None;
+                    }
+                }
+                if prompt_ask.button(ui, "extract into pools").clicked() {
+                    self.pending_archive_extracts = Some(vec![]);
+                    prompt_show.open();
+                }
+            })
+        });
+
+        prompt_ask
     }
 
     fn render_import_status_window(&mut self, ctx: &egui::Context) {
@@ -533,6 +751,7 @@ impl ImporterUI {
 impl ui::UserInterface for ImporterUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_media();
+        self.process_extractions();
         self.render_scan_directory_selection(ui);
         ui.separator();
 
@@ -544,7 +763,7 @@ impl ui::UserInterface for ImporterUI {
                 .horizontal(|mut strip| {
                     strip.empty();
                     strip.cell(|ui| {
-                        self.render_options(ui);
+                        self.render_options(ui, ctx);
                     });
 
                     strip.cell(|ui| {
@@ -560,7 +779,7 @@ impl ui::UserInterface for ImporterUI {
                 .horizontal(|mut strip| {
                     strip.empty();
                     strip.cell(|ui| {
-                        self.render_options(ui);
+                        self.render_options(ui, ctx);
                     });
 
                     strip.cell(|ui| {

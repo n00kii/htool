@@ -16,7 +16,7 @@ use std::{
 use crate::{
     autocomplete::AutocompleteOption,
     gallery::gallery_ui::GalleryUI,
-    tags::{self, tags::TagDataRef, tags_ui},
+    tags::{self, tags::TagDataRef, tags_ui}, data::EntryId,
 };
 
 use super::gallery::gallery_ui::PreviewUI;
@@ -630,13 +630,15 @@ fn load_icon() -> eframe::IconData {
 }
 
 pub type UpdateFlag = Arc<Mutex<bool>>;
+pub type UpdateList<T> = Arc<Mutex<Vec<T>>>;
 pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
 pub struct SharedState {
     pub toasts: ToastsRef,
     pub tag_data_ref: TagDataRef,
     pub autocomplete_options: AutocompleteOptionsRef,
 
-    pub entry_info_update_flag: UpdateFlag,
+    pub all_entries_update_flag: UpdateFlag,
+    pub updated_entries: UpdateList<EntryId>,
     pub tag_data_update_flag: UpdateFlag,
 }
 
@@ -644,6 +646,11 @@ impl SharedState {
     pub fn set_update_flag(flag: &UpdateFlag, new_state: bool) {
         if let Ok(mut flag) = flag.lock() {
             *flag = new_state;
+        }
+    }
+    pub fn append_to_update_list<T>(list: &UpdateList<T>, mut new_items: Vec<T>) {
+        if let Ok(mut list) = list.lock() {
+            list.append(&mut new_items)
         }
     }
 }
@@ -665,18 +672,19 @@ impl eframe::App for AppUI {
 
 impl AppUI {
     fn process_state(&mut self) {
-        if let Ok(mut was_updated) = self.shared_state.entry_info_update_flag.try_lock() {
-            if *was_updated {
+        if let Ok(mut update_list) = self.shared_state.updated_entries.try_lock() {
+            // dbg!(&update_list);
+            if update_list.len() > 0 {
                 if let Some(gallery_container) = self
                     .windows
                     .iter_mut()
                     .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
                 {
                     let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
-                    gallery_window.refresh();
+                    gallery_window.update_entries(&update_list);
                 }
             }
-            *was_updated = false;
+            update_list.clear();
         }
         if let Ok(mut was_updated) = self.shared_state.tag_data_update_flag.try_lock() {
             if *was_updated {
@@ -748,7 +756,8 @@ impl AppUI {
             tag_data_ref: tags::tags::initialize_tag_data(),
             autocomplete_options: Rc::new(RefCell::new(None)),
             toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
-            entry_info_update_flag: Arc::new(Mutex::new(false)),
+            all_entries_update_flag: Arc::new(Mutex::new(false)),
+            updated_entries: Arc::new(Mutex::new(vec![])),
             tag_data_update_flag: Arc::new(Mutex::new(false)),
         };
         AppUI {

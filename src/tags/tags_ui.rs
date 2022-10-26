@@ -1,10 +1,10 @@
 use super::tags::{self, Namespace, Tag, TagData, TagDataRef, TagLink};
 use crate::{
     config::{self, Config},
-    data,
+    data::{self, EntryId},
     gallery::gallery_ui::GalleryUI,
     tags::tags::TagLinkType,
-    ui::{self, LayoutJobText, SharedState, UpdateFlag, UserInterface, WindowContainer, AutocompleteOptionsRef}, autocomplete,
+    ui::{self, LayoutJobText, SharedState, UpdateFlag, UserInterface, WindowContainer, AutocompleteOptionsRef, UpdateList}, autocomplete,
 };
 use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
@@ -100,7 +100,7 @@ impl TagsUI {
                 .show(ctx, |ui| modify_window.window.ui(ui, ctx));
         }
     }
-    fn render_options(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn render_options(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("tags");
             if ui.button(format!("{} refresh", ui::constants::REFRESH_ICON)).clicked() {
@@ -114,10 +114,7 @@ impl TagsUI {
                         title,
                         window: Box::new(ModifyTagUI::new(
                             None,
-                            &self.shared_state.tag_data_ref,
-                            &self.shared_state.entry_info_update_flag,
-                            &self.shared_state.tag_data_update_flag,
-                            &self.shared_state.toasts,
+                            &self.shared_state
                         )),
                         is_open: Some(true),
                     })
@@ -147,7 +144,7 @@ impl TagsUI {
                 }
             }
             ui.add_space(ui::constants::SPACER_SIZE);
-            if ui.button(ui::icon_text("patch tags", ui::constants::TOOL_ICON)).clicked() {}
+            // if ui.button(ui::icon_text("patch tags", ui::constants::TOOL_ICON)).clicked() {}
         });
     }
     fn load_tag_description(tag: &mut Tag, loaded_tag_data: &TagDataRef) {
@@ -178,15 +175,17 @@ impl TagsUI {
                         let toasts = Arc::clone(&self.shared_state.toasts);
                         let tag_pending_delete = tag_pending_delete.clone();
                         let tag_data_update_flag = Arc::clone(&self.shared_state.tag_data_update_flag);
-                        let entry_info_update_flag = Arc::clone(&self.shared_state.entry_info_update_flag);
+                        let updated_entries_list = Arc::clone(&self.shared_state.updated_entries);
                         thread::spawn(move || {
+                            let updated_entries = data::get_entries_with_tag(&tag_pending_delete);
                             if let Err(e) = data::delete_tag(&tag_pending_delete) {
                                 Self::toast_failed_delete_tag(&tag_pending_delete.to_tagstring(), &e, &toasts);
                             } else {
                                 Self::toast_success_delete_tag(&tag_pending_delete.to_tagstring(), &toasts);
                                 SharedState::set_update_flag(&tag_data_update_flag, true);
-                                SharedState::set_update_flag(&entry_info_update_flag, true);
-
+                                if let Ok(modified_entries) = updated_entries {
+                                    SharedState::append_to_update_list(&updated_entries_list, modified_entries)
+                                }
                             }
                         });
                     }
@@ -285,10 +284,7 @@ impl TagsUI {
                                                 Self::launch_tag_modify_window(
                                                     tag_data.tag.clone(),
                                                     &mut self.modify_windows,
-                                                    &self.shared_state.toasts,
-                                                    &self.shared_state.tag_data_ref,
-                                                    &self.shared_state.entry_info_update_flag,
-                                                    &self.shared_state.tag_data_update_flag,
+                                                    &self.shared_state
                                                 )
                                             }
                                             if ui.button(delete_lj).clicked() {
@@ -409,10 +405,7 @@ impl TagsUI {
     fn launch_tag_modify_window(
         tag: Tag,
         modify_windows: &mut Vec<WindowContainer>,
-        toasts: &ToastsRef,
-        loaded_tag_data: &TagDataRef,
-        entry_info_update_flag: &UpdateFlag,
-        tag_data_update_flag: &UpdateFlag,
+        shared_state: &SharedState
     ) {
         let title = format!("edit \"{}\"", tag.to_tagstring());
 
@@ -421,10 +414,7 @@ impl TagsUI {
                 title,
                 window: Box::new(ModifyTagUI::new(
                     Some(tag),
-                    &loaded_tag_data,
-                    &entry_info_update_flag,
-                    &tag_data_update_flag,
-                    &toasts,
+                    shared_state
                 )),
                 is_open: Some(true),
             })
@@ -576,7 +566,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
 struct ModifyTagUI {
     toasts: ToastsRef,
     loaded_tag_data: TagDataRef,
-    entry_info_update_flag: UpdateFlag,
+    updated_entries_list: UpdateList<EntryId>,
     tag_data_update_flag: UpdateFlag,
     is_new_tag: bool,
     old_tag: Option<Tag>,
@@ -588,18 +578,19 @@ struct ModifyTagUI {
 impl ModifyTagUI {
     fn new(
         tag: Option<Tag>,
-        loaded_tag_data: &TagDataRef,
-        entry_info_update_flag: &UpdateFlag,
-        tag_data_update_flag: &UpdateFlag,
-        toasts: &ToastsRef,
+        shared_state: &SharedState
+        // loaded_tag_data: &TagDataRef,
+        // entry_info_update_flag: &UpdateFlag,
+        // tag_data_update_flag: &UpdateFlag,
+        // toasts: &ToastsRef,
     ) -> Self {
         Self {
-            toasts: Arc::clone(&toasts),
-            loaded_tag_data: Rc::clone(&loaded_tag_data),
+            toasts: Arc::clone(&shared_state.toasts),
+            loaded_tag_data: Rc::clone(&shared_state.tag_data_ref),
             is_new_tag: tag.is_none(),
             old_tag: tag.clone(),
-            entry_info_update_flag: Arc::clone(&entry_info_update_flag),
-            tag_data_update_flag: Arc::clone(&tag_data_update_flag),
+            updated_entries_list: Arc::clone(&shared_state.updated_entries),
+            tag_data_update_flag: Arc::clone(&shared_state.tag_data_update_flag),
             tag_strings: tag.clone().map(|tag| tag.to_tagstring()).unwrap_or(String::new()),
             description: tag.map(|tag| tag.description.unwrap_or(String::new())).unwrap_or(String::new()),
         }
@@ -654,7 +645,7 @@ impl UserInterface for ModifyTagUI {
                             [new_tag] => {
                                 let old_tag = self.old_tag.clone();
                                 let new_tag = new_tag.clone();
-                                let entry_info_update_flag = Arc::clone(&self.entry_info_update_flag);
+                                let updated_entries_list = Arc::clone(&self.updated_entries_list);
                                 let tag_data_update_flag = Arc::clone(&self.tag_data_update_flag);
                                 let toasts = Arc::clone(&self.toasts);
                                 //FIXME this will fuck things up if the modify fails lol
@@ -669,8 +660,11 @@ impl UserInterface for ModifyTagUI {
                                         );
                                     } else {
                                         TagsUI::toast_success_modify_tag(&old_tag.as_ref().unwrap().to_tagstring(), &new_tag.to_tagstring(), &toasts);
+                                        if let Ok(modified_entries) = data::get_entries_with_tag(&new_tag) {
+                                            SharedState::append_to_update_list(&updated_entries_list, modified_entries)
+                                        } else {
+                                        }
                                         SharedState::set_update_flag(&tag_data_update_flag, true);
-                                        SharedState::set_update_flag(&entry_info_update_flag, true);
                                     }
                                 });
                             }

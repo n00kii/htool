@@ -72,11 +72,17 @@ pub struct Gallery {
     pub thumbnail_size: usize,
     pub short_id_length: usize,
     pub preview_size: usize,
+    pub base_search: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Media {
     pub max_score: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct Misc {
+    pub concurrent_db_operations: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -86,6 +92,7 @@ pub struct Config {
     pub media: Media,
     pub import: Import,
     pub gallery: Gallery,
+    pub misc: Misc,
     // pub short_id_len
     pub ui: Ui,
 }
@@ -108,17 +115,19 @@ impl Default for Config {
                 thumbnail_size: 100,
                 preview_size: 500,
                 short_id_length: 6,
+                base_search: Some(String::from("independant=true limit=5000"))
             },
+            misc: Misc { concurrent_db_operations: 20 }
             // },
         }
     }
 }
 
-static INSTANCE: OnceCell<ArcSwap<Config>> = OnceCell::new();
+static CONFIG_INSTANCE: OnceCell<ArcSwap<Config>> = OnceCell::new();
 
 impl Config {
     pub fn global() -> Guard<Arc<Config>> {
-        INSTANCE.get().expect("uninitalized config").load()
+        CONFIG_INSTANCE.get().expect("uninitalized config").load()
     }
 
     pub fn clone() -> Config {
@@ -130,12 +139,12 @@ impl Config {
     }
 
     pub fn set(new_config: Config) {
-        INSTANCE.get().expect("uninitalized config").store(Arc::new(new_config));
+        CONFIG_INSTANCE.get().expect("uninitalized config").store(Arc::new(new_config));
     }
 
     pub fn load() {
         let config: Config = Config::figment().extract().expect("couldn't load config");
-        INSTANCE.set(ArcSwap::from_pointee(config)).expect("couldn't initialize config");
+        CONFIG_INSTANCE.set(ArcSwap::from_pointee(config)).expect("couldn't initialize config");
     }
 
     pub fn save() -> Result<()> {
