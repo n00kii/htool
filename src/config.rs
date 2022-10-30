@@ -7,13 +7,11 @@ use figment::{
 use once_cell::sync::OnceCell;
 use path_absolutize::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    env, fs,
-    path::PathBuf,
-    sync::{Arc, RwLock, RwLockReadGuard},
-};
+use std::{env, fs, path::PathBuf, sync::Arc};
 
-use crate::tags::tags::Namespace;
+use crate::tags::Namespace;
+
+// use crate::tags::tags::Namespace;
 
 const CONFIG_FILENAME: &str = "config.toml";
 
@@ -107,18 +105,17 @@ impl Default for Config {
             },
             namespaces: vec![],
             media: Media { max_score: 5 },
-            ui: Ui {
-                thumbnail_resolution: 100 
-            },
+            ui: Ui { thumbnail_resolution: 100 },
             import: Import { thumbnail_size: 100 },
             gallery: Gallery {
                 thumbnail_size: 100,
                 preview_size: 500,
                 short_id_length: 6,
-                base_search: Some(String::from("independant=true limit=5000"))
+                base_search: Some(String::from("independant=true limit=5000")),
             },
-            misc: Misc { concurrent_db_operations: 20 }
-            // },
+            misc: Misc {
+                concurrent_db_operations: 20,
+            }, // },
         }
     }
 }

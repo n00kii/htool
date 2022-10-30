@@ -1,11 +1,17 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
+use crate::{
+    data::EntryId,
+    tags::{self, TagDataRef},
+};
 use downcast_rs as downcast;
-use egui::{pos2, text::LayoutJob, vec2, Align, Context, FontData, FontDefinitions, FontFamily, Layout, Pos2, Rect, Shape, Stroke, TextFormat};
+use egui::{
+    pos2, text::LayoutJob, vec2, Context, FontData, FontDefinitions, FontFamily, Layout, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextFormat,
+    TextureId,
+};
 use egui_notify::{Toast, Toasts};
 use std::{
-    borrow::Borrow,
-    cell::{RefCell, RefMut},
+    cell::RefCell,
     fmt::Display,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -13,31 +19,26 @@ use std::{
     vec,
 };
 
-use crate::{
-    autocomplete::AutocompleteOption,
-    gallery::gallery_ui::GalleryUI,
-    tags::{self, tags::TagDataRef, tags_ui}, data::EntryId,
-};
-
-use super::gallery::gallery_ui::PreviewUI;
-// use super::tags::tags_ui;
-// use super
-use super::config::Config;
-use super::gallery::gallery_ui;
-use super::import::import_ui;
 use anyhow::Result;
 use eframe::{
-    egui::{self, Button, Id, Response, RichText, ScrollArea, Sense, Style, Ui, Visuals, Widget, WidgetText},
+    egui::{self, Button, Response, RichText, Sense, Ui, WidgetText},
     emath::Vec2,
     epaint::{Color32, PathShape},
-    wgpu::Color,
-    Renderer,
 };
 use egui_extras::RetainedImage;
-use image::{FlatSamples, ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba};
 use poll_promise::Promise;
 
+use self::{autocomplete::AutocompleteOption, gallery_ui::GalleryUI};
+
 pub type ToastsRef = Arc<Mutex<Toasts>>;
+
+pub mod autocomplete;
+pub mod gallery_ui;
+pub mod import_ui;
+pub mod preview_ui;
+pub mod star_rating;
+pub mod tags_ui;
 
 pub mod constants {
     use eframe::epaint::Color32;
@@ -69,7 +70,7 @@ pub mod constants {
     pub const REORDER_ICON: &str = "↔";
     pub const DATA_ICON: &str = "💽";
     pub const CONFIG_ICON: &str = "⚙️";
-    pub const LINK_ICON: &str = "🔗";
+    pub const LINK_ICON: &str = "📎";
 
     pub const GALLERY_TITLE: &str = "gallery";
     pub const IMPORT_TITLE: &str = "importer";
@@ -138,6 +139,10 @@ impl LayoutJobText {
         self.format.color = color;
         self
     }
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.format.font_id.size = size;
+        self
+    }
 }
 
 pub fn icon_text(text: impl Display, icon: &str) -> String {
@@ -160,115 +165,8 @@ pub fn ligher(base_color: Color32) -> Color32 {
     scale_color(base_color, constants::COLOR_LIGHTEN_FACTOR)
 }
 
-pub fn shaped_select(ui: &mut Ui, current_value: &mut i64, max_value: usize) {
-    let outer_canvas_height = 25.;
-    let step_spacing = 0.3; // fraction
-    let canvas_padding = 5.;
-    let stroke_width = 1.;
-
-    let outer_canvas_width = ui.available_width();
-    let stepper_size = vec2(outer_canvas_width, outer_canvas_height);
-    let (response, painter) = ui.allocate_painter(stepper_size, Sense::click());
-    let outer_step_width = outer_canvas_width / max_value as f32;
-    let inner_step_width = outer_step_width * (1. - step_spacing);
-    let inner_canvas_height = outer_canvas_height - canvas_padding;
-    let mut was_clicked = false;
-
-    if response.double_clicked() {
-        *current_value = 0;
-    } else if response.clicked() || response.dragged() {
-        was_clicked = true;
-    }
-
-    for step_index in 0..max_value {
-        let is_selected = step_index < *current_value as usize;
-        let left = response.rect.left() + step_index as f32 * outer_step_width;
-        let top = response.rect.top() + canvas_padding;
-        let right = left + outer_step_width;
-        let bottom = top + inner_canvas_height;
-        let step_center = [(left + right) / 2., (top + bottom) / 2.];
-        let step_rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
-        let shape_radius = inner_step_width / 1.5;
-        if was_clicked && ui.rect_contains_pointer(step_rect) {
-            *current_value = (step_index as i64) + 1;
-        }
-        let (fill_color, stroke_color) = if is_selected {
-            (constants::FAVORITE_ICON_SELECTED_FILL, darker(constants::FAVORITE_ICON_SELECTED_FILL))
-        } else {
-            (
-                darker(constants::FAVORITE_ICON_SELECTED_FILL),
-                darker(darker(constants::FAVORITE_ICON_SELECTED_FILL)),
-            )
-        };
-        let shape = generate_star_shape(shape_radius, step_center, fill_color, Stroke::new(stroke_width, stroke_color));
-        painter.add(shape);
-    }
-}
-
-pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Response {
-    let outer_canvas_height = 25.;
-    let step_spacing = 0.3; // fraction
-    let canvas_padding = 5.;
-    let stroke_width = 1.;
-
-    // if ui.end
-    let outer_canvas_width = ui.available_width();
-    let stepper_size = vec2(outer_canvas_width, outer_canvas_height);
-    let (mut response, painter) = ui.allocate_painter(stepper_size, Sense::click());
-    let outer_step_width = outer_canvas_width / max_value as f32;
-    let inner_step_width = outer_step_width * (1. - step_spacing);
-    let inner_canvas_height = outer_canvas_height - canvas_padding;
-    let mut was_clicked = false;
-    if response.double_clicked() {
-        response.mark_changed();
-        *current_value = 0;
-    } else if response.clicked() || response.dragged() {
-        response.mark_changed();
-        was_clicked = true;
-    }
-
-    let mut paint_again = None;
-
-    for step_index in 0..max_value {
-        let is_selected = step_index < *current_value as usize;
-        let left = response.rect.left() + step_index as f32 * outer_step_width;
-        let top = response.rect.top() + canvas_padding;
-        let right = left + outer_step_width;
-        let bottom = top + inner_canvas_height;
-        let step_center = [(left + right) / 2., (top + bottom) / 2.];
-        let step_rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
-        let shape_radius = inner_step_width / 1.5;
-
-        let base_color = if ui.is_enabled() {
-            constants::FAVORITE_ICON_SELECTED_FILL
-        } else {
-            darker(constants::FAVORITE_ICON_SELECTED_FILL)
-        };
-        let (fill_color, stroke_color) = if is_selected {
-            (base_color, darker(base_color))
-        } else {
-            (darker(base_color), darker(darker(base_color)))
-        };
-
-        let stroke = Stroke::new(stroke_width, stroke_color);
-        let shape = generate_star_shape(shape_radius, step_center, fill_color, stroke);
-
-        painter.add(shape);
-
-        if ui.rect_contains_pointer(step_rect) {
-            if was_clicked {
-                *current_value = (step_index as i64) + 1;
-            } else {
-                paint_again = Some((shape_radius * 1.2, step_center, fill_color, stroke))
-            }
-        }
-
-        if let Some(paint_args) = paint_again {
-            ui.painter()
-                .add(generate_star_shape(paint_args.0, paint_args.1, paint_args.2, paint_args.3));
-        }
-    }
-    response
+pub fn ease_in_cubic(x: f32) -> f32 {
+    1. - (1. - x).powi(3)
 }
 
 pub fn generate_star_shape(radius: f32, center_point: [f32; 2], fill: Color32, stroke: Stroke) -> Shape {
@@ -485,6 +383,12 @@ pub fn readable_byte_size(byte_size: i64, precision: usize, base: NumericBase) -
     )
 }
 
+pub fn paint_image(painter: &Painter, texture_id: &TextureId, rect: Rect) {
+    let mut mesh = Mesh::with_texture(texture_id.clone());
+    mesh.add_rect_with_uv(rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+    painter.add(mesh);
+}
+
 pub fn render_loading_image(
     ui: &mut Ui,
     ctx: &egui::Context,
@@ -688,11 +592,11 @@ impl AppUI {
         }
         if let Ok(mut was_updated) = self.shared_state.tag_data_update_flag.try_lock() {
             if *was_updated {
-                tags::tags::reload_tag_data(&self.shared_state.tag_data_ref)
+                tags::reload_tag_data(&self.shared_state.tag_data_ref)
             }
             *was_updated = false;
         }
-        *self.shared_state.autocomplete_options.borrow_mut() = tags::tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
+        *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
     }
     fn load_fonts(ctx: &egui::Context) {
         let mut fonts = FontDefinitions::default();
@@ -753,7 +657,7 @@ impl AppUI {
 
     pub fn new() -> Self {
         let shared_state = SharedState {
-            tag_data_ref: tags::tags::initialize_tag_data(),
+            tag_data_ref: tags::initialize_tag_data(),
             autocomplete_options: Rc::new(RefCell::new(None)),
             toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
             all_entries_update_flag: Arc::new(Mutex::new(false)),
@@ -828,8 +732,12 @@ impl AppUI {
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.current_window == "".to_string() {
                 ui.with_layout(Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
-                    let text = RichText::new(format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).size(24.);
-                    ui.label(text);
+                    let job_text = generate_layout_job(vec![
+                        LayoutJobText::from(env!("CARGO_PKG_NAME")).with_size(24.),
+                        LayoutJobText::from(format!(" v{}", env!("CARGO_PKG_VERSION"))).with_size(18.),
+                    ]);
+                    // let text = RichText::new(format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).size(24.);
+                    ui.label(job_text);
                 });
             } else {
                 for window in self.windows.iter_mut() {

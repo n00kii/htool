@@ -1,10 +1,7 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use anyhow::Error;
 use data::ImportationStatus;
 use egui::Context;
-use egui::Label;
-use egui::Layout;
-use egui::RichText;
+
 use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_modal::Icon;
@@ -12,19 +9,14 @@ use egui_modal::Modal;
 use tempfile::tempdir;
 use zip::ZipArchive;
 
-use crate::ui::LayoutJobText;
-use crate::util;
 use crate::util::BatchPollBuffer;
 use crate::util::PollBuffer;
 
-// hide console window on Windows in release
 use super::super::data;
 use super::super::ui;
-use super::super::ui::UserInterface;
 use super::super::Config;
-use super::import::scan_directory;
-// use super::import::{import_media, MediaEntry};
-use super::import::ImportationEntry;
+use crate::import::scan_directory;
+use crate::import::ImportationEntry;
 use anyhow::Result;
 use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
@@ -32,19 +24,14 @@ use poll_promise::Promise;
 use rfd::FileDialog;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::env::current_exe;
-use std::fs::DirEntry;
+
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Condvar;
-use std::thread;
-use std::thread::current;
-use std::time::Duration;
-use std::{fs, path::Path};
 
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub struct ImporterUI {
     toasts: egui_notify::Toasts,
@@ -165,7 +152,7 @@ impl ImporterUI {
         match self.batch_import_status.as_ref() {
             None => false,
             Some(import_promise) => match import_promise.ready() {
-                Some(import_res) => false,
+                Some(_import_res) => false,
                 None => true,
             },
         }
@@ -354,7 +341,6 @@ impl ImporterUI {
         let mut pending_import_entries = self.get_pending_archive_import_entries();
         let next_pending = pending_import_entries.pop();
         if let Some(pending_extractions) = self.pending_archive_extracts.as_mut() {
-            
             if (pending_import_entries.len() == 0) && (pending_extractions.len() == 0) && next_pending.is_none() {
                 set_none = true;
                 self.is_import_status_window_open = true;
@@ -371,7 +357,7 @@ impl ImporterUI {
                                 let import_entries = import_entries.into_iter().map(|i| Rc::new(RefCell::new(i)));
                                 new_entries.extend(import_entries);
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 ui::toast_error(&mut self.toasts, "failed extraction");
                                 //FIXME: better messagew
                             }
@@ -412,7 +398,12 @@ impl ImporterUI {
                                 }
                             }
 
-                            let mut import_entries = scan_directory(temp_dir.path().to_path_buf(), 0, Some(temp_dir.path().as_os_str().to_string_lossy().to_string()), &vec![]);
+                            let mut import_entries = scan_directory(
+                                temp_dir.path().to_path_buf(),
+                                0,
+                                Some(temp_dir.path().as_os_str().to_string_lossy().to_string()),
+                                &vec![],
+                            );
                             if let Ok(import_entries) = import_entries.as_mut() {
                                 import_entries.iter_mut().for_each(|i| {
                                     i.keep_bytes_loaded = true;
@@ -478,7 +469,7 @@ impl ImporterUI {
                                     label = ui::icon_text(label, ui::constants::WARNING_ICON);
                                 }
 
-                                let mut text = egui::RichText::new(format!("{}", label));
+                                let text = egui::RichText::new(format!("{}", label));
                                 // } else if media_entry.borrow().failed_to_load_type() {
                                 //     text = text.strikethrough();
                                 // }
@@ -488,12 +479,12 @@ impl ImporterUI {
                                     let new_state = !is_selected;
                                     media_entry.borrow_mut().is_selected = new_state;
                                 };
-                                let disabled_reason = media_entry.borrow().get_status_label();
+                                let _disabled_reason = media_entry.borrow().get_status_label();
                                 if let Some(status) = media_entry.borrow().get_status_label() {
                                     response = response.on_hover_text(format!("({status})"));
                                 }
                                 if was_truncated {
-                                    response = response.on_hover_text_at_pointer(&media_entry.borrow().file_label)
+                                    response.on_hover_text_at_pointer(&media_entry.borrow().file_label);
                                 }
                             });
                         }
@@ -558,7 +549,7 @@ impl ImporterUI {
                         let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                         ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                             ui.with_layout(layout, |ui| {
-                                for (index, importation_entry) in importation_entries.iter().enumerate() {
+                                for (_index, importation_entry) in importation_entries.iter().enumerate() {
                                     let mut importation_entry = importation_entry.borrow_mut();
                                     let file_label = importation_entry.file_label.clone();
                                     let file_label_clone = file_label.clone();

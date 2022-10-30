@@ -1,7 +1,7 @@
 use anyhow::Result;
 use parking_lot::Mutex;
 use poll_promise::Promise;
-use std::{cell::RefCell, rc::Rc, sync::Arc, thread};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 pub struct PollBuffer<T> {
     pub entries: Vec<Rc<RefCell<T>>>,
@@ -163,7 +163,7 @@ impl<T: PartialEq> BatchPollBuffer<T> {
 }
 
 pub struct PromiseGroup {
-    promises: Vec<Promise<()>>
+    promises: Vec<Promise<()>>,
 }
 
 impl PromiseGroup {
@@ -172,12 +172,12 @@ impl PromiseGroup {
     }
 }
 
-pub fn do_with_threads<F>( num_threads: usize, f: F) -> PromiseGroup
+pub fn do_with_threads<F>(num_threads: usize, f: F) -> PromiseGroup
 where
     F: FnOnce() + Send + 'static + Clone,
 {
     let mut promises = vec![];
-    for i in 0..num_threads {
+    for _i in 0..num_threads {
         let promise = Promise::spawn_thread("thread_name", f.clone());
         promises.push(promise);
     }
@@ -261,5 +261,20 @@ pub fn is_opt_promise_ready<T: Send>(opt_promise: &Option<Promise<T>>) -> bool {
         promise.ready().is_some()
     } else {
         false
+    }
+}
+
+/// use with rc or arc
+pub fn filter_opt_vec<T: Clone>(opt_vec: &Option<Vec<T>>, predicate: impl Fn(&T) -> bool) -> Vec<T> {
+    if let Some(vec) = opt_vec.as_ref() {
+        vec.iter().filter(|item| predicate(item)).map(|item| item.clone()).collect::<Vec<_>>()
+    } else {
+        vec![]
+    }
+}
+
+pub fn opt_vec_applyeach_refcell<T>(opt_vec: &mut Option<Vec<Rc<RefCell<T>>>>, f: impl Fn(&mut T)) {
+    if let Some(vec) = opt_vec.as_mut() {
+        vec.iter_mut().for_each(|item| f(&mut item.borrow_mut()))
     }
 }

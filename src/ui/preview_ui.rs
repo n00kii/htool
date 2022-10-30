@@ -1,254 +1,24 @@
-use crate::autocomplete::autocomplete_ui;
-use crate::autocomplete::AutocompleteOption;
-use crate::config::Media;
-use crate::data::EntryId;
-use crate::data::EntryInfo;
-use crate::data::MediaInfo;
-use crate::data::PoolInfo;
-use crate::tags::tags;
-use crate::tags::tags::TagData;
-use crate::tags::tags_ui::TagsUI;
-use crate::ui::AutocompleteOptionsRef;
-use crate::ui::SharedState;
-use crate::util;
-use crate::util::do_with_threads;
-use crate::util::BatchPollBuffer;
-use anyhow::Context;
-use arboard::Clipboard;
-use chrono::TimeZone;
-use chrono::Utc;
-use downcast_rs::Downcast;
-use eframe::egui::Key;
-use eframe::egui::Layout;
-use eframe::egui::RichText;
-use eframe::egui::Window;
-use egui::pos2;
-use egui::vec2;
-use egui::Align2;
-use egui::Area;
-use egui::Color32;
-use egui::DragValue;
-use egui::Event;
-use egui::FontId;
-use egui::Frame;
-use egui::Grid;
-use egui::Mesh;
-use egui::Order;
-use egui::Painter;
-use egui::PointerButton;
-use egui::Pos2;
-use egui::Rect;
-use egui::Response;
-use egui::Rounding;
-use egui::Sense;
-use egui::Slider;
-use egui::Stroke;
-use egui_extras::Size;
-use egui_extras::StripBuilder;
-use egui_notify::Toasts;
-use image::FlatSamples;
-use regex::Regex;
-use ui::ToastsRef;
-// use crate::modal;
-use crate::tags::tags::Tag;
-use crate::ui::AppUI;
-use crate::ui::RenderLoadingImageOptions;
-use crate::ui::UserInterface;
-use crate::ui::WindowContainer;
-use crate::util::PollBuffer;
-use egui_modal::Modal;
+use std::{rc::Rc, sync::Arc, thread};
 
-use super::super::autocomplete;
-use super::super::data;
-use super::super::ui;
-use super::super::Config;
-use super::gallery::load_gallery_entries;
-// use super::gallery::GalleryEntry;
-use super::gallery::GalleryEntry;
-// use super::gallery::GalleryItem;
-use super::gallery_ui;
-use crate::tags::tags::TagDataRef;
-use anyhow::Result;
-use eframe::egui::Id;
-use eframe::{
-    egui::{self, Ui},
-    emath::{Align, Vec2},
+use super::{autocomplete, star_rating::star_rating, tags_ui::TagsUI, AutocompleteOptionsRef, RenderLoadingImageOptions, ToastsRef};
+use crate::{
+    config::Config,
+    data::{self, EntryId, EntryInfo},
+    tags::{Tag, TagDataRef},
+    ui,
 };
-use egui::Direction;
-use egui::ScrollArea;
+use anyhow::Result;
+use arboard::Clipboard;
+use chrono::{TimeZone, Utc};
+use egui::{
+    pos2, vec2, Align, Area, Color32, DragValue, Event, FontId, Grid, Layout, Mesh, Order, Painter, Pos2, Rect, RichText, Rounding, ScrollArea,
+    Sense, Ui, Vec2, Label,
+};
 use egui_extras::RetainedImage;
-use image::DynamicImage;
-use poll_promise::Promise;
-// use rand::Rng;
-use std::any::Any;
-use std::cell::RefCell;
-use std::cell::RefMut;
-use std::ops::Rem;
-use std::rc::Rc;
-use std::sync::Arc;
-// use std::sync::Mutex;
-use lazy_static::lazy_static;
+use egui_modal::Modal;
+use image::FlatSamples;
 use parking_lot::Mutex;
-use std::thread;
-use std::time::Duration;
-use std::time::SystemTime;
-pub struct GalleryUI {
-    pub thumbnail_buffer: BatchPollBuffer<GalleryEntry>,
-    pub refresh_buffer: BatchPollBuffer<GalleryEntry>,
-    pub toasts: Toasts,
-    pub loading_gallery_entries: Option<Promise<Result<Vec<GalleryEntry>>>>,
-    pub shared_state: Rc<SharedState>,
-    pub gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
-    pub filtered_gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
-    pub preview_windows: Vec<ui::WindowContainer>,
-    pub search_string: String,
-    last_gallery_entry_index: usize,
-    max_processed_gallery_entries_per_frame: usize,
-    is_selection_mode: bool,
-    include_dependants: bool,
-    include_pools: bool,
-}
-#[derive(Debug)]
-pub struct EntrySearch {
-    pub and_relations: Vec<Vec<Tag>>,
-    pub not_relations: Vec<Vec<Tag>>,
-    pub or_relations: Vec<Vec<Tag>>,
-    pub score_min: Option<(i64, bool)>, //value, inclusive
-    pub score_max: Option<(i64, bool)>, //value, inclusive
-    pub score_exact: Option<i64>,
-    pub is_bookmarked: Option<bool>,
-    pub is_independant: Option<bool>,
-    pub is_pool: Option<bool>,
-    pub is_media: Option<bool>,
-    pub is_valid: bool,
-    pub limit: Option<i64>,
-}
-
-impl Default for EntrySearch {
-    fn default() -> Self {
-        Self {
-            and_relations: vec![],
-            not_relations: vec![],
-            or_relations: vec![],
-            score_max: None,
-            score_min: None,
-            score_exact: None,
-            is_bookmarked: None,
-            is_independant: None,
-            is_media: None,
-            is_pool: None,
-            is_valid: true,
-            limit: None,
-        }
-    }
-}
-
-const OR_QUANTIFIER: &str = "or";
-const NOT_QUANTIFIER: &str = "not";
-const TYPE_QUANTIFIER: &str = "type";
-const INDEPENDANT_QUANTIFIER: &str = "independant";
-const LIMIT_QUANTIFIER: &str = "limit";
-const BOOKMARKED_QUANTIFIER: &str = "bookmarked";
-const SCORE_QUANTIFIER: &str = "score";
-const SCORE_Q_QUANTIFIER: &str = "score_q";
-
-fn grouping_re(q: impl Into<String>) -> String {
-    format!(r"{0}\((?P<{0}>.+?)\)", q.into())
-}
-fn value_re(q: impl Into<String>) -> String {
-    format!(r"{0}=(?P<{0}>.+?)\b", q.into())
-}
-
-fn regex(re_string: &String) -> Regex {
-    Regex::new(re_string).context("couldn't form regex").unwrap()
-}
-///or(hey babe how going) not(bruh mo_::ment) type=poo_ff bookmarked=false score>3 score<=23 or(nope)
-impl From<String> for EntrySearch {
-    fn from(search: String) -> Self {
-        lazy_static! {
-            static ref OR_RE: Regex = regex(&grouping_re(OR_QUANTIFIER));
-            static ref NOT_RE: Regex = regex(&grouping_re(NOT_QUANTIFIER));
-            static ref TYPE_RE: Regex = regex(&value_re(TYPE_QUANTIFIER));
-            static ref BOOKMARKED_RE: Regex = regex(&value_re(BOOKMARKED_QUANTIFIER));
-            static ref INDEPENDANT_RE: Regex = regex(&value_re(INDEPENDANT_QUANTIFIER));
-            static ref LIMIT_RE: Regex = regex(&value_re(LIMIT_QUANTIFIER));
-            static ref SCORE_RE: Regex = regex(&format!(r"{SCORE_QUANTIFIER}(?P<{SCORE_Q_QUANTIFIER}>.+?)(?P<{SCORE_QUANTIFIER}>\d+)"));
-        }
-        fn str_to_bool(st: &str) -> Option<bool> {
-            match st {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            }
-        }
-        let mut entry_search = EntrySearch::default();
-        for cap in OR_RE.captures_iter(&search) {
-            let tags = Tag::from_tagstrings(&cap[OR_QUANTIFIER]);
-            entry_search.or_relations.push(tags)
-        }
-        for cap in NOT_RE.captures_iter(&search) {
-            let tags = Tag::from_tagstrings(&cap[NOT_QUANTIFIER]);
-            entry_search.not_relations.push(tags)
-        }
-        for cap in TYPE_RE.captures_iter(&search) {
-            match &cap[TYPE_QUANTIFIER] {
-                "pool" => entry_search.is_pool = Some(true),
-                "media" => entry_search.is_media = Some(true),
-                _ => entry_search.is_valid = false,
-            }
-        }
-        for cap in BOOKMARKED_RE.captures_iter(&search) {
-            entry_search.is_bookmarked = str_to_bool(&cap[BOOKMARKED_QUANTIFIER])
-        }
-        for cap in INDEPENDANT_RE.captures_iter(&search) {
-            entry_search.is_independant = str_to_bool(&cap[INDEPENDANT_QUANTIFIER])
-        }
-        for cap in SCORE_RE.captures_iter(&search) {
-            let score = (&cap[SCORE_QUANTIFIER]).parse().ok();
-            if let Some(score) = score {
-                match &cap[SCORE_Q_QUANTIFIER] {
-                    "<" => entry_search.score_max = Some((score, false)),
-                    "<=" => entry_search.score_max = Some((score, true)),
-                    ">" => entry_search.score_min = Some((score, false)),
-                    ">=" => entry_search.score_min = Some((score, true)),
-                    "=" => entry_search.score_exact = Some(score),
-                    _ => entry_search.is_valid = false,
-                }
-            } else {
-                entry_search.is_valid = false;
-            }
-        }
-        for cap in LIMIT_RE.captures_iter(&search) {
-            let limit: Option<i64>  = (&cap[LIMIT_QUANTIFIER]).parse().ok();
-            if let Some(limit) = limit {
-                entry_search.limit = Some(limit);
-            } else {
-                entry_search.is_valid = false;
-            }
-        }
-        let mut stripped = search.clone();
-        stripped = OR_RE.replace_all(&stripped, "").to_string();
-        stripped = NOT_RE.replace_all(&stripped, "").to_string();
-        stripped = TYPE_RE.replace_all(&stripped, "").to_string();
-        stripped = BOOKMARKED_RE.replace_all(&stripped, "").to_string();
-        stripped = INDEPENDANT_RE.replace_all(&stripped, "").to_string();
-        stripped = SCORE_RE.replace_all(&stripped, "").to_string();
-        stripped = LIMIT_RE.replace_all(&stripped, "").to_string();
-
-        entry_search.and_relations.push(Tag::from_tagstrings(&stripped));
-        entry_search
-    }
-}
-#[derive(Clone)]
-pub enum PreviewStatus {
-    None,
-    Closed,
-    Next(EntryId),
-    Previous(EntryId),
-    Deleted(EntryId),
-    DeletedWithUpdate(EntryId),
-    Updated,
-}
+use poll_promise::Promise;
 
 pub struct PreviewUI {
     pub tag_data: TagDataRef,
@@ -283,6 +53,18 @@ pub struct PreviewUI {
 pub enum Preview {
     MediaEntry(Promise<Result<RetainedImage>>),
     PoolEntry((Vec<(String, Promise<Result<RetainedImage>>)>, usize)),
+}
+
+#[derive(Clone)]
+pub enum PreviewStatus {
+    None,
+    Closed,
+    Next(EntryId),
+    Previous(EntryId),
+    Deleted(EntryId),
+    DeletedWithUpdate(EntryId),
+    RequestingNew(EntryId),
+    Updated,
 }
 
 impl ui::UserInterface for PreviewUI {
@@ -342,10 +124,10 @@ impl PreviewUI {
         }
     }
 
-    fn set_status(current_status: &Arc<Mutex<PreviewStatus>>, new_status: PreviewStatus) {
+    pub fn set_status(current_status: &Arc<Mutex<PreviewStatus>>, new_status: PreviewStatus) {
         *current_status.lock() = new_status
     }
-    fn try_get_status(current_status: &Arc<Mutex<PreviewStatus>>) -> Option<PreviewStatus> {
+    pub fn try_get_status(current_status: &Arc<Mutex<PreviewStatus>>) -> Option<PreviewStatus> {
         current_status.try_lock().map(|status| status.clone())
     }
 
@@ -369,8 +151,6 @@ impl PreviewUI {
                     delete_linked_entries_modal.buttons(ui, |ui| {
                         delete_linked_entries_modal.button(ui, "cancel");
                         if delete_linked_entries_modal.caution_button(ui, format!("delete")).clicked() {
-                            // delete logic below
-                            // let entry_info_update_flag = Arc::clone(&self.en);
                             let entry_info = Arc::clone(&self.entry_info);
                             let toasts = Arc::clone(&self.arc_toast);
                             let status = Arc::clone(&self.status);
@@ -394,7 +174,7 @@ impl PreviewUI {
 
             delete_entry_modal.show(|ui| {
                 delete_entry_modal.frame(ui, |ui| match &*entry_info {
-                    EntryInfo::MediaEntry(media_entry) => {
+                    EntryInfo::MediaEntry(_media_entry) => {
                         delete_entry_modal.body(
                             ui,
                             format!(
@@ -404,7 +184,7 @@ impl PreviewUI {
                             ),
                         );
                     }
-                    EntryInfo::PoolEntry(pool_entry) => {
+                    EntryInfo::PoolEntry(_pool_entry) => {
                         delete_entry_modal.body(
                             ui,
                             format!(
@@ -482,14 +262,6 @@ impl PreviewUI {
             ui.label("options");
 
             if let Some(mut entry_info) = self.entry_info.try_lock() {
-                // if ui.button("text").clicked() {
-                //     let entry_id = entry_info.entry_id().clone();
-                //     self.updated_entry_info = Some(Promise::spawn_thread("update_gall_entry", move || {
-                //         let l = data::load_entry_info(&entry_id);
-                //         dbg!(&l);
-                //         l
-                //     }));
-                // }
                 ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
                     if ui
                         .button(if !entry_info.details().is_bookmarked {
@@ -507,7 +279,7 @@ impl PreviewUI {
                             Self::set_status(&self.status, PreviewStatus::Updated)
                         }
                     }
-                    let star_response = ui::star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
+                    let star_response = star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
                     if star_response.changed() {
                         let new_value = entry_info.details().score;
                         if let Err(e) = data::set_score(&entry_info.entry_id(), new_value) {
@@ -555,10 +327,8 @@ impl PreviewUI {
                                         for unknown_tag in unknown_tags {
                                             if let Err(e) = data::register_tag(&unknown_tag) {
                                                 TagsUI::toast_failed_new_tag(&unknown_tag.to_tagstring(), &e, &arc_toasts)
-                                                // }
                                             } else {
                                                 TagsUI::toast_success_new_tag(&unknown_tag.to_tagstring(), &arc_toasts)
-                                                // }
                                             }
                                         }
                                     }
@@ -576,7 +346,6 @@ impl PreviewUI {
                         }
                         Self::set_status(&status, PreviewStatus::Updated);
                     });
-                    // }
                 }
                 if ui.button(ui::icon_text("discard changes", ui::constants::REMOVE_ICON)).clicked() {
                     self.is_editing_tags = false;
@@ -595,7 +364,6 @@ impl PreviewUI {
                             self.is_editing_tags = true;
                         };
                     }
-                    // }
                 });
             }
             if let Some(entry_info) = self.entry_info.try_lock() {
@@ -627,14 +395,14 @@ impl PreviewUI {
                         }
                         if ui.button(ui::icon_text("discard changes", ui::constants::REMOVE_ICON)).clicked() {
                             self.is_reordering = false;
-                            if let Some(Preview::PoolEntry((mut images, current_index))) = self.preview.take() {
+                            if let Some(Preview::PoolEntry((mut images, _current_index))) = self.preview.take() {
                                 if let Some(original_order) = self.original_order.take() {
                                     let old_images = original_order
                                         .iter()
                                         .filter_map(|hash| {
                                             images
                                                 .iter()
-                                                .position(|(other_hash, image_promise)| other_hash == hash)
+                                                .position(|(other_hash, _image_promise)| other_hash == hash)
                                                 .map(|index| images.remove(index))
                                         })
                                         .collect::<Vec<_>>();
@@ -646,9 +414,24 @@ impl PreviewUI {
                         ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
                             if ui.button(ui::icon_text("reorder items", ui::constants::REORDER_ICON)).clicked() {
                                 self.is_reordering = true;
-                                if let Some(Preview::PoolEntry(images)) = self.preview.as_ref() {}
+                                if let Some(Preview::PoolEntry(_images)) = self.preview.as_ref() {}
 
                                 self.original_order = Self::get_current_order(&self.preview)
+                            }
+                        });
+                    }
+                } else if let EntryInfo::MediaEntry(media_info) = &*entry_info {
+                    if media_info.links.len() > 0 {
+                        ui.add_space(ui::constants::SPACER_SIZE);
+                        ui.group(|ui| {
+                            for link_id in &media_info.links {
+                                let label = Label::new(ui::icon_text(link_id, ui::constants::LINK_ICON)).sense(Sense::click());
+                                let response = ui.add(label);
+                                if response.clicked() {
+                                    Self::set_status(&self.status, PreviewStatus::RequestingNew(EntryId::PoolEntry(*link_id)));
+                                } else if response.secondary_clicked() {
+                                    
+                                }
                             }
                         });
                     }
@@ -684,18 +467,18 @@ impl PreviewUI {
                 ui.add_space(ui::constants::SPACER_SIZE);
                 if let Some(entry_info) = self.entry_info.try_lock() {
                     match &*entry_info {
-                        EntryInfo::PoolEntry(pool_info) => {
+                        EntryInfo::PoolEntry(_pool_info) => {
                             if ui.add(ui::caution_button(format!("{} delete link", ui::constants::LINK_ICON))).clicked() {
                                 delete_entry_modal.open();
                             }
                             if ui
-                                .add(ui::caution_button(format!("{} delete linked", ui::constants::DELETE_ICON)))
+                                .add(ui::caution_button(format!("{} delete all", ui::constants::DELETE_ICON)))
                                 .clicked()
                             {
                                 delete_linked_entries_modal.open();
                             }
                         }
-                        EntryInfo::MediaEntry(media_info) => {
+                        EntryInfo::MediaEntry(_media_info) => {
                             if ui.add(ui::caution_button(format!("{} delete", ui::constants::DELETE_ICON))).clicked() {
                                 delete_entry_modal.open();
                             }
@@ -710,8 +493,8 @@ impl PreviewUI {
     #[inline]
     pub fn get_current_order(preview: &Option<Preview>) -> Option<Vec<String>> {
         preview.as_ref().and_then(|images| {
-            if let Preview::PoolEntry((images, current_index)) = &images {
-                Some(images.iter().map(|(hash, image_promise)| hash.clone()).collect())
+            if let Preview::PoolEntry((images, _current_index)) = &images {
+                Some(images.iter().map(|(hash, _image_promise)| hash.clone()).collect())
             } else {
                 None
             }
@@ -735,6 +518,10 @@ impl PreviewUI {
                     if let EntryInfo::MediaEntry(media_info) = &*entry_info {
                         ui.label("type");
                         ui.label(&media_info.mime);
+                        ui.end_row();
+                    } else if let EntryInfo::PoolEntry(pool_info) = &*entry_info {
+                        ui.label("count");
+                        ui.label(format!("{} media", pool_info.hashes.len()));
                         ui.end_row();
                     }
                 });
@@ -839,7 +626,7 @@ impl PreviewUI {
                             }
                         }
                         Preview::PoolEntry((images, current_index)) => {
-                            if let Some((hash, image_promise)) = images.get(*current_index) {
+                            if let Some((_hash, image_promise)) = images.get(*current_index) {
                                 if let Some(Ok(image)) = image_promise.ready() {
                                     Some(image)
                                 } else {
@@ -870,10 +657,10 @@ impl PreviewUI {
                 } else {
                     paint_text("waiting to load", screen_rect.center(), ui.painter());
                 }
-                let MAX_IGNORE_FULLSCREEN_EDIT = 20; // number of frames to ignore double click
+                let ignore_fullscreen_frames = 20; // number of frames to ignore double click
                 let mut was_rect_clicked = |rect: &Rect| -> bool {
                     if ui.rect_contains_pointer(*rect) && ctx.input().pointer.primary_released() {
-                        self.ignore_fullscreen_edit = MAX_IGNORE_FULLSCREEN_EDIT;
+                        self.ignore_fullscreen_edit = ignore_fullscreen_frames;
                         true
                     } else {
                         false
@@ -1048,6 +835,8 @@ impl PreviewUI {
                                                     self.view_zoom = 1.;
                                                     self.view_offset = [0., 0.];
                                                     self.is_fullscreen = true;
+                                                } else if image_response.secondary_clicked() {
+                                                    Self::set_status(&self.status, PreviewStatus::RequestingNew(EntryId::MediaEntry(hash.clone())))
                                                 }
                                                 if let Some(current_dragged_index) = self.current_dragged_index.as_ref() {
                                                     if ui.rect_contains_pointer(image_response.rect) {
@@ -1098,8 +887,6 @@ impl PreviewUI {
         };
 
         if let Some(entry_info) = self.entry_info.try_lock() {
-            // if let Soame(entry_info_promise) = self.entry_info.as_ref() {
-            // if let Some(Ok(entry_info)) = entry_info_promise.ready() {
             match entry_info.entry_id() {
                 EntryId::MediaEntry(hash) => {
                     let hash = hash.clone();
@@ -1107,7 +894,7 @@ impl PreviewUI {
                         load(&hash)
                     })));
                 }
-                EntryId::PoolEntry(link_id) => {
+                EntryId::PoolEntry(_link_id) => {
                     if let EntryInfo::PoolEntry(pool_info) = &*entry_info {
                         self.preview = Some(Preview::PoolEntry((
                             pool_info
@@ -1140,426 +927,4 @@ impl PreviewUI {
         });
     }
     // pub load_image
-}
-
-impl GalleryUI {
-    fn process_previews(&mut self) {
-        let mut do_refiter = false;
-        // let mut preview_index = 0;
-        self.preview_windows.retain_mut(|window_container| {
-            if let Some(preview_ui) = window_container.window.downcast_mut::<PreviewUI>() {
-                let preview_status = PreviewUI::try_get_status(&preview_ui.status);
-                if matches!(preview_status, Some(PreviewStatus::Updated)) {
-                    do_refiter = true;
-                    PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
-                } else if matches!(preview_status, Some(PreviewStatus::Previous(_))) || matches!(preview_status, Some(PreviewStatus::Next(_))) {
-                    let mut next_entry_info = None;
-                    let mut gallery_entries_len = 0;
-                    let mut increment = 0;
-                    let preview_entry_id = match preview_status.as_ref().unwrap() {
-                        PreviewStatus::Previous(entry_id) => {
-                            increment = -1;
-                            entry_id.clone()
-                        }
-                        PreviewStatus::Next(entry_id) => {
-                            increment = 1;
-                            entry_id.clone()
-                        }
-                        _ => unreachable!(),
-                    };
-                    let gallery_entry_index = self.gallery_entries.as_ref().and_then(|gallery_entries| {
-                        gallery_entries_len = gallery_entries.len();
-                        gallery_entries.iter().enumerate().find_map(|(entry_index, gallery_entry)| {
-                            gallery_entry.borrow().entry_info.try_lock().and_then(|entry_info| {
-                                if entry_info.entry_id() == &preview_entry_id {
-                                    Some(entry_index)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                    });
-
-                    if let Some(current_entry_index) = gallery_entry_index {
-                        let mut next_gallery_index = current_entry_index as i64;
-
-                        next_gallery_index = next_gallery_index + increment;
-
-                        if next_gallery_index >= 0 && next_gallery_index <= gallery_entries_len as i64 - 1 {
-                            next_entry_info = self.gallery_entries.as_ref().and_then(|gallery_entries| {
-                                gallery_entries
-                                    .get(next_gallery_index as usize)
-                                    .and_then(|gallery_entry| Some(Arc::clone(&gallery_entry.borrow().entry_info)))
-                            });
-                        }
-                    }
-                    // }
-                    if let Some(next_entry_info) = next_entry_info {
-                        preview_ui.entry_info = next_entry_info;
-                        preview_ui.preview = None;
-                    }
-                    PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
-                }
-                //todo handle deletedandupdated
-                // chunkinglist up every frame?
-                if let Some(PreviewStatus::Deleted(entry_id)) = &preview_status {
-                    if let Some(gallery_entries) = self.gallery_entries.as_mut() {
-                        gallery_entries.retain(|gallery_entry| {
-                            if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                                entry_info.entry_id() != entry_id
-                            } else {
-                                true
-                            }
-                        });
-                        do_refiter = true;
-                    }
-                }
-                !(matches!(preview_status, Some(PreviewStatus::Closed)) || matches!(preview_status, Some(PreviewStatus::Deleted(_))))
-            } else {
-                true
-            }
-        });
-
-        if do_refiter {
-            tags::reload_tag_data(&self.shared_state.tag_data_ref);
-            self.filter_entries();
-        }
-    }
-
-    fn load_entries(&mut self) {
-        if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
-            let requests = gallery_entries
-                .iter()
-                .filter_map(|gallery_entry| {
-                    if !gallery_entry.borrow().did_complete_request {
-                        Some(gallery_entry.borrow_mut().generate_load_request())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            // data::load_thumbnail_with_requests(requests);
-            thread::spawn(|| data::load_gallery_entries_with_requests(requests));
-        }
-    }
-
-    fn process_gallery_entries(&mut self) {
-        if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
-            for gallery_entry in gallery_entries {
-                let mut gallery_entry = gallery_entry.borrow_mut();
-                if util::is_opt_promise_ready(&gallery_entry.updated_entry_info) {
-                    if let Some(updated_info_promise) = gallery_entry.updated_entry_info.take() {
-                        match updated_info_promise.try_take() {
-                            Ok(Ok(updated_info)) => {
-                                let mut gallery_entry_info = gallery_entry.entry_info.lock();
-                                *gallery_entry_info = updated_info
-                            }
-                            Ok(Err(e)) => {
-                                // print!("failed {e}")
-                            }
-                            Err(p) => {
-                                // print!("wasnt ready!")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if self.gallery_entries.is_some() && self.filtered_gallery_entries.is_none() {
-            self.filter_entries();
-        }
-
-        if util::is_opt_promise_ready(&self.loading_gallery_entries) {
-            if let Some(loaded_gallery_entries_promise) = self.loading_gallery_entries.take() {
-                if let Ok(loaded_gallery_entries_res) = loaded_gallery_entries_promise.try_take() {
-                    match loaded_gallery_entries_res {
-                        Ok(loaded_gallery_entries) => {
-                            self.gallery_entries = Some(
-                                loaded_gallery_entries
-                                    .into_iter()
-                                    .map(|gallery_entry| Rc::new(RefCell::new(gallery_entry)))
-                                    .collect::<Vec<_>>(),
-                            );
-                            self.filter_entries();
-                            // self.load_entries();
-                            // self.load_all_thumbnails();
-                            // self.load_all_entry_info();
-                        }
-                        Err(error) => {
-                            ui::toast_error(&mut self.toasts, format!("failed to load items: {}", error))
-                                .set_duration(None)
-                                .set_closable(false);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn load_gallery_entries(&mut self) {
-        self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || {
-            load_gallery_entries()
-        }));
-    }
-
-    fn is_loading_gallery_entries(&self) -> bool {
-        if let Some(entries_promise) = self.loading_gallery_entries.as_ref() {
-            entries_promise.ready().is_none()
-        } else {
-            false
-        }
-    }
-
-    fn launch_preview(entry_info: &Arc<Mutex<EntryInfo>>, preview_windows: &mut Vec<WindowContainer>, shared_state: &SharedState) {
-        let preview = PreviewUI::new(
-            &entry_info,
-            &shared_state.tag_data_ref,
-            &shared_state.toasts,
-            &shared_state.autocomplete_options,
-        );
-        let mut title = preview.short_id.clone();
-        title.insert_str(0, &format!("{} ", ui::constants::GALLERY_ICON));
-        if !ui::does_window_exist(&title, preview_windows) {
-            preview_windows.push(WindowContainer {
-                title,
-                is_open: Some(true),
-                window: preview,
-            })
-        }
-    }
-
-    pub fn update_entries(&self, updated_entries: &Vec<EntryId>) {
-        if let Some(gallery_entries) = self.gallery_entries.as_ref() {
-            let requests = gallery_entries
-                .iter()
-                .filter_map(|gallery_entry| {
-                    if updated_entries.contains(gallery_entry.borrow().entry_info.lock().entry_id()) {
-                        Some(gallery_entry.borrow_mut().generate_entry_info_request())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            thread::spawn(|| data::load_entry_info_with_requests(requests));
-        }
-    }
-
-    pub fn refresh(&mut self) {
-        if let Some(gallery_entries) = self.gallery_entries.as_mut() {
-            for gallery_entry in gallery_entries.iter_mut() {
-                gallery_entry.borrow_mut().is_info_dirty = true;
-            }
-        }
-    }
-
-    fn render_options(&mut self, ui: &mut Ui) {
-        ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
-            ui.label("gallery");
-            ui.add_enabled_ui(!self.is_loading_gallery_entries(), |ui| {
-                if ui
-                    .button(if self.is_loading_gallery_entries() {
-                        String::from("loading...")
-                    } else {
-                        ui::icon_text("refresh", ui::constants::REFRESH_ICON)
-                    })
-                    .clicked()
-                {
-                    tags::reload_tag_data(&self.shared_state.tag_data_ref);
-                    self.load_gallery_entries();
-                }
-            });
-            ui.add_space(ui::constants::SPACER_SIZE);
-            
-            ui.group(|ui| {
-                ui.checkbox(&mut self.is_selection_mode, "selection mode")
-            })
-        });
-    }
-
-    fn render_thumbnails(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
-            ScrollArea::vertical()
-                .id_source("previews_col")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
-                    ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
-                        ui.with_layout(layout, |ui| {
-                            ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
-                            for gallery_entry in gallery_entries.iter() {
-                                let status_label = gallery_entry.borrow().get_status_label().map(|label| label.into());
-                                let mut options = RenderLoadingImageOptions::default();
-                                let thumbnail_size = Config::global().gallery.thumbnail_size as f32;
-                                options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
-                                options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
-                                options.hover_text = status_label;
-                                options.desired_image_size = [thumbnail_size, thumbnail_size];
-                                let response = ui::render_loading_image(ui, ctx, gallery_entry.borrow().thumbnail.as_ref(), &options);
-                                if let Some(response) = response {
-                                    if response.clicked() {
-                                        GalleryUI::launch_preview(&gallery_entry.borrow().entry_info, &mut self.preview_windows, &self.shared_state)
-                                    }
-                                }
-                            }
-                        });
-                    });
-                });
-        } else {
-            ui.with_layout(Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
-                ui.spinner();
-            });
-        }
-    }
-
-    fn render_search(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            ui.label(format!("{} search", ui::constants::SEARCH_ICON));
-
-            ui.with_layout(Layout::top_down(Align::Center).with_cross_justify(true), |ui| {
-                let search_options = Rc::clone(&self.shared_state.autocomplete_options);
-                let search_options = search_options.borrow();
-                if let Some(search_options) = search_options.as_ref() {
-                    let autocomplete = autocomplete::create(&mut self.search_string, search_options, false, true);
-                    let response = ui.add(autocomplete);
-                    if response.has_focus() {
-                        if ui.ctx().input().key_pressed(Key::Tab)
-                            || ui.ctx().input().key_pressed(Key::Space)
-                            || ui.ctx().input().key_pressed(Key::Backspace)
-                        {
-                            self.filter_entries();
-                        }
-                    }
-                }
-            });
-        });
-    }
-
-    fn render_preview_windows(&mut self, ctx: &egui::Context) {
-        self.preview_windows.retain(|window| window.is_open.unwrap());
-        for preview_window in self.preview_windows.iter_mut() {
-            let window = egui::Window::new(&preview_window.title)
-                .open(preview_window.is_open.as_mut().unwrap())
-                .default_size([800.0, 400.0])
-                .collapsible(false)
-                .vscroll(false)
-                .hscroll(false)
-                .resizable(false);
-            let _response = window.show(ctx, |ui| {
-                preview_window.window.ui(ui, ctx);
-            });
-        }
-    }
-
-    fn thumbnail_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
-        gallery_entry.borrow().thumbnail.is_none() || gallery_entry.borrow().is_thumbnail_loading()
-    }
-
-    fn refresh_buffer_add(gallery_entry: &Rc<RefCell<GalleryEntry>>) {
-        gallery_entry.borrow_mut().is_info_dirty = false;
-    }
-
-    fn refresh_buffer_poll(gallery_entry: &Rc<RefCell<GalleryEntry>>) -> bool {
-        gallery_entry.borrow().updated_entry_info.is_none() || gallery_entry.borrow().is_refreshing()
-    }
-
-    fn filter_entries(&mut self) {
-        // let BASE_SEARCH = ;
-        let base_search = Config::global().gallery.base_search.clone().unwrap_or(String::new());
-        let mut search = self.search_string.clone();
-        search.insert_str(0, &format!("{base_search} "));
-        let entry_search = EntrySearch::from(search);
-
-        let mut current_index = 0;
-        let limit = entry_search.limit.unwrap_or(i64::MAX);
-        self.filtered_gallery_entries = self.gallery_entries.as_ref().map(|gallery_entries| {
-            gallery_entries
-                .iter()
-                .filter_map(|gallery_entry| {
-                    if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                        //TODO: HERE
-                        if  current_index < limit && entry_info.passes_entry_search(&entry_search) {
-                            current_index = current_index + 1;
-                            Some(Rc::clone(&gallery_entry))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        });
-        self.load_entries();
-    }
-}
-
-impl GalleryUI {
-    pub fn new(shared_state: &Rc<SharedState>) -> Self {
-        let thumbnail_poll_buffer = PollBuffer::<GalleryEntry>::new(None, Some(100), None, Some(GalleryUI::thumbnail_buffer_poll), None);
-        let thumbnail_buffer = BatchPollBuffer::new(thumbnail_poll_buffer);
-        let refresh_poll_buffer = PollBuffer::<GalleryEntry>::new(
-            None,
-            Some(1),
-            Some(GalleryUI::refresh_buffer_add),
-            Some(GalleryUI::refresh_buffer_poll),
-            None,
-        );
-        let refresh_buffer = BatchPollBuffer::new(refresh_poll_buffer);
-        Self {
-            preview_windows: vec![],
-            is_selection_mode: false,
-            search_string: String::new(),
-            loading_gallery_entries: None,
-            shared_state: Rc::clone(&shared_state),
-            toasts: Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
-            thumbnail_buffer,
-            refresh_buffer,
-            gallery_entries: None,
-            filtered_gallery_entries: None,
-            last_gallery_entry_index: 0,
-            max_processed_gallery_entries_per_frame: 100,
-            include_dependants: false,
-            include_pools: true,
-        }
-    }
-}
-
-impl ui::UserInterface for GalleryUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.process_previews();
-        self.process_gallery_entries();
-        self.render_preview_windows(ctx);
-        ui.vertical(|ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::LEFT), |ui| {
-                StripBuilder::new(ui)
-                    .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
-                    .size(Size::exact(100.))
-                    .size(Size::exact(ui::constants::SPACER_SIZE))
-                    .size(Size::remainder())
-                    .horizontal(|mut strip| {
-                        strip.empty();
-                        strip.cell(|ui| {
-                            self.render_options(ui);
-                        });
-                        strip.cell(|ui| {
-                            ui.with_layout(Layout::left_to_right(Align::Center).with_cross_justify(true), |ui| {
-                                ui.separator();
-                            });
-                        });
-                        strip.cell(|ui| {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    self.render_search(ui);
-                                });
-
-                                ui.add_space(ui::constants::SPACER_SIZE);
-                                self.render_thumbnails(ui, ctx);
-                            });
-                        });
-                    });
-            });
-        });
-        self.toasts.show(ctx);
-    }
 }

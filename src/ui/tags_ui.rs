@@ -1,31 +1,24 @@
-use super::tags::{self, Namespace, Tag, TagData, TagDataRef, TagLink};
+use super::{
+    autocomplete,
+    tags::{self, Namespace, Tag, TagDataRef, TagLink},
+};
 use crate::{
-    config::{self, Config},
+    config::Config,
     data::{self, EntryId},
-    gallery::gallery_ui::GalleryUI,
-    tags::tags::TagLinkType,
-    ui::{self, LayoutJobText, SharedState, UpdateFlag, UserInterface, WindowContainer, AutocompleteOptionsRef, UpdateList}, autocomplete,
+    tags::TagLinkType,
+    ui::{self, AutocompleteOptionsRef, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
 };
-use anyhow::{Error, Result};
-use chrono::{DateTime, Utc};
+use anyhow::Error;
+
 use eframe::{
-    egui::{self, Grid, Layout, Response, RichText, Window},
+    egui::{self, Layout, RichText, Window},
     emath::Align,
-    App,
 };
-use egui::{text::LayoutJob, Button, Color32, Direction, FontFamily, FontId, Galley, Label, ScrollArea, Sense, TextFormat};
+use egui::{Label, Sense};
 use egui_extras::{Size, StripBuilder, TableBuilder};
 use egui_modal::Modal;
-use egui_notify::{Anchor, Toasts};
-use poll_promise::Promise;
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
-    vec,
-};
+
+use std::{rc::Rc, sync::Arc, thread, vec};
 use ui::ToastsRef;
 
 pub struct TagsUI {
@@ -112,10 +105,7 @@ impl TagsUI {
                 if !ui::does_window_exist(&title, &self.modify_windows) {
                     self.modify_windows.push(WindowContainer {
                         title,
-                        window: Box::new(ModifyTagUI::new(
-                            None,
-                            &self.shared_state
-                        )),
+                        window: Box::new(ModifyTagUI::new(None, &self.shared_state)),
                         is_open: Some(true),
                     })
                 }
@@ -125,9 +115,7 @@ impl TagsUI {
                 if !ui::does_window_exist(&title, &self.modify_windows) {
                     self.modify_windows.push(WindowContainer {
                         title,
-                        window: Box::new(ModifyTagLinkUI::new(
-                            &self.shared_state
-                        )),
+                        window: Box::new(ModifyTagLinkUI::new(&self.shared_state)),
                         is_open: Some(true),
                     })
                 }
@@ -281,11 +269,7 @@ impl TagsUI {
                                             let edit_lj = ui::generate_layout_job(vec![edit_jt, tag_jt]);
                                             if ui.button(edit_lj).clicked() {
                                                 ui.close_menu();
-                                                Self::launch_tag_modify_window(
-                                                    tag_data.tag.clone(),
-                                                    &mut self.modify_windows,
-                                                    &self.shared_state
-                                                )
+                                                Self::launch_tag_modify_window(tag_data.tag.clone(), &mut self.modify_windows, &self.shared_state)
                                             }
                                             if ui.button(delete_lj).clicked() {
                                                 ui.close_menu();
@@ -402,20 +386,13 @@ impl TagsUI {
             format!("failed tag modification ( \"{old_tagstring}\" --> \"{new_tagstring}\"): {error} "),
         );
     }
-    fn launch_tag_modify_window(
-        tag: Tag,
-        modify_windows: &mut Vec<WindowContainer>,
-        shared_state: &SharedState
-    ) {
+    fn launch_tag_modify_window(tag: Tag, modify_windows: &mut Vec<WindowContainer>, shared_state: &SharedState) {
         let title = format!("edit \"{}\"", tag.to_tagstring());
 
         if !ui::does_window_exist(&title, modify_windows) {
             modify_windows.push(WindowContainer {
                 title,
-                window: Box::new(ModifyTagUI::new(
-                    Some(tag),
-                    shared_state
-                )),
+                window: Box::new(ModifyTagUI::new(Some(tag), shared_state)),
                 is_open: Some(true),
             })
         }
@@ -492,7 +469,7 @@ impl ModifyTagLinkUI {
 }
 
 impl ui::UserInterface for ModifyTagLinkUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
             let valid = !(self.from_tagstrings.is_empty() || self.to_tagstrings.is_empty());
             egui::Grid::new("new_link").max_col_width(1000.).show(ui, |ui| {
@@ -504,11 +481,10 @@ impl ui::UserInterface for ModifyTagLinkUI {
                 ui.end_row();
 
                 if let Some(autocomplete_options) = self.autocomplete_options.borrow().as_ref() {
-
                     ui.label("from");
                     ui.add(autocomplete::create(&mut self.from_tagstrings, autocomplete_options, false, true));
                     ui.end_row();
-                    
+
                     ui.label("to");
                     ui.add(autocomplete::create(&mut self.to_tagstrings, autocomplete_options, false, true));
                     ui.end_row();
@@ -578,11 +554,10 @@ struct ModifyTagUI {
 impl ModifyTagUI {
     fn new(
         tag: Option<Tag>,
-        shared_state: &SharedState
-        // loaded_tag_data: &TagDataRef,
-        // entry_info_update_flag: &UpdateFlag,
-        // tag_data_update_flag: &UpdateFlag,
-        // toasts: &ToastsRef,
+        shared_state: &SharedState, // loaded_tag_data: &TagDataRef,
+                                    // entry_info_update_flag: &UpdateFlag,
+                                    // tag_data_update_flag: &UpdateFlag,
+                                    // toasts: &ToastsRef,
     ) -> Self {
         Self {
             toasts: Arc::clone(&shared_state.toasts),
@@ -598,7 +573,7 @@ impl ModifyTagUI {
 }
 
 impl UserInterface for ModifyTagUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::Center), |ui| {
             egui::Grid::new("new_tag").max_col_width(1000.).show(ui, |ui| {
                 // ui.label("name");
@@ -697,7 +672,7 @@ impl ModifyNamespacesUI {
 }
 
 impl UserInterface for ModifyNamespacesUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         let mut config = Config::clone();
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             TableBuilder::new(ui)
