@@ -7,7 +7,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::Config,
+    config::{Config, Color32Opt},
     data,
     ui::autocomplete::AutocompleteOption,
     ui::{self, LayoutJobText},
@@ -29,18 +29,21 @@ pub struct Tag {
 
 pub struct Namespace {
     pub name: String,
-    pub color: [f32; 3],
+    pub color: Color32Opt,
 }
 
 impl Namespace {
     pub fn empty() -> Self {
         Self {
             name: "".to_string(),
-            color: [1., 1., 1.],
+            color: Color32Opt::none(),
         }
     }
     pub fn color32(&self) -> Color32 {
-        Color32::from_rgb((self.color[0] * 255.) as u8, (self.color[1] * 255.) as u8, (self.color[2] * 255.) as u8)
+           self.color.0.unwrap_or(ui::text_color())
+    }
+    pub fn color_array(&self) -> [f32; 4] {
+        self.color32().to_array().map(|u| u as f32 / 255.)
     }
 }
 
@@ -159,7 +162,7 @@ impl Tag {
         text
     }
     pub fn to_layout_job_text(&self) -> LayoutJobText {
-        LayoutJobText::new(&self.name).with_color(self.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR))
+        LayoutJobText::new(&self.name).with_color(self.namespace_color().unwrap_or(ui::text_color()))
     }
     pub fn namespace_color(&self) -> Option<Color32> {
         if let Some(namespace) = self.noneified().namespace {

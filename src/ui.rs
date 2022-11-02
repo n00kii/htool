@@ -1,15 +1,17 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use crate::{
+    config::Config,
     data::EntryId,
     tags::{self, TagDataRef},
 };
 use downcast_rs as downcast;
 use egui::{
-    pos2, text::LayoutJob, vec2, Context, FontData, FontDefinitions, FontFamily, Layout, Mesh, Painter, Pos2, Rect, Shape, Stroke, TextFormat,
-    TextureId,
+    hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout,
+    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextFormat, TextureId,
 };
 use egui_notify::{Toast, Toasts};
+use hex_color::HexColor;
 use std::{
     cell::RefCell,
     fmt::Display,
@@ -42,6 +44,12 @@ pub mod tags_ui;
 
 pub mod constants {
     use eframe::epaint::Color32;
+
+    pub const APPLICATION_NAME: &str = env!("CARGO_PKG_NAME");
+    pub const APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+    pub const FG_STROKE_WIDTH: f32 = 1.;
+    pub const BG_STROKE_WIDTH: f32 = 1.;
 
     pub const ERROR_COLOR: Color32 = Color32::from_rgb(200, 90, 90);
     pub const INFO_COLOR: Color32 = Color32::from_rgb(150, 200, 210);
@@ -80,7 +88,7 @@ pub mod constants {
 
     pub const SPACER_SIZE: f32 = 10.;
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
-    pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
+    // pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
 
     pub const FAVORITE_ICON_SELECTED_FILL: Color32 = Color32::from_rgb(252, 191, 73);
     pub const FAVORITE_ICON_DESELECTED_FILL: Color32 = Color32::from_rgb(126, 95, 36);
@@ -118,7 +126,7 @@ impl Default for LayoutJobText {
     fn default() -> Self {
         Self {
             text: String::new(),
-            format: TextFormat::default(),
+            format: TextFormat{color: text_color(), ..TextFormat::default()},
             offset: 0.0,
         }
     }
@@ -161,7 +169,11 @@ pub fn darker(base_color: Color32) -> Color32 {
     scale_color(base_color, constants::COLOR_DARKEN_FACTOR)
 }
 
-pub fn ligher(base_color: Color32) -> Color32 {
+pub fn text_color() -> Color32 {
+    Config::global().themes.inactive_fg_stroke_color().unwrap_or(Color32::GRAY)
+}
+
+pub fn lighter(base_color: Color32) -> Color32 {
     scale_color(base_color, constants::COLOR_LIGHTEN_FACTOR)
 }
 
@@ -533,6 +545,10 @@ fn load_icon() -> eframe::IconData {
     }
 }
 
+pub fn colored_frame() -> Frame {
+    Frame::default().fill(color32_from_hex("#292d3e").unwrap())
+}
+
 pub type UpdateFlag = Arc<Mutex<bool>>;
 pub type UpdateList<T> = Arc<Mutex<Vec<T>>>;
 pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
@@ -540,7 +556,7 @@ pub struct SharedState {
     pub toasts: ToastsRef,
     pub tag_data_ref: TagDataRef,
     pub autocomplete_options: AutocompleteOptionsRef,
-
+    pub window_title: String,
     pub all_entries_update_flag: UpdateFlag,
     pub updated_entries: UpdateList<EntryId>,
     pub tag_data_update_flag: UpdateFlag,
@@ -550,6 +566,13 @@ impl SharedState {
     pub fn set_update_flag(flag: &UpdateFlag, new_state: bool) {
         if let Ok(mut flag) = flag.lock() {
             *flag = new_state;
+        }
+    }
+    pub fn set_title(&mut self, addition: Option<String>) {
+        if let Some(addition) = addition {
+            self.window_title = format!("{}: {}", constants::APPLICATION_NAME, addition)
+        } else {
+            self.window_title = constants::APPLICATION_NAME.to_string();
         }
     }
     pub fn append_to_update_list<T>(list: &UpdateList<T>, mut new_items: Vec<T>) {
@@ -572,6 +595,16 @@ impl eframe::App for AppUI {
         self.process_state();
         ctx.request_repaint();
     }
+}
+
+pub fn color32_to_hex(color: Color32) -> String {
+    let hex_color = HexColor::rgba(color.r(), color.g(), color.b(), color.a());
+    hex_color.to_string()
+}
+
+pub fn color32_from_hex(hex: &str) -> Result<Color32> {
+    let hex_color = HexColor::parse(hex)?;
+    Ok(Color32::from_rgba_unmultiplied(hex_color.r, hex_color.g, hex_color.b, hex_color.a))
 }
 
 impl AppUI {
@@ -659,6 +692,7 @@ impl AppUI {
         let shared_state = SharedState {
             tag_data_ref: tags::initialize_tag_data(),
             autocomplete_options: Rc::new(RefCell::new(None)),
+            window_title: env!("CARGO_PKG_NAME").to_string(),
             toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
             all_entries_update_flag: Arc::new(Mutex::new(false)),
             updated_entries: Arc::new(Mutex::new(vec![])),
@@ -671,16 +705,87 @@ impl AppUI {
         }
     }
 
+    pub fn load_style(ctx: &Context) {
+        // ctx.set_style(style)
+        let mut style = Style::default();
+        let stroke_size = 1.;
+        if let Some(color) = Config::global().themes.bg_fill_color() {
+            style.visuals.widgets.noninteractive.bg_fill = color;
+        }
+        if let Some(color) = Config::global().themes.bg_fill_color() {
+            style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(stroke_size, scale_color(color, 1.5));
+        }
+        if let Some(color) = Config::global().themes.tertiary_bg_fill_color() {
+            // color32_from_hex("#1c1f2b") { // tert bg (darker)
+            style.visuals.extreme_bg_color = color;
+        }
+        if let Some(color) = Config::global().themes.secondary_bg_fill_color() {
+            //color32_from_hex("#232635") { // secondary bg (lighter)
+            style.visuals.faint_bg_color = scale_color(color, 1.2);
+        }
+        if let Some(color) = Config::global().themes.inactive_bg_fill_color() {
+            //color32_from_hex("#292d3e") { // inactive bg fill232635
+            style.visuals.widgets.inactive.bg_fill = color;
+        }
+        if let Some(stroke) = Config::global().themes.inactive_bg_stroke() {
+            //color32_from_hex("#a6accd") { // inactive bg stroke
+            style.visuals.widgets.inactive.bg_stroke = stroke;
+        }
+        if let Some(stroke) = Config::global().themes.inactive_fg_stroke() {
+            //color32_from_hex("#676e95") { // inactive fg stroke
+            style.visuals.widgets.noninteractive.fg_stroke = stroke;
+            style.visuals.widgets.inactive.fg_stroke = stroke;
+        }
+        if let Some(color) = Config::global().themes.hovered_bg_fill_color() {
+            //color32_from_hex("#212532") { // hovered bg fill
+            style.visuals.widgets.hovered.bg_fill = color;
+        }
+        if let Some(stroke) = Config::global().themes.hovered_bg_stroke() {
+            //color32_from_hex("#676e95") { // hovered bg stroke
+            style.visuals.widgets.hovered.bg_stroke = stroke;
+        }
+        if let Some(stroke) = Config::global().themes.hovered_fg_stroke() {
+            //color32_from_hex("#a6accd") { // hovered fg stroke
+            style.visuals.widgets.hovered.fg_stroke = stroke;
+        }
+        if let Some(color) = Config::global().themes.active_bg_fill_color() {
+            //color32_from_hex("#212532") { // active bg fill
+            style.visuals.widgets.active.bg_fill = color;
+        }
+        if let Some(stroke) = Config::global().themes.active_bg_stroke() {
+            //color32_from_hex("#80cbc4") { // active bg stroke
+            style.visuals.widgets.active.bg_stroke = stroke;
+        }
+        if let Some(stroke) = Config::global().themes.active_fg_stroke() {
+            //color32_from_hex("#80cbc4") { // active fg stroke
+            style.visuals.widgets.active.fg_stroke = stroke;
+        }
+        if let Some(stroke) = Config::global().themes.selected_fg_stroke() {
+            //color32_from_hex("#80cbc4") { // selected stroke
+            style.visuals.selection.stroke = stroke;
+        }
+        if let Some(color) = Config::global().themes.selected_bg_fill_color() {
+            //color32_from_hex("#1c1f2b") { // selected bg fill
+            style.visuals.selection.bg_fill = color
+        }
+
+        // accent #80cbc4
+
+        ctx.set_style(style)
+    }
+
     pub fn start(mut self) {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
         options.icon_data = Some(load_icon());
         // options.renderer = Renderer::Wgpu;
         eframe::run_native(
-            env!("CARGO_PKG_NAME"),
+            constants::APPLICATION_NAME,
             options,
             Box::new(|creation_context| {
-                Self::load_fonts(&creation_context.egui_ctx);
+                let ctx = &creation_context.egui_ctx;
+                Self::load_fonts(ctx);
+                Self::load_style(ctx);
                 self.load_windows();
 
                 Box::new(self)
@@ -728,15 +833,59 @@ impl AppUI {
         });
     }
 
+    fn render_custom_frame(&self, ctx: &Context, frame: &mut eframe::Frame, add_contents: impl FnOnce(&mut Ui)) {
+        let text_color = ctx.style().visuals.text_color();
+        let height = 20.;
+
+        CentralPanel::default().frame(Frame::none()).show(ctx, |ui| {
+            let max_rect = ui.max_rect();
+            let painter = ui.painter();
+
+            painter.rect(max_rect.shrink(1.), 0., ctx.style().visuals.window_fill(), Stroke::none());
+            painter.text(
+                max_rect.center_top() + vec2(0., height / 2.),
+                Align2::CENTER_CENTER,
+                &self.shared_state.window_title,
+                FontId::proportional(height * 0.8),
+                text_color,
+            );
+            let close_response = ui.put(
+                Rect::from_min_size(max_rect.left_top(), Vec2::splat(height)),
+                Button::new(RichText::new(constants::REMOVE_ICON).size(height - 4.)).frame(false),
+            );
+            if close_response.clicked() {
+                frame.close()
+            }
+            let title_bar_rect = {
+                let mut title_bar_rect = max_rect;
+                title_bar_rect.max.y = title_bar_rect.min.y + height;
+                title_bar_rect
+            };
+            let title_bar_response = ui.interact(title_bar_rect, Id::new("title_bar"), Sense::click());
+            if title_bar_response.is_pointer_button_down_on() {
+                frame.drag_window();
+            }
+            let content_rect = {
+                let mut content_rect = max_rect;
+                content_rect.min.y = title_bar_rect.max.y;
+                content_rect
+            }
+            .shrink(4.0);
+            let mut content_ui = ui.child_ui(content_rect, *ui.layout());
+            add_contents(&mut content_ui);
+        });
+    }
+
     fn render_current_window(&mut self, ctx: &egui::Context) {
+        //egui::CentralPanel::default().frame(Frame {
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.current_window == "".to_string() {
                 ui.with_layout(Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
                     let job_text = generate_layout_job(vec![
-                        LayoutJobText::from(env!("CARGO_PKG_NAME")).with_size(24.),
-                        LayoutJobText::from(format!(" v{}", env!("CARGO_PKG_VERSION"))).with_size(18.),
+                        LayoutJobText::from(constants::APPLICATION_NAME).with_size(24.),
+                        LayoutJobText::from(format!(" v{}", constants::APPLICATION_VERSION)).with_size(18.),
                     ]);
-                    // let text = RichText::new(format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))).size(24.);
                     ui.label(job_text);
                 });
             } else {

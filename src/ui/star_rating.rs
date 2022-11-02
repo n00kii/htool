@@ -12,6 +12,8 @@ use eframe::{
 
 
 
+use crate::config::Config;
+
 use super::{constants, darker, generate_star_shape};
 
 pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Response {
@@ -47,10 +49,11 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         let step_rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
         let shape_radius = inner_step_width / 1.5;
 
+        let true_base_color = Config::global().themes.override_widget_primary().unwrap_or(constants::FAVORITE_ICON_SELECTED_FILL);
         let base_color = if ui.is_enabled() {
-            constants::FAVORITE_ICON_SELECTED_FILL
+            true_base_color
         } else {
-            darker(constants::FAVORITE_ICON_SELECTED_FILL)
+            darker(true_base_color)
         };
         let (fill_color, stroke_color) = if is_selected {
             (base_color, darker(base_color))

@@ -37,7 +37,7 @@ impl Autocomplete {
 use eframe::epaint::{vec2, Color32, FontId, Pos2};
 use egui::{text_edit::CCursorRange, Area, Event, Id, Key, Modifiers, Response, Ui, Widget};
 
-use crate::ui;
+use crate::{ui, config::Config};
 
 pub fn create<'a>(search: &'a mut String, options: &'a Vec<AutocompleteOption>, multiline: bool, appear_below: bool) -> impl Widget + 'a {
     move |ui: &mut egui::Ui| autocomplete_ui(ui, search, options, multiline, appear_below)
@@ -114,8 +114,8 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
     let tedit_response = tedit_output.response;
 
     if tedit_response.has_focus() {
-        let id = ui.make_persistent_id(format!("{:?}_autocomplete", tedit_response.id));
-        let mut ac_state: AutocompleteState = ui.ctx().memory().data.get_persisted(id).unwrap_or_default();
+        let id = Id::new(format!("{:?}_autocomplete", tedit_response.id));
+        let mut ac_state: AutocompleteState = ui.ctx().memory().data.get_temp(id).unwrap_or_default();
         let last_ccursor_range = tedit_output.state.ccursor_range();
 
         if tedit_response.changed() {
@@ -176,10 +176,10 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                         let text_galley = painter.layout_no_wrap(
                             option.label.replace("_", " "),
                             icon_font.clone(),
-                            option.color.unwrap_or(ui::constants::DEFAULT_TEXT_COLOR),
+                            option.color.unwrap_or(ui::text_color()),
                         );
 
-                        let desc_galley = painter.layout_no_wrap(option.description.clone(), icon_font.clone(), ui::constants::DEFAULT_TEXT_COLOR);
+                        let desc_galley = painter.layout_no_wrap(option.description.clone(), icon_font.clone(), ui.style().visuals.text_color());
 
                         ac_height += text_galley.rect.height() + ac_rect_inner_padding;
                         if text_height == 0. {
@@ -229,7 +229,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                                 text_galley = painter.layout_no_wrap(
                                     format!("[ {} ]", text_galley.text().to_string()),
                                     icon_font.clone(),
-                                    text_color.unwrap_or(ui::constants::DEFAULT_TEXT_COLOR),
+                                    text_color.unwrap_or(ui::text_color()),
                                 );
                             }
 
@@ -242,7 +242,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
         }
 
         // ac_state.last_ccursor_range = last_ccursor_range;
-        ui.ctx().memory().data.insert_persisted(id, ac_state);
+        ui.ctx().memory().data.insert_temp(id, ac_state);
         ui.ctx().move_to_top(tedit_response.layer_id)
     } else {
         if down_arrow_pressed {

@@ -582,7 +582,7 @@ impl PreviewUI {
                                                 .map(|tag_data| tag_data.occurances.to_string())
                                                 .unwrap_or(String::from("?"))
                                         ))
-                                        .color(tag.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR));
+                                        .color(tag.namespace_color().unwrap_or(ui.style().visuals.text_color()));
                                         response.on_hover_text_at_pointer(hover_text);
                                     }
                                 });
@@ -602,8 +602,9 @@ impl PreviewUI {
             area.show(ctx, |ui: &mut Ui| {
                 let screen_rect = ui.ctx().input().screen_rect;
                 ui.painter().rect_filled(screen_rect, Rounding::none(), Color32::BLACK);
-                fn paint_text(text: impl Into<String>, pos: Pos2, painter: &Painter) -> Rect {
-                    let galley = painter.layout_no_wrap(text.into(), FontId::default(), ui::constants::DEFAULT_TEXT_COLOR);
+
+                fn paint_text(text: impl Into<String>, text_color: Color32, pos: Pos2, painter: &Painter) -> Rect {
+                    let galley = painter.layout_no_wrap(text.into(), FontId::default(), text_color);
                     let offset = vec2(-galley.rect.width() / 2., -galley.rect.height() / 2.);
                     let text_pos = pos + offset;
                     let mut painted_rect = galley.rect.clone();
@@ -616,6 +617,7 @@ impl PreviewUI {
                 let area_response = ui.allocate_response(screen_rect.size(), Sense::click());
                 let mut image_size = None;
                 let mut image_center = None;
+                let text_color = ui::text_color();
                 if let Some(preview) = self.preview.as_ref() {
                     let image = match preview {
                         Preview::MediaEntry(image_promise) => {
@@ -652,10 +654,10 @@ impl PreviewUI {
                         image_center = Some(mesh_pos + (mesh_size / 2.));
                         ui.painter().add(mesh);
                     } else {
-                        paint_text("loading...", screen_rect.center(), ui.painter());
+                        paint_text("loading...", text_color, screen_rect.center(), ui.painter());
                     }
                 } else {
-                    paint_text("waiting to load", screen_rect.center(), ui.painter());
+                    paint_text("waiting to load", text_color, screen_rect.center(), ui.painter());
                 }
                 let ignore_fullscreen_frames = 20; // number of frames to ignore double click
                 let mut was_rect_clicked = |rect: &Rect| -> bool {
@@ -710,9 +712,9 @@ impl PreviewUI {
 
                         if ui.rect_contains_pointer(bottom_rect) {
                             // let inner_bottom_rect = Rect::from_center_size(bottom_rect.center(), vec2(20., 20.));
-                            let text_rect = paint_text(format!("{} / {}", *current_index + 1, images.len()), bottom_rect.center(), ui.painter());
+                            let text_rect = paint_text(format!("{} / {}", *current_index + 1, images.len()), text_color,bottom_rect.center(), ui.painter());
                             ui.painter().rect_filled(text_rect.expand(10.), Rounding::none(), Color32::BLACK);
-                            paint_text(format!("{} / {}", *current_index + 1, images.len()), bottom_rect.center(), ui.painter());
+                            paint_text(format!("{} / {}", *current_index + 1, images.len()),text_color, bottom_rect.center(), ui.painter());
                         }
                     }
                 }

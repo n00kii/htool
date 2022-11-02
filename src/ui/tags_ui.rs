@@ -3,7 +3,7 @@ use super::{
     tags::{self, Namespace, Tag, TagDataRef, TagLink},
 };
 use crate::{
-    config::Config,
+    config::{Config, Color32Opt},
     data::{self, EntryId},
     tags::TagLinkType,
     ui::{self, AutocompleteOptionsRef, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
@@ -264,7 +264,7 @@ impl TagsUI {
                                             let delete_jt = LayoutJobText::new(format!("{} delete ", ui::constants::DELETE_ICON,));
                                             let edit_jt = LayoutJobText::new(format!("{} edit ", ui::constants::EDIT_ICON,));
                                             let tag_jt = LayoutJobText::new(&tag_data.tag.name)
-                                                .with_color(tag_data.tag.namespace_color().unwrap_or(ui::constants::DEFAULT_TEXT_COLOR));
+                                                .with_color(tag_data.tag.namespace_color().unwrap_or(ui::text_color()));
                                             let delete_lj = ui::generate_layout_job(vec![delete_jt, tag_jt.clone()]);
                                             let edit_lj = ui::generate_layout_job(vec![edit_jt, tag_jt]);
                                             if ui.button(edit_lj).clicked() {
@@ -346,7 +346,7 @@ impl TagsUI {
                                                                     .with_color(
                                                                         Tag::from_tagstring(&target_tagstring)
                                                                             .namespace_color()
-                                                                            .unwrap_or(ui::constants::DEFAULT_TEXT_COLOR),
+                                                                            .unwrap_or(ui::text_color()),
                                                                     );
                                                                 let job = ui::generate_layout_job(vec![job_text_1, job_text_2]);
                                                                 if ui.button(job).clicked() {
@@ -700,7 +700,10 @@ impl UserInterface for ModifyNamespacesUI {
                             });
                         });
                         row.col(|ui| {
-                            ui.color_edit_button_rgb(&mut self.new_namespace.color);
+                            let mut color_array = self.new_namespace.color_array();
+                            if ui.color_edit_button_rgba_unmultiplied(&mut color_array).changed() {
+                                self.new_namespace.color = Color32Opt::from_array(color_array);
+                            }
                         });
                     });
                     let mut config_changed = false;
@@ -731,9 +734,11 @@ impl UserInterface for ModifyNamespacesUI {
                                 }
                             });
                             row.col(|ui| {
-                                if ui.color_edit_button_rgb(&mut namespace.color).changed() {
+                                let mut color_array = namespace.color_array();
+                                if ui.color_edit_button_rgba_unmultiplied(&mut color_array).changed() {
+                                    namespace.color = Color32Opt::from_array(color_array);
                                     config_changed = true;
-                                };
+                                }
                             });
                         })
                     }

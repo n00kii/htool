@@ -8,14 +8,12 @@ mod import;
 mod tags;
 mod ui;
 mod util;
-// mod modal;
 
-use anyhow::Context;
 use config::Config;
 
 fn main() {
     Config::load();
     data::init();
     ui::AppUI::new().start();
-    Config::save().context("failed to save config").unwrap();
+    Config::save().expect("failed to save config")
 }
