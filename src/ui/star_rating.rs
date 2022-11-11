@@ -1,16 +1,6 @@
-
-
 use egui::{pos2, vec2, Rect, Stroke};
 
-
-
-
-use eframe::{
-    egui::{self, Response, Sense, Ui},
-};
-
-
-
+use eframe::egui::{self, Response, Sense, Ui};
 
 use crate::config::Config;
 
@@ -37,7 +27,7 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         was_clicked = true;
     }
 
-    let mut paint_again = None;
+let mut paint_again = None;
 
     for step_index in 0..max_value {
         let is_selected = step_index < *current_value as usize;
@@ -49,12 +39,11 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
         let step_rect = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
         let shape_radius = inner_step_width / 1.5;
 
-        let true_base_color = Config::global().themes.override_widget_primary().unwrap_or(constants::FAVORITE_ICON_SELECTED_FILL);
-        let base_color = if ui.is_enabled() {
-            true_base_color
-        } else {
-            darker(true_base_color)
-        };
+        let true_base_color = Config::global()
+            .themes
+            .override_widget_primary()
+            .unwrap_or(constants::FAVORITE_ICON_SELECTED_FILL);
+        let base_color = if ui.is_enabled() { true_base_color } else { true_base_color.linear_multiply(0.3) };
         let (fill_color, stroke_color) = if is_selected {
             (base_color, darker(base_color))
         } else {
@@ -66,7 +55,7 @@ pub fn star_rating(ui: &mut Ui, current_value: &mut i64, max_value: usize) -> Re
 
         painter.add(shape);
 
-        if ui.rect_contains_pointer(step_rect) {
+        if ui.is_enabled()  && ui.rect_contains_pointer(step_rect) {
             if was_clicked {
                 *current_value = (step_index as i64) + 1;
             } else {

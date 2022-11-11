@@ -3,12 +3,12 @@ use super::{
     tags::{self, Namespace, Tag, TagDataRef, TagLink},
 };
 use crate::{
-    config::{Config, Color32Opt},
+    config::{Color32Opt, Config},
     data::{self, EntryId},
     tags::TagLinkType,
     ui::{self, AutocompleteOptionsRef, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
 };
-use anyhow::Error;
+use anyhow::{Error, Result};
 
 use eframe::{
     egui::{self, Layout, RichText, Window},
@@ -147,8 +147,8 @@ impl TagsUI {
     }
     fn render_tags(&mut self, ui: &mut egui::Ui) {
         let mut do_reload_data = false;
-        let delete_tag_modal = Modal::new(ui.ctx(), "tag_delete_modal");
-        let link_delete_modal = Modal::new(ui.ctx(), "link_delete_modal");
+        let delete_tag_modal = ui::modal(ui.ctx(), "tag_delete_modal");
+        let link_delete_modal = ui::modal(ui.ctx(), "link_delete_modal");
         if let Some(tag_pending_delete) = self.tag_pending_delete.as_ref() {
             delete_tag_modal.show(|ui| {
                 delete_tag_modal.frame(ui, |ui| {
@@ -431,8 +431,14 @@ impl TagsUI {
     pub fn toast_fail_invalid_number_tags(expected_number: usize, recieved_number: usize, toasts: &ToastsRef) {
         ui::toast_error_lock(toasts, format!("expected {expected_number} tags, got {recieved_number}"));
     }
+    pub fn toast_fail_update_tags(error: &Error, toasts: &ToastsRef) {
+        ui::toast_error_lock(toasts, format!("failed to update tags: {error}"));
+    }
     pub fn toast_success_new_link(link: &TagLink, toasts: &ToastsRef) {
         ui::toast_success_lock(toasts, format!("successfully registered link {}", link.to_string()));
+    }
+    pub fn toast_success_update_tags(amount_updated: usize, toasts: &ToastsRef) {
+        ui::toast_success_lock(toasts, format!("successfully updated {amount_updated} entries"));
     }
     pub fn toast_success_new_tag(tagstring: &String, toasts: &ToastsRef) {
         ui::toast_success_lock(toasts, format!("successfully registered tag \"{tagstring}\""));
@@ -446,24 +452,26 @@ impl TagsUI {
 }
 
 struct ModifyTagLinkUI {
-    toasts: ToastsRef,
+    // toasts: ToastsRef,
     // link: TagLink,
-    autocomplete_options: AutocompleteOptionsRef,
+    // autocomplete_options: AutocompleteOptionsRef,
     link_type: TagLinkType,
     from_tagstrings: String,
     to_tagstrings: String,
-    loaded_tag_data: TagDataRef,
+    shared_state: Rc<SharedState>
+    // loaded_tag_data: TagDataRef,
 }
 
 impl ModifyTagLinkUI {
-    fn new(shared_state: &SharedState) -> Self {
+    fn new(shared_state: &Rc<SharedState>) -> Self {
         Self {
-            toasts: Arc::clone(&shared_state.toasts),
+            // toasts: Arc::clone(&shared_state.toasts),
             from_tagstrings: String::new(),
             to_tagstrings: String::new(),
-            autocomplete_options: Rc::clone(&shared_state.autocomplete_options),
+            shared_state: Rc::clone(&shared_state),
+            // autocomplete_options: Rc::clone(&shared_state.autocomplete_options),
             link_type: TagLinkType::Implication,
-            loaded_tag_data: Rc::clone(&shared_state.tag_data_ref),
+            // loaded_tag_data: Rc::clone(&shared_state.tag_data_ref),
         }
     }
 }
@@ -480,7 +488,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                 });
                 ui.end_row();
 
-                if let Some(autocomplete_options) = self.autocomplete_options.borrow().as_ref() {
+                if let Some(autocomplete_options) = self.shared_state.autocomplete_options.borrow().as_ref() {
                     ui.label("from");
                     ui.add(autocomplete::create(&mut self.from_tagstrings, autocomplete_options, false, true));
                     ui.end_row();
@@ -504,7 +512,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                         }
                     }
 
-                    let toasts = &self.toasts;
+                    let toasts = &self.shared_state.toasts;
                     for from_tag in Tag::from_tagstrings(&self.from_tagstrings) {
                         let mut do_register = true;
                         check_exists(&from_tag.to_tagstring(), &mut do_register, toasts);
@@ -516,7 +524,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                     to_tagstring: to_tag.to_tagstring(),
                                     link_type: self.link_type.clone(),
                                 };
-                                if let Ok(does_link_exist) = data::does_tag_ink_exist(&link) {
+                                if let Ok(does_link_exist) = data::does_tag_link_exist(&link) {
                                     if does_link_exist {
                                         TagsUI::toast_link_already_exists(&link, toasts)
                                     } else {
@@ -524,7 +532,27 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                             TagsUI::toast_failed_new_link(&link, &e, toasts);
                                         } else {
                                             TagsUI::toast_success_new_link(&link, toasts);
-                                            tags::reload_tag_data(&mut self.loaded_tag_data);
+                                            let updated_entries = Arc::clone(&self.shared_state.updated_entries);
+                                            let tag_update_flag = Arc::clone(&self.shared_state.tag_data_update_flag);
+                                            let toasts = Arc::clone(&toasts);
+                                            let from_tag = from_tag.clone();
+                                            thread::spawn(move || {
+                                                let reresolution = || -> Result<Vec<EntryId>> {
+                                                    let affected_entries = data::get_entries_with_tag(&from_tag)?;
+                                                    data::reresolve_tags_of_entries(&affected_entries)?;
+                                                    Ok(affected_entries)
+                                                };
+
+                                                match reresolution() {
+                                                    Ok(affected_entries) => {
+                                                        TagsUI::toast_success_update_tags(affected_entries.len(), &toasts);
+                                                        updated_entries.lock().unwrap().extend(affected_entries);
+                                                        SharedState::set_update_flag(&tag_update_flag, true);
+                                                    }
+                                                    Err(e) => TagsUI::toast_fail_update_tags(&e, &toasts)
+                                                }
+                                            });
+                                            tags::reload_tag_data(&self.shared_state.tag_data_ref);
                                         }
                                     }
                                 } else {

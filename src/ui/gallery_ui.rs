@@ -32,8 +32,8 @@ use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_modal::Modal;
 use egui_notify::Toasts;
-
 use regex::Regex;
+use ui::{constants, icon_text};
 
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::WindowContainer;
@@ -43,6 +43,8 @@ use super::super::data;
 use super::super::ui;
 use super::super::Config;
 use super::autocomplete;
+use super::icon;
+use super::preview_ui::MediaPreview;
 use super::preview_ui::PreviewStatus;
 use super::preview_ui::PreviewUI;
 
@@ -254,7 +256,7 @@ impl GalleryUI {
     fn get_selected_gallery_entries(&self) -> Vec<Rc<RefCell<GalleryEntry>>> {
         util::filter_opt_vec(&self.gallery_entries, |gallery_entry| gallery_entry.borrow().is_selected)
     }
-    fn process_previews(&mut self) {
+    fn process_previews(&mut self, ctx: &egui::Context) {
         let mut do_refiter = false;
         // let mut preview_index = 0;
         let mut new_previews = vec![];
@@ -263,7 +265,10 @@ impl GalleryUI {
                 let preview_status = PreviewUI::try_get_status(&preview_ui.status);
                 let close_preview =
                     !(matches!(preview_status, Some(PreviewStatus::Closed)) || matches!(preview_status, Some(PreviewStatus::Deleted(_))));
-                if matches!(preview_status, Some(PreviewStatus::Updated)) {
+                if matches!(preview_status, Some(PreviewStatus::Updated)) || matches!(preview_status, Some(PreviewStatus::HardUpdated)) {
+                    if matches!(preview_status, Some(PreviewStatus::HardUpdated)) {
+                        preview_ui.load_preview(ctx);
+                    }
                     do_refiter = true;
                     // PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
                 } else if matches!(preview_status, Some(PreviewStatus::Previous(_))) || matches!(preview_status, Some(PreviewStatus::Next(_))) {
@@ -315,10 +320,15 @@ impl GalleryUI {
                     // PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
                 } else if let Some(PreviewStatus::RequestingNew(entry_id)) = &preview_status {
                     if let Some(gallery_entries) = self.gallery_entries.as_ref() {
+                        let mut found = false;
                         for gallery_entry in gallery_entries.iter() {
                             if gallery_entry.borrow().entry_info.lock().entry_id() == entry_id {
+                                found = true;
                                 new_previews.push(Arc::clone(&gallery_entry.borrow().entry_info))
                             }
+                        }
+                        if !found {
+                            
                         }
                     }
                     // PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
@@ -374,7 +384,7 @@ impl GalleryUI {
     }
 
     fn process_gallery_entries(&mut self) {
-        if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
+        if let Some(gallery_entries) = self.gallery_entries.as_ref() {
             for gallery_entry in gallery_entries {
                 let mut gallery_entry = gallery_entry.borrow_mut();
                 if util::is_opt_promise_ready(&gallery_entry.updated_entry_info) {
@@ -384,7 +394,7 @@ impl GalleryUI {
                                 let mut gallery_entry_info = gallery_entry.entry_info.lock();
                                 *gallery_entry_info = updated_info
                             }
-                            Ok(Err(_e)) => {
+                            Ok(Err(e)) => {
                                 // print!("failed {e}")
                             }
                             Err(_p) => {
@@ -427,7 +437,7 @@ impl GalleryUI {
         }
     }
 
-    pub fn load_gallery_entries(&mut self) {
+    pub fn generate_entries(&mut self) {
         self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || load_gallery_entries()));
     }
 
@@ -439,19 +449,19 @@ impl GalleryUI {
         }
     }
 
-    fn launch_preview(entry_info: &Arc<Mutex<EntryInfo>>, preview_windows: &mut Vec<WindowContainer>, shared_state: &SharedState) {
+    fn launch_preview(entry_info: &Arc<Mutex<EntryInfo>>, preview_windows: &mut Vec<WindowContainer>, shared_state: &Rc<SharedState>) {
         let preview = PreviewUI::new(
             &entry_info,
-            &shared_state.tag_data_ref,
-            &shared_state.toasts,
-            &shared_state.autocomplete_options,
+            &shared_state, // &shared_state.tag_data_ref,
+                           // &shared_state.toasts,
+                           // &shared_state.autocomplete_options,
         );
         let entry_info = entry_info.lock();
-        let icon = match entry_info.entry_id() {
-            EntryId::MediaEntry(_) => ui::constants::GALLERY_ICON,
-            EntryId::PoolEntry(_) => ui::constants::LINK_ICON,
-        };
-        let title = ui::icon_text(&preview.short_id, icon);
+        // let icon = match entry_info.entry_id() {
+        //     EntryId::MediaEntry(_) => ui::constants::GALLERY_ICON,
+        //     EntryId::PoolEntry(_) => ui::constants::LINK_ICON,
+        // };
+        let title = ui::pretty_entry_id(entry_info.entry_id()); //ui::icon_text(&preview.short_id, icon);
         if !ui::does_window_exist(&title, preview_windows) {
             preview_windows.push(WindowContainer {
                 title,
@@ -459,7 +469,6 @@ impl GalleryUI {
                 window: preview,
             })
         } else {
-            
         }
     }
 
@@ -496,12 +505,12 @@ impl GalleryUI {
                     .button(if self.is_loading_gallery_entries() {
                         String::from("loading...")
                     } else {
-                        ui::icon_text("refresh", ui::constants::REFRESH_ICON)
+                        icon!("refresh", REFRESH_ICON)
                     })
                     .clicked()
                 {
                     tags::reload_tag_data(&self.shared_state.tag_data_ref);
-                    self.load_gallery_entries();
+                    self.generate_entries();
                 }
             });
             ui.add_space(ui::constants::SPACER_SIZE);
@@ -540,7 +549,7 @@ impl GalleryUI {
         });
     }
     fn render_make_link_modal(&self, ctx: &egui::Context) -> Modal {
-        let modal = Modal::new(ctx, "link_modal");
+        let modal = ui::modal(ctx, "link_modal");
         let currently_selected = self.get_selected_gallery_entries();
         modal.show(|ui| {
             modal.title(ui, "new link");
@@ -553,6 +562,7 @@ impl GalleryUI {
                         .map(|gallery_entry| gallery_entry.borrow().entry_info.lock().entry_id().clone())
                         .collect::<Vec<_>>();
                     let toasts = Arc::clone(&self.shared_state.toasts);
+                    let updated_list = Arc::clone(&self.shared_state.updated_entries);
                     thread::spawn(move || {
                         let hashes = entry_ids
                             .iter()
@@ -563,7 +573,9 @@ impl GalleryUI {
                         } else {
                             match data::create_pool_link(&hashes) {
                                 Ok(link_id) => {
-                                    ui::toast_success_lock(&toasts, format!("successfully created {}{}", ui::constants::LINK_ICON, link_id))
+                                    let mut updated_list = updated_list.lock().unwrap();
+                                    updated_list.extend(hashes.iter().map(|h| EntryId::MediaEntry(h.clone())));
+                                    ui::toast_success_lock(&toasts, format!("successfully created {}", ui::pretty_link_id(&link_id)))
                                 }
                                 Err(e) => ui::toast_error_lock(&toasts, format!("failed to create link: {e}")),
                             };
@@ -593,7 +605,7 @@ impl GalleryUI {
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
                                 options.hover_text = status_label;
                                 options.desired_image_size = [thumbnail_size, thumbnail_size];
-                                let response = ui::render_loading_image(ui, ctx, gallery_entry.borrow().thumbnail.as_ref(), &options);
+                                let response = ui::render_loading_preview(ui, ctx, gallery_entry.borrow_mut().thumbnail.as_mut(), &options);
                                 if let Some(response) = response {
                                     if self.is_selection_mode {
                                         if response.clicked() {
@@ -601,9 +613,9 @@ impl GalleryUI {
                                         }
 
                                         if gallery_entry.borrow().is_selected {
-                                            let base_color = Color32::WHITE;
-                                            let secondary_color = Color32::BLACK;
-                                            let stroke = Stroke::new(2., base_color);
+                                            let base_color = Config::global().themes.accent_fill_color().unwrap_or(Color32::WHITE);
+                                            let secondary_color = Config::global().themes.accent_stroke_color().unwrap_or(Color32::BLACK);
+                                            let stroke = Stroke::new(3., base_color);
                                             let mut text_fid = FontId::default();
                                             text_fid.size = 32.;
                                             ui.painter()
@@ -631,7 +643,7 @@ impl GalleryUI {
                                         let gallery_entry = gallery_entry.borrow();
                                         if let Some(thumbnail) = gallery_entry.thumbnail.as_ref() {
                                             if let Some(thumbnail) = thumbnail.ready() {
-                                                if let Ok(thumbnail) = thumbnail {
+                                                if let Ok(MediaPreview::Picture(thumbnail)) = thumbnail {
                                                     // get current hovered
                                                     if response.hovered() {
                                                         current_hovered = Some((thumbnail.texture_id(ctx), response.rect));
@@ -690,7 +702,7 @@ impl GalleryUI {
                                         shadow.color = shadow.color.linear_multiply(ui::ease_in_cubic(hovered_frac));
 
                                         let shadow_mesh = shadow.tessellate(image_rect, Rounding::none());
-                                        
+
                                         ui.painter().add(shadow_mesh);
                                         ui::paint_image(ui.painter(), &tex_id, tweened_image_rect);
 
@@ -800,7 +812,8 @@ impl GalleryUI {
 
 impl ui::UserInterface for GalleryUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.process_previews();
+        
+        self.process_previews(ctx);
         self.process_gallery_entries();
         self.render_preview_windows(ctx);
         ui.vertical(|ui| {

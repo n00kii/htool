@@ -1,17 +1,28 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use crate::{
-    config::Config,
+    config::{Config, Media},
     data::EntryId,
     tags::{self, TagDataRef},
 };
+use anyhow::Result;
 use downcast_rs as downcast;
+use eframe::{
+    egui::{self, Button, Response, RichText, Sense, Ui, WidgetText},
+    emath::Vec2,
+    epaint::{Color32, PathShape},
+};
 use egui::{
     hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout,
-    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextFormat, TextureId,
+    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextFormat, TextureId, TopBottomPanel,
 };
+use egui_extras::RetainedImage;
+use egui_modal::{Modal, ModalStyle};
 use egui_notify::{Toast, Toasts};
+use egui_video::VideoStream;
 use hex_color::HexColor;
+use image::{ImageBuffer, Rgba};
+use poll_promise::Promise;
 use std::{
     cell::RefCell,
     fmt::Display,
@@ -21,17 +32,7 @@ use std::{
     vec,
 };
 
-use anyhow::Result;
-use eframe::{
-    egui::{self, Button, Response, RichText, Sense, Ui, WidgetText},
-    emath::Vec2,
-    epaint::{Color32, PathShape},
-};
-use egui_extras::RetainedImage;
-use image::{ImageBuffer, Rgba};
-use poll_promise::Promise;
-
-use self::{autocomplete::AutocompleteOption, gallery_ui::GalleryUI};
+use self::{autocomplete::AutocompleteOption, gallery_ui::GalleryUI, preview_ui::MediaPreview};
 
 pub type ToastsRef = Arc<Mutex<Toasts>>;
 
@@ -41,6 +42,8 @@ pub mod import_ui;
 pub mod preview_ui;
 pub mod star_rating;
 pub mod tags_ui;
+pub mod config_ui;
+pub mod data_ui;
 
 pub mod constants {
     use eframe::epaint::Color32;
@@ -51,10 +54,11 @@ pub mod constants {
     pub const FG_STROKE_WIDTH: f32 = 1.;
     pub const BG_STROKE_WIDTH: f32 = 1.;
 
-    pub const ERROR_COLOR: Color32 = Color32::from_rgb(200, 90, 90);
-    pub const INFO_COLOR: Color32 = Color32::from_rgb(150, 200, 210);
-    pub const WARNING_COLOR: Color32 = Color32::from_rgb(230, 220, 140);
-    pub const SUCCESS_COLOR: Color32 = Color32::from_rgb(140, 230, 140);
+    pub const PRETTY_HASH_LENGTH: usize = 6;
+    pub const DEFAULT_RED_COLOR: Color32 = Color32::from_rgb(200, 90, 90);
+    pub const DEFAULT_BLUE_COLOR: Color32 = Color32::from_rgb(150, 200, 210);
+    pub const DEFAULT_YELLOW_COLOR: Color32 = Color32::from_rgb(230, 220, 140);
+    pub const DEFAULT_GREEN_COLOR: Color32 = Color32::from_rgb(140, 230, 140);
 
     pub const INFO_ICON: &str = "ℹ";
     pub const WARNING_ICON: &str = "⚠";
@@ -72,13 +76,16 @@ pub mod constants {
     pub const REFRESH_ICON: &str = "⟳";
     pub const ADD_ICON: &str = "➕";
     pub const REMOVE_ICON: &str = "❌";
+    pub const BOX_ICON: &str = "☐";
+    pub const DASH_ICON: &str = "—";
     pub const SAVE_ICON: &str = "💾";
     pub const COPY_ICON: &str = "📋";
     pub const TOOL_ICON: &str = "🔨";
     pub const REORDER_ICON: &str = "↔";
-    pub const DATA_ICON: &str = "💽";
-    pub const CONFIG_ICON: &str = "⚙️";
+    pub const DATA_ICON: &str = "🗂";
+    pub const CONFIG_ICON: &str = "⚙";
     pub const LINK_ICON: &str = "📎";
+    pub const OPEN_ICON: &str = "↗";
 
     pub const GALLERY_TITLE: &str = "gallery";
     pub const IMPORT_TITLE: &str = "importer";
@@ -88,16 +95,10 @@ pub mod constants {
 
     pub const SPACER_SIZE: f32 = 10.;
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
-    // pub const DEFAULT_TEXT_COLOR: Color32 = Color32::GRAY;
 
     pub const FAVORITE_ICON_SELECTED_FILL: Color32 = Color32::from_rgb(252, 191, 73);
-    pub const FAVORITE_ICON_DESELECTED_FILL: Color32 = Color32::from_rgb(126, 95, 36);
-    pub const FAVORITE_ICON_DESELECTED_STROKE: Color32 = Color32::from_rgb(63, 48, 18);
-
-    pub const CAUTION_BUTTON_FILL: Color32 = Color32::from_rgb(87, 38, 34);
-    pub const SUGGESTED_BUTTON_FILL: Color32 = Color32::from_rgb(33, 54, 84);
-    pub const CAUTION_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(242, 148, 148);
-    pub const SUGGESTED_BUTTON_TEXT_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
+    pub const DEFAULT_ACCENT_STROKE_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
+    pub const DEFAULT_ACCENT_FILL_COLOR: Color32 = Color32::from_rgb(20, 70, 60);
 
     pub const IMPORT_IMAGE_HIDDEN_TINT: Color32 = Color32::from_rgb(220, 220, 220);
     pub const IMPORT_IMAGE_UNLOADED_TINT: Color32 = Color32::from_rgb(200, 200, 200);
@@ -126,7 +127,10 @@ impl Default for LayoutJobText {
     fn default() -> Self {
         Self {
             text: String::new(),
-            format: TextFormat{color: text_color(), ..TextFormat::default()},
+            format: TextFormat {
+                color: text_color(),
+                ..TextFormat::default()
+            },
             offset: 0.0,
         }
     }
@@ -157,12 +161,67 @@ pub fn icon_text(text: impl Display, icon: &str) -> String {
     format!("{icon} {text}")
 }
 
+macro_rules! icon {
+    ($text:expr, $icon_name:ident) => {
+        crate::ui::icon_text($text, crate::ui::constants::$icon_name)
+    };
+}
+
+pub(crate) use icon;
+
+pub fn pretty_entry_id(entry_id: &EntryId) -> String {
+    match entry_id {
+        EntryId::PoolEntry(link_id) => pretty_link_id(link_id),
+        EntryId::MediaEntry(hash) => pretty_media_id(hash),
+    }
+}
+
+pub fn pretty_link_id(link_id: &i32) -> String {
+    format!("{}{}", constants::LINK_ICON, link_id)
+}
+
+pub fn pretty_media_id(hash: &String) -> String {
+    format!("{}{}", constants::GALLERY_ICON, &hash[..constants::PRETTY_HASH_LENGTH])
+}
+
 pub fn scale_color(base_color: Color32, color_factor: f32) -> Color32 {
-    Color32::from_rgb(
+    Color32::from_rgba_unmultiplied(
         (base_color.r() as f32 * color_factor) as u8,
         (base_color.g() as f32 * color_factor) as u8,
         (base_color.b() as f32 * color_factor) as u8,
+        (base_color.a()) as u8,
     )
+}
+
+pub fn modal(ctx: &egui::Context, id_source: impl std::fmt::Display) -> Modal {
+    let red_fill = Config::global().themes.red_fill_color().unwrap_or(darker(constants::DEFAULT_RED_COLOR));
+    let red_stroke = Config::global()
+        .themes
+        .red_stroke_color()
+        .unwrap_or(lighter(constants::DEFAULT_RED_COLOR));
+    let accent_fill_color = Config::global()
+        .themes
+        .accent_fill_color()
+        .unwrap_or(constants::DEFAULT_ACCENT_FILL_COLOR);
+    let accent_stroke_color = Config::global()
+        .themes
+        .accent_stroke_color()
+        .unwrap_or(constants::DEFAULT_ACCENT_STROKE_COLOR);
+    let error_color = Config::global().themes.red_stroke_color().unwrap_or(constants::DEFAULT_RED_COLOR);
+    let warning_color = Config::global().themes.yellow_stroke_color().unwrap_or(constants::DEFAULT_YELLOW_COLOR);
+    let info_color = Config::global().themes.blue_stroke_color().unwrap_or(constants::DEFAULT_BLUE_COLOR);
+    let success_color = Config::global().themes.green_stroke_color().unwrap_or(constants::DEFAULT_GREEN_COLOR);
+    Modal::new(ctx, id_source).with_style(&ModalStyle {
+        caution_button_fill: red_fill,
+        caution_button_text_color: red_stroke,
+        suggested_button_fill: accent_fill_color,
+        suggested_button_text_color: accent_stroke_color,
+        info_icon_color: info_color,
+        success_icon_color: success_color,
+        warning_icon_color: warning_color,
+        error_icon_color: error_color,
+        ..Default::default()
+    })
 }
 
 pub fn darker(base_color: Color32) -> Color32 {
@@ -370,10 +429,23 @@ fn styled_button(text: impl std::fmt::Display, text_color: Color32, fill_color: 
 }
 
 pub fn caution_button(text: impl std::fmt::Display) -> Button {
-    styled_button(text, constants::CAUTION_BUTTON_TEXT_COLOR, constants::CAUTION_BUTTON_FILL)
+    let red_fill = Config::global().themes.red_fill_color().unwrap_or(darker(constants::DEFAULT_RED_COLOR));
+    let red_stroke = Config::global()
+        .themes
+        .red_stroke_color()
+        .unwrap_or(lighter(constants::DEFAULT_RED_COLOR));
+    styled_button(text, red_stroke, red_fill)
 }
 pub fn suggested_button(text: impl std::fmt::Display) -> Button {
-    styled_button(text, constants::SUGGESTED_BUTTON_TEXT_COLOR, constants::SUGGESTED_BUTTON_FILL)
+    let accent_fill_color = Config::global()
+        .themes
+        .accent_fill_color()
+        .unwrap_or(constants::DEFAULT_ACCENT_FILL_COLOR);
+    let accent_stroke_color = Config::global()
+        .themes
+        .accent_stroke_color()
+        .unwrap_or(constants::DEFAULT_ACCENT_STROKE_COLOR);
+    styled_button(text, accent_stroke_color, accent_fill_color)
 }
 
 pub enum NumericBase {
@@ -401,10 +473,10 @@ pub fn paint_image(painter: &Painter, texture_id: &TextureId, rect: Rect) {
     painter.add(mesh);
 }
 
-pub fn render_loading_image(
+pub fn render_loading_preview(
     ui: &mut Ui,
     ctx: &egui::Context,
-    image: Option<&Promise<Result<RetainedImage>>>,
+    image: Option<&mut Promise<Result<MediaPreview>>>,
     options: &RenderLoadingImageOptions,
 ) -> Option<Response> {
     let bind_hover_text = |response: Response, hover_text_option: &Option<WidgetText>| -> Response {
@@ -421,7 +493,7 @@ pub fn render_loading_image(
             response = bind_hover_text(response, &options.hover_text_on_none_image);
             Some(response)
         }
-        Some(image_promise) => match image_promise.ready() {
+        Some(image_promise) => match image_promise.ready_mut() {
             None => {
                 let spinner = egui::Spinner::new();
                 let mut response = ui.add_sized(options.widget_size(None), spinner);
@@ -454,28 +526,44 @@ pub fn render_loading_image(
             }
 
             Some(Ok(image)) => {
-                let image_size: [f32; 2] = options.scaled_image_size(image.size_vec2().into());
-
-                let mut response = if options.is_button {
-                    let mut image_button =
-                        egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap_or(false));
-                    for sense in &options.sense {
-                        image_button = image_button.sense(*sense);
-                    }
-                    if let Some(tint) = options.image_tint {
-                        image_button = image_button.tint(tint);
-                    }
-                    ui.add_sized(options.widget_size(Some(image_size)), image_button)
-                } else {
-                    let mut image_widget = egui::widgets::Image::new(image.texture_id(ctx), image_size);
-                    for sense in &options.sense {
-                        image_widget = image_widget.sense(*sense);
-                    }
-                    if let Some(tint) = options.image_tint {
-                        image_widget = image_widget.tint(tint);
-                    }
-                    ui.add_sized(options.widget_size(Some(image_size)), image_widget)
+                let original_size = match image {
+                    MediaPreview::Picture(image) => image.size_vec2(),
+                    MediaPreview::Movie(streamer) => vec2(streamer.width as f32, streamer.height as f32),
                 };
+
+                // let texture_id
+                let image_size: [f32; 2] = options.scaled_image_size(original_size.into());
+
+                let mut response = match image {
+                    MediaPreview::Picture(image) => {
+                        let response = if options.is_button {
+                            let mut image_button =
+                                egui::ImageButton::new(image.texture_id(ctx), image_size).selected(options.is_button_selected.unwrap_or(false));
+                            for sense in &options.sense {
+                                image_button = image_button.sense(*sense);
+                            }
+                            if let Some(tint) = options.image_tint {
+                                image_button = image_button.tint(tint);
+                            }
+                            ui.add_sized(options.widget_size(Some(image_size)), image_button)
+                        } else {
+                            let mut image_widget = egui::widgets::Image::new(image.texture_id(ctx), image_size);
+                            for sense in &options.sense {
+                                image_widget = image_widget.sense(*sense);
+                            }
+                            if let Some(tint) = options.image_tint {
+                                image_widget = image_widget.tint(tint);
+                            }
+                            ui.add_sized(options.widget_size(Some(image_size)), image_widget)
+                        };
+                        response
+                    }
+                    MediaPreview::Movie(streamer) => {
+                        streamer.process_state();
+                        streamer.ui(ui, image_size)
+                    },
+                };
+
                 response = bind_hover_text(response, &options.hover_text);
                 Some(response)
             }
@@ -545,10 +633,6 @@ fn load_icon() -> eframe::IconData {
     }
 }
 
-pub fn colored_frame() -> Frame {
-    Frame::default().fill(color32_from_hex("#292d3e").unwrap())
-}
-
 pub type UpdateFlag = Arc<Mutex<bool>>;
 pub type UpdateList<T> = Arc<Mutex<Vec<T>>>;
 pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
@@ -588,12 +672,14 @@ pub struct AppUI {
 }
 
 impl eframe::App for AppUI {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Self::render_custom_frame(ctx, frame, &Rc::clone(&self.shared_state), |ui| {
         self.render_top_bar(ctx);
         self.render_current_window(ctx);
         self.render_toasts(ctx);
         self.process_state();
         ctx.request_repaint();
+        // });
     }
 }
 
@@ -631,6 +717,7 @@ impl AppUI {
         }
         *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
     }
+
     fn load_fonts(ctx: &egui::Context) {
         let mut fonts = FontDefinitions::default();
 
@@ -778,6 +865,7 @@ impl AppUI {
         let mut options = eframe::NativeOptions::default();
         options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
         options.icon_data = Some(load_icon());
+        // options.decorated = false;
         // options.renderer = Renderer::Wgpu;
         eframe::run_native(
             constants::APPLICATION_NAME,
@@ -795,24 +883,36 @@ impl AppUI {
 
     pub fn load_windows(&mut self) {
         let mut gallery_window = gallery_ui::GalleryUI::new(&self.shared_state);
-        gallery_window.load_gallery_entries();
+        gallery_window.generate_entries();
         self.windows = vec![
             WindowContainer {
                 window: Box::new(import_ui::ImporterUI::default()),
                 is_open: None,
-                title: icon_text(constants::IMPORT_TITLE, constants::IMPORT_ICON),
+                title: icon!(constants::IMPORT_TITLE, IMPORT_ICON),
             },
             WindowContainer {
                 window: Box::new(gallery_window),
                 is_open: None,
 
-                title: icon_text(constants::GALLERY_TITLE, constants::GALLERY_ICON),
+                title: icon!(constants::GALLERY_TITLE, GALLERY_ICON),
             },
             WindowContainer {
                 window: Box::new(tags_ui::TagsUI::new(&self.shared_state)),
                 is_open: None,
 
-                title: icon_text(constants::TAGS_TITLE, constants::TAG_ICON),
+                title: icon!(constants::TAGS_TITLE, TAG_ICON),
+            },
+            WindowContainer {
+                window: Box::new(config_ui::ConfigUI::default()),
+                is_open: None,
+
+                title: icon!(constants::CONFIG_TITLE, CONFIG_ICON),
+            },
+            WindowContainer {
+                window: Box::new(data_ui::DataUI::default()),
+                is_open: None,
+
+                title: icon!(constants::DATA_TITLE, DATA_ICON),
             },
         ];
     }
@@ -821,8 +921,6 @@ impl AppUI {
         egui::TopBottomPanel::top("app_top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.visuals_mut().button_frame = false;
-                egui::widgets::global_dark_light_mode_switch(ui);
-                ui.separator();
                 for window in self.windows.iter_mut() {
                     let response = ui.selectable_label(self.current_window == window.title, window.title.clone());
                     if response.clicked() {
@@ -833,7 +931,7 @@ impl AppUI {
         });
     }
 
-    fn render_custom_frame(&self, ctx: &Context, frame: &mut eframe::Frame, add_contents: impl FnOnce(&mut Ui)) {
+    fn render_custom_frame(ctx: &Context, frame: &mut eframe::Frame, shared_state: &SharedState, add_contents: impl FnOnce(&mut Ui)) {
         let text_color = ctx.style().visuals.text_color();
         let height = 20.;
 
@@ -845,16 +943,40 @@ impl AppUI {
             painter.text(
                 max_rect.center_top() + vec2(0., height / 2.),
                 Align2::CENTER_CENTER,
-                &self.shared_state.window_title,
+                &shared_state.window_title,
                 FontId::proportional(height * 0.8),
                 text_color,
             );
-            let close_response = ui.put(
-                Rect::from_min_size(max_rect.left_top(), Vec2::splat(height)),
-                Button::new(RichText::new(constants::REMOVE_ICON).size(height - 4.)).frame(false),
+            let button_size = Vec2::splat(height);
+            let button_margin = 5.;
+            let mut button_pos_iter = (0..3)
+                .into_iter()
+                .map(|i| max_rect.right_top() - vec2((i + 1) as f32 * button_size.x + button_margin, 0.));
+            let (close_button_pos, maximize_button_pos, minimize_button_pos) = (
+                button_pos_iter.next().unwrap(),
+                button_pos_iter.next().unwrap(),
+                button_pos_iter.next().unwrap(),
             );
+            let button_text_size = height - 4.;
+            let close_button_rect = Rect::from_min_size(close_button_pos, button_size);
+            let maximize_button_rect = Rect::from_min_size(maximize_button_pos, button_size);
+            let minimize_button_rect = Rect::from_min_size(minimize_button_pos, button_size);
+
+            let close_button = Button::new(RichText::new(constants::REMOVE_ICON).size(button_text_size)).frame(false);
+            let maximize_button = Button::new(RichText::new(constants::BOX_ICON).size(button_text_size)).frame(false);
+            let minimize_button = Button::new(RichText::new(constants::DASH_ICON).size(button_text_size)).frame(false);
+
+            let close_response = ui.put(close_button_rect, close_button);
+            let maximize_response = ui.put(maximize_button_rect, maximize_button);
+            let minimize_response = ui.put(minimize_button_rect, minimize_button);
             if close_response.clicked() {
                 frame.close()
+            }
+            if maximize_response.clicked() {
+                frame.set_fullscreen(true)
+            }
+            if minimize_response.clicked() {
+                frame.set_visible(false)
             }
             let title_bar_rect = {
                 let mut title_bar_rect = max_rect;

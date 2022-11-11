@@ -2,6 +2,7 @@ use super::ui;
 use crate::data;
 use crate::data::ImportationStatus;
 use crate::data::RegistrationForm;
+use crate::ui::preview_ui::MediaPreview;
 use anyhow::{Error, Result};
 
 use egui_extras::RetainedImage;
@@ -28,7 +29,7 @@ pub struct ImportationEntry {
 
     pub linking_dir: Option<String>,
     pub bytes: Option<Promise<Result<Arc<Vec<u8>>>>>,
-    pub thumbnail: Option<Promise<Result<RetainedImage>>>,
+    pub thumbnail: Option<Promise<Result<MediaPreview>>>,
     pub is_archive: bool,
     pub importation_status: Option<Promise<ImportationStatus>>,
 }
@@ -278,9 +279,9 @@ impl ImportationEntry {
                         let bytes = Arc::clone(bytes);
                         thread::spawn(move || {
                             let bytes = &bytes as &[u8];
-                            let generate_image = || -> Result<RetainedImage> {
-                                let pixels = data::generate_media_thumbnail(bytes)?;
-                                ui::generate_retained_image(&pixels)
+                            let generate_image = || -> Result<MediaPreview> {
+                                let pixels = data::generate_media_thumbnail(bytes, false)?;
+                                Ok(MediaPreview::Picture(ui::generate_retained_image(&pixels)?))
                             };
                             sender.send(generate_image());
                         });

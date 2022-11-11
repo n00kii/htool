@@ -519,6 +519,9 @@ impl ImporterUI {
                 if !self.waiting_for_extracts && media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
                     let _ = self.import_buffer.try_add_entry(&media_entry);
                 }
+                if media_entry.borrow().match_importation_status(ImportationStatus::Duplicate) || media_entry.borrow().match_importation_status(ImportationStatus::Success) {
+                    media_entry.borrow_mut().keep_bytes_loaded = false;
+                }
             }
             if self.import_buffer.ready_for_batch_action() {
                 let reg_forms = self
@@ -577,7 +580,7 @@ impl ImporterUI {
                                     };
                                     options.is_button = importation_entry.is_importable();
                                     options.is_button_selected = Some(importation_entry.is_selected);
-                                    let response = ui::render_loading_image(ui, ctx, importation_entry.thumbnail.as_ref(), &options);
+                                    let response = ui::render_loading_preview(ui, ctx, importation_entry.thumbnail.as_mut(), &options);
                                     if let Some(response) = response.as_ref() {
                                         if response.clicked() && importation_entry.is_importable() {
                                             importation_entry.is_selected = !importation_entry.is_selected
@@ -617,8 +620,8 @@ impl ImporterUI {
     }
 
     fn render_extraction_prompt(&mut self, ctx: &Context) -> Modal {
-        let prompt_show = Modal::new(ctx, "extraction_progress");
-        let prompt_ask = Modal::new(ctx, "extraction_prompt");
+        let prompt_show = ui::modal(ctx, "extraction_progress");
+        let prompt_ask = ui::modal(ctx, "extraction_prompt");
         // need to prompt_show before pr
         prompt_show.show(|ui| {
             prompt_show.title(ui, "extracting");

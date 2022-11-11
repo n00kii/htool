@@ -103,6 +103,72 @@ pub struct Config {
     pub namespaces: Vec<Namespace>,
 }
 
+use paste::paste;
+macro_rules! color_opt {
+    ($name:ident) => {
+        pub fn $name(&self) -> Option<Color32> {
+            self.current_theme().and_then(|t| t.$name.0)
+        }
+    };
+}
+macro_rules! color_opt_field {
+    ($name:ident) => {
+        pub name: Color32Opt,
+    };
+}
+macro_rules! stroke_opt {
+    ($type:tt, $layer:tt) => {
+        paste! {
+            pub fn [<$type _ $layer _ stroke>](&self) -> Option<Stroke>
+            {
+                if let Some(stroke_color) = self.[<$type _ $layer _ stroke_color>]() {
+                    Some(Stroke::new(self.[<$layer _ stroke_width>]().unwrap_or(ui::constants::[<$layer:upper _STROKE_WIDTH>]), stroke_color))
+                } else {
+                    None
+                }
+            }
+        }
+    };
+}
+
+macro_rules! color_opts_fields {
+    ($type:tt) => {
+        paste! {
+        color_opt_field!([<$type _bg_fill_color>]);
+        color_opt_field!([<$type _bg_stroke_color>]);
+        color_opt_field!([<$type _fg_stroke_color>]);
+        }
+    };
+}
+macro_rules! stroke_and_colors {
+    ($type:tt) => {
+        paste! {
+        color_opt!([<$type _bg_fill_color>]);
+        color_opt!([<$type _bg_stroke_color>]);
+        color_opt!([<$type _fg_stroke_color>]);
+
+        stroke_opt!($type, bg);
+        stroke_opt!($type, fg);
+        }
+    };
+}
+macro_rules! stroke_and_fill_colors {
+    ($name:tt) => {
+        paste! {
+        color_opt!([<$name _fill_color>]);
+        color_opt!([<$name _stroke_color>]);
+        }
+    };
+}
+
+macro_rules! f32_opt {
+    ($name:ident) => {
+        pub fn $name(&self) -> Option<f32> {
+            self.current_theme().and_then(|t| t.$name)
+        }
+    };
+}
+
 impl Themes {
     pub fn current_theme(&self) -> Option<Theme> {
         for theme in &self.themes {
@@ -114,136 +180,33 @@ impl Themes {
         }
         None
     }
-    fn stroke(stroke_width: f32, color: Option<Color32>) -> Option<Stroke> {
-        if let Some(stroke_color) = color {
-            Some(Stroke::new(stroke_width, stroke_color))
-        } else {
-            None
-        }
-    }
-    pub fn bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.bg_fill_color.0)
-    }
-    pub fn secondary_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.secondary_bg_fill_color.0)
-    }
-    pub fn tertiary_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.tertiary_bg_fill_color.0)
-    }
 
-    pub fn light_blue(&self) -> Color32 {
-        self.current_theme()
-            .and_then(|t| t.tertiary_bg_fill_color.0)
-            .unwrap_or(ui::constants::INFO_COLOR)
-    }
-    pub fn light_red(&self) -> Color32 {
-        self.current_theme()
-            .and_then(|t| t.tertiary_bg_fill_color.0)
-            .unwrap_or(ui::constants::ERROR_COLOR)
-    }
-    pub fn light_green(&self) -> Color32 {
-        self.current_theme()
-            .and_then(|t| t.tertiary_bg_fill_color.0)
-            .unwrap_or(ui::constants::SUCCESS_COLOR)
-    }
-    pub fn light_yellow(&self) -> Color32 {
-        self.current_theme()
-            .and_then(|t| t.tertiary_bg_fill_color.0)
-            .unwrap_or(ui::constants::WARNING_COLOR)
-    }
-    pub fn blue(&self) -> Color32 {
-        self.current_theme()
-            .and_then(|t| t.blue.0)
-            .unwrap_or(ui::constants::SUGGESTED_BUTTON_FILL)
-    }
-    pub fn bg_stroke_width(&self) -> Option<f32> {
-        self.current_theme().and_then(|t| t.bg_stroke_width)
-    }
-    pub fn fg_stroke_width(&self) -> Option<f32> {
-        self.current_theme().and_then(|t| t.fg_stroke_width)
-    }
-    pub fn inactive_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.inactive_bg_fill_color.0)
-    }
-    pub fn inactive_bg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.inactive_bg_stroke_color.0)
-    }
-    pub fn inactive_fg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.inactive_fg_stroke_color.0)
-    }
-    pub fn inactive_bg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.bg_stroke_width().unwrap_or(ui::constants::BG_STROKE_WIDTH),
-            self.inactive_bg_stroke_color(),
-        )
-    }
-    pub fn inactive_fg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.fg_stroke_width().unwrap_or(ui::constants::FG_STROKE_WIDTH),
-            self.inactive_fg_stroke_color(),
-        )
-    }
-    pub fn hovered_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.hovered_bg_fill_color.0)
-    }
-    pub fn hovered_bg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.hovered_bg_stroke_color.0)
-    }
-    pub fn hovered_fg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.hovered_fg_stroke_color.0)
-    }
-    pub fn hovered_bg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.bg_stroke_width().unwrap_or(ui::constants::BG_STROKE_WIDTH),
-            self.hovered_bg_stroke_color(),
-        )
-    }
-    pub fn hovered_fg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.fg_stroke_width().unwrap_or(ui::constants::FG_STROKE_WIDTH),
-            self.hovered_fg_stroke_color(),
-        )
-    }
-    pub fn active_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.active_bg_fill_color.0)
-    }
-    pub fn active_bg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.active_bg_stroke_color.0)
-    }
-    pub fn active_fg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.active_fg_stroke_color.0)
-    }
-    pub fn active_bg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.bg_stroke_width().unwrap_or(ui::constants::BG_STROKE_WIDTH),
-            self.active_bg_stroke_color(),
-        )
-    }
-    pub fn active_fg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.fg_stroke_width().unwrap_or(ui::constants::FG_STROKE_WIDTH),
-            self.active_fg_stroke_color(),
-        )
-    }
-    pub fn selected_fg_stroke_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.selected_fg_stroke_color.0)
-    }
-    pub fn selected_bg_fill_color(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.selected_bg_fill_color.0)
-    }
-    pub fn selected_fg_stroke(&self) -> Option<Stroke> {
-        Self::stroke(
-            self.fg_stroke_width().unwrap_or(ui::constants::FG_STROKE_WIDTH),
-            self.selected_fg_stroke_color(),
-        )
-    }
-    pub fn override_widget_primary(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.override_widget_primary.0)
-    }
-    pub fn override_widget_secondary(&self) -> Option<Color32> {
-        self.current_theme().and_then(|t| t.override_widget_secondary.0)
-    }
+    color_opt!(bg_fill_color);
+    color_opt!(secondary_bg_fill_color);
+    color_opt!(tertiary_bg_fill_color);
+
+    stroke_and_fill_colors!(accent);
+    stroke_and_fill_colors!(blue);
+    stroke_and_fill_colors!(green);
+    stroke_and_fill_colors!(red);
+    stroke_and_fill_colors!(yellow);
+
+    f32_opt!(bg_stroke_width);
+    f32_opt!(fg_stroke_width);
+
+    stroke_and_colors!(inactive);
+    stroke_and_colors!(hovered);
+    stroke_and_colors!(active);
+
+    color_opt!(selected_fg_stroke_color);
+    color_opt!(selected_bg_fill_color);
+
+    stroke_opt!(selected, fg);
+
+    color_opt!(override_widget_primary);
+    color_opt!(override_widget_secondary);
 }
+
 #[derive(Debug, Clone, Default)]
 pub struct Color32Opt(pub Option<Color32>);
 
@@ -352,84 +315,25 @@ pub struct Theme {
     pub selected_fg_stroke_color: Color32Opt,
     pub selected_bg_fill_color: Color32Opt,
 
-    pub light_blue: Color32Opt,
-    pub light_green: Color32Opt,
-    pub light_red: Color32Opt,
-    pub light_yellow: Color32Opt,
+    // pub light_blue: Color32Opt,
+    // pub light_green: Color32Opt,
+    // pub light_red: Color32Opt,
+    // pub light_yellow: Color32Opt,
+    pub blue_fill_color: Color32Opt,
+    pub blue_stroke_color: Color32Opt,
+    pub red_fill_color: Color32Opt,
+    pub red_stroke_color: Color32Opt,
+    pub green_fill_color: Color32Opt,
+    pub green_stroke_color: Color32Opt,
+    pub yellow_stroke_color: Color32Opt,
+    pub yellow_fill_color: Color32Opt,
 
-    pub blue: Color32Opt,
-    pub red: Color32Opt,
+    pub accent_fill_color: Color32Opt,
+    pub accent_stroke_color: Color32Opt,
 
     pub override_widget_primary: Color32Opt,
     pub override_widget_secondary: Color32Opt,
-    // pub bg_fill_color: Option<String>,
-    // pub secondary_bg_fill_color: Option<String>,
-    // pub tertiary_bg_fill_color: Option<String>,
-
-    // pub bg_stroke_width: Option<f32>,
-    // pub fg_stroke_width: Option<f32>,
-
-    // pub inactive_bg_fill_color: Option<String>,
-    // pub inactive_bg_stroke_color: Option<String>,
-    // pub inactive_fg_stroke_color: Option<String>,
-
-    // pub hovered_bg_fill_color: Option<String>,
-    // pub hovered_bg_stroke_color: Option<String>,
-    // pub hovered_fg_stroke_color: Option<String>,
-
-    // pub active_bg_fill_color: Option<String>,
-    // pub active_bg_stroke_color: Option<String>,
-    // pub active_fg_stroke_color: Option<String>,
-
-    // pub selected_fg_stroke_color: Option<String>,
-    // pub selected_bg_fill_color: Option<String>,
-
-    // pub light_blue: Option<String>,
-    // pub light_green: Option<String>,
-    // pub light_red: Option<String>,
-    // pub light_yellow: Option<String>,
-
-    // pub blue: Option<String>,
-    // pub red: Option<String>,
 }
-
-// impl Default for Theme {
-//     fn default() -> Self {
-//         Self {
-//             name: String::from("new theme"),
-
-//             bg_fill_color: Color,
-//             secondary_bg_fill_color: None,
-//             tertiary_bg_fill_color: None,
-
-//             light_blue: None,
-//             light_red: None,
-//             light_green: None,
-//             light_yellow: None,
-
-//             red: None,
-//             blue: None,
-
-//             bg_stroke_width: None,
-//             fg_stroke_width: None,
-
-//             inactive_bg_fill_color: None,
-//             inactive_bg_stroke_color: None,
-//             inactive_fg_stroke_color: None,
-
-//             hovered_bg_fill_color: None,
-//             hovered_bg_stroke_color: None,
-//             hovered_fg_stroke_color: None,
-
-//             active_bg_fill_color: None,
-//             active_bg_stroke_color: None,
-//             active_fg_stroke_color: None,
-
-//             selected_fg_stroke_color: None,
-//             selected_bg_fill_color: None,
-//         }
-//     }
-// }
 
 impl Default for Config {
     fn default() -> Self {

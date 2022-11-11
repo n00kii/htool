@@ -37,7 +37,7 @@ impl Autocomplete {
 use eframe::epaint::{vec2, Color32, FontId, Pos2};
 use egui::{text_edit::CCursorRange, Area, Event, Id, Key, Modifiers, Response, Ui, Widget};
 
-use crate::{ui, config::Config};
+use crate::{config::Config, ui};
 
 pub fn create<'a>(search: &'a mut String, options: &'a Vec<AutocompleteOption>, multiline: bool, appear_below: bool) -> impl Widget + 'a {
     move |ui: &mut egui::Ui| autocomplete_ui(ui, search, options, multiline, appear_below)
@@ -109,6 +109,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
         egui::TextEdit::singleline(search)
     };
     tedit = tedit.lock_focus(true);
+    
     let mut tedit_output = tedit.show(ui);
 
     let tedit_response = tedit_output.response;
@@ -205,7 +206,12 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                     .show(&ui.ctx(), |ui: &mut Ui| {
                         let _screen_rect = ui.ctx().input().screen_rect;
                         let painter = ui.painter();
-                        painter.rect(ac_rect, 2., Color32::from_rgb(10, 10, 10), visuals.bg_stroke);
+                        painter.rect(
+                            ac_rect,
+                            2.,
+                            ui.visuals().extreme_bg_color,
+                            Config::global().themes.active_bg_stroke().unwrap_or(visuals.bg_stroke),
+                        );
                         let ac_rect_left_top = ac_rect.left_top();
                         let mut index = 0;
                         for (mut text_galley, desc_galley, text_color) in text_galleys {
@@ -238,6 +244,20 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                             index += 1;
                         }
                     });
+            } else {
+                if tab_pressed {
+                    insert_key(ui, Key::Tab);
+                    dbg!("hmm");
+                    tedit_response.surrender_focus()
+                }
+            }
+        } else {
+            if tab_pressed {
+                ui.ctx().memory().lock_focus(tedit_response.id, false);
+                insert_key(ui, Key::Tab);
+                dbg!("hmm2");
+                // tedit_response.surrender_focus()
+                // tedit_response.surrender_focus()
             }
         }
 

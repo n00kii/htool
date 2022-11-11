@@ -35,14 +35,24 @@ themes:
     active_fg_stroke_color: '#80CBC4'
     selected_fg_stroke_color: '#80CBC4'
     selected_bg_fill_color: '#1C1F2B'
-    light_blue: null
-    light_green: null
-    light_red: null
-    light_yellow: null
-    blue: null
-    red: null
+    blue_fill_color: null
+    blue_stroke_color: '#82AAFF'
+    red_fill_color: '#412A32'
+    red_stroke_color: '#9C5560'
+    green_fill_color: null
+    green_stroke_color: null
+    yellow_stroke_color: null
+    yellow_fill_color: null
+    accent_fill_color: '#203231'
+    accent_stroke_color: '#80CBC4'
     override_widget_primary: '#80CBC4'
     override_widget_secondary: null
 namespaces:
 - name: artist
   color: '#686FD5'
+- name: character
+  color: '#915C55'
+- name: copyright
+  color: '#91D0CC'
+- name: ref
+  color: '#FFE326'

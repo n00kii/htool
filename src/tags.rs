@@ -7,7 +7,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Config, Color32Opt},
+    config::{Color32Opt, Config},
     data,
     ui::autocomplete::AutocompleteOption,
     ui::{self, LayoutJobText},
@@ -40,7 +40,7 @@ impl Namespace {
         }
     }
     pub fn color32(&self) -> Color32 {
-           self.color.0.unwrap_or(ui::text_color())
+        self.color.0.unwrap_or(ui::text_color())
     }
     pub fn color_array(&self) -> [f32; 4] {
         self.color32().to_array().map(|u| u as f32 / 255.)
