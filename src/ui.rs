@@ -1,8 +1,8 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use crate::{
-    config::{Config, Media},
-    data::EntryId,
+    config::Config,
+    data::{self, EntryId},
     tags::{self, TagDataRef},
 };
 use anyhow::Result;
@@ -14,7 +14,7 @@ use eframe::{
 };
 use egui::{
     hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout,
-    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextFormat, TextureId, TopBottomPanel,
+    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, TopBottomPanel, Window,
 };
 use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
@@ -22,28 +22,34 @@ use egui_notify::{Toast, Toasts};
 use egui_video::VideoStream;
 use hex_color::HexColor;
 use image::{ImageBuffer, Rgba};
+use parking_lot::{Mutex, MutexGuard};
 use poll_promise::Promise;
 use std::{
     cell::RefCell,
     fmt::Display,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
     time::Duration,
     vec,
 };
 
-use self::{autocomplete::AutocompleteOption, gallery_ui::GalleryUI, preview_ui::MediaPreview};
+use self::{autocomplete::AutocompleteOption, constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview};
 
 pub type ToastsRef = Arc<Mutex<Toasts>>;
 
 pub mod autocomplete;
+pub mod config_ui;
+pub mod data_ui;
+pub mod debug_ui;
 pub mod gallery_ui;
 pub mod import_ui;
 pub mod preview_ui;
 pub mod star_rating;
 pub mod tags_ui;
-pub mod config_ui;
-pub mod data_ui;
 
 pub mod constants {
     use eframe::epaint::Color32;
@@ -84,14 +90,20 @@ pub mod constants {
     pub const REORDER_ICON: &str = "↔";
     pub const DATA_ICON: &str = "🗂";
     pub const CONFIG_ICON: &str = "⚙";
+    pub const MISC_ICON: &str = "✱";
+    pub const SPARKLE_ICON: &str = "✨";
+    pub const WINDOW_ICON: &str = "🗖";
     pub const LINK_ICON: &str = "📎";
     pub const OPEN_ICON: &str = "↗";
+    pub const MOVIE_ICON: &str = "▶";
+    pub const DEBUG_ICON: &str = "🐞";
 
     pub const GALLERY_TITLE: &str = "gallery";
     pub const IMPORT_TITLE: &str = "importer";
     pub const TAGS_TITLE: &str = "tags";
     pub const CONFIG_TITLE: &str = "config";
     pub const DATA_TITLE: &str = "data";
+    pub const DEBUG_TITLE: &str = "debug";
 
     pub const SPACER_SIZE: f32 = 10.;
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
@@ -297,6 +309,7 @@ pub fn shrink_rect_scaled2(rect: &Rect, scale: [f32; 2]) -> Rect {
 }
 
 pub fn generate_retained_image(image_buffer: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<RetainedImage> {
+    puffin::profile_scope!("retained_image_gen");
     let pixels = image_buffer.as_flat_samples();
     let color_image = egui::ColorImage::from_rgba_unmultiplied([pixels.extents().1, pixels.extents().2], pixels.as_slice());
     Ok(RetainedImage::from_color_image("", color_image))
@@ -320,6 +333,7 @@ pub struct RenderLoadingImageOptions {
     pub error_label_text: String,
     pub resize_method: ImageResizeMethod,
     pub sense: Vec<Sense>,
+    error_label_text_size: LabelSize,
 }
 
 impl RenderLoadingImageOptions {
@@ -355,6 +369,16 @@ impl RenderLoadingImageOptions {
     // fn image_size(&self)
 }
 
+fn font_id_sized(size: f32) -> FontId {
+    let mut default_fid = FontId::default();
+    default_fid.size = size;
+    default_fid
+}
+
+enum LabelSize {
+    Exact(f32),
+    Relative(f32),
+}
 impl Default for RenderLoadingImageOptions {
     fn default() -> Self {
         RenderLoadingImageOptions {
@@ -370,43 +394,34 @@ impl Default for RenderLoadingImageOptions {
             hover_text: None,
             image_tint: None,
             error_label_text: "?".into(),
+            error_label_text_size: LabelSize::Exact(48.),
             sense: vec![egui::Sense::click()],
         }
     }
 }
 
-pub fn toast_info(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
-    set_default_toast_options(toasts.info(caption))
-}
-pub fn toast_success(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
-    set_default_toast_options(toasts.success(caption))
-}
-pub fn toast_warning(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
-    set_default_toast_options(toasts.warning(caption))
-}
-pub fn toast_error(toasts: &mut Toasts, caption: impl Into<String>) -> &mut Toast {
-    set_default_toast_options(toasts.error(caption))
-}
-
 pub fn toast_info_lock(toasts: &ToastsRef, caption: impl Into<String>) {
-    if let Ok(mut toasts) = toasts.lock() {
-        set_default_toast_options(toasts.info(caption));
-    }
+    toasts_with_cb(toasts, |toasts| toasts.info(caption), |t| t)
 }
 pub fn toast_success_lock(toasts: &ToastsRef, caption: impl Into<String>) {
-    if let Ok(mut toasts) = toasts.lock() {
-        set_default_toast_options(toasts.success(caption));
-    }
+    toasts_with_cb(toasts, |toasts| toasts.success(caption), |t| t)
 }
 pub fn toast_warning_lock(toasts: &ToastsRef, caption: impl Into<String>) {
-    if let Ok(mut toasts) = toasts.lock() {
-        set_default_toast_options(toasts.warning(caption));
-    }
+    toasts_with_cb(toasts, |toasts| toasts.warning(caption), |t| t)
 }
+
 pub fn toast_error_lock(toasts: &ToastsRef, caption: impl Into<String>) {
-    if let Ok(mut toasts) = toasts.lock() {
-        set_default_toast_options(toasts.error(caption));
-    }
+    toasts_with_cb(toasts, |toasts| toasts.error(caption), |t| t)
+}
+
+fn toasts_with_cb(toasts: &ToastsRef, toasts_cb: impl FnOnce(&mut Toasts) -> &mut Toast, toast_cb: impl FnOnce(&mut Toast) -> &mut Toast) {
+    let mut toasts = toasts.lock();
+    let toast = set_default_toast_options_lock(toasts_cb(&mut toasts));
+    toast_cb(toast);
+}
+
+pub fn set_default_toast_options_lock(toast: &mut Toast) -> &mut Toast {
+    toast.set_duration(Some(Duration::from_millis(3000))).set_closable(true)
 }
 
 pub fn set_default_toast_options(toast: &mut egui_notify::Toast) -> &mut Toast {
@@ -452,6 +467,7 @@ pub enum NumericBase {
     Ten,
     Two,
 }
+
 pub fn readable_byte_size(byte_size: i64, precision: usize, base: NumericBase) -> String {
     let byte_size = byte_size as f64;
     let unit_symbols = ["B", "KB", "MB", "GB"];
@@ -501,7 +517,12 @@ pub fn render_loading_preview(
                 Some(response)
             }
             Some(Err(image_error)) => {
-                let text = egui::RichText::new(&options.error_label_text).size(48.0);
+                let mut text = egui::RichText::new(&options.error_label_text);
+
+                text = match options.error_label_text_size {
+                    LabelSize::Exact(exact_size) => text.size(exact_size),
+                    LabelSize::Relative(relative_size) => text.size(relative_size * options.desired_image_size[1]),
+                };
 
                 let mut response = if options.is_button {
                     let mut button = egui::Button::new(text);
@@ -561,7 +582,7 @@ pub fn render_loading_preview(
                     MediaPreview::Movie(streamer) => {
                         streamer.process_state();
                         streamer.ui(ui, image_size)
-                    },
+                    }
                 };
 
                 response = bind_hover_text(response, &options.hover_text);
@@ -633,9 +654,10 @@ fn load_icon() -> eframe::IconData {
     }
 }
 
-pub type UpdateFlag = Arc<Mutex<bool>>;
+pub type UpdateFlag = Arc<AtomicBool>;
 pub type UpdateList<T> = Arc<Mutex<Vec<T>>>;
 pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
+
 pub struct SharedState {
     pub toasts: ToastsRef,
     pub tag_data_ref: TagDataRef,
@@ -644,12 +666,24 @@ pub struct SharedState {
     pub all_entries_update_flag: UpdateFlag,
     pub updated_entries: UpdateList<EntryId>,
     pub tag_data_update_flag: UpdateFlag,
+    pub updated_theme_selection: UpdateFlag,
+    pub gallery_regenerate_flag: UpdateFlag,
+    pub database_unlocked: UpdateFlag,
 }
 
 impl SharedState {
     pub fn set_update_flag(flag: &UpdateFlag, new_state: bool) {
-        if let Ok(mut flag) = flag.lock() {
-            *flag = new_state;
+        flag.store(new_state, Ordering::Relaxed);
+    }
+    pub fn read_update_flag(flag: &UpdateFlag) -> bool {
+        flag.load(Ordering::Relaxed)
+    }
+    pub fn consume_update_flag(flag: &UpdateFlag) -> bool {
+        if Self::read_update_flag(flag) {
+            Self::set_update_flag(flag, false);
+            true
+        } else {
+            false
         }
     }
     pub fn set_title(&mut self, addition: Option<String>) {
@@ -660,9 +694,7 @@ impl SharedState {
         }
     }
     pub fn append_to_update_list<T>(list: &UpdateList<T>, mut new_items: Vec<T>) {
-        if let Ok(mut list) = list.lock() {
-            list.append(&mut new_items)
-        }
+        list.lock().append(&mut new_items)
     }
 }
 pub struct AppUI {
@@ -672,14 +704,19 @@ pub struct AppUI {
 }
 
 impl eframe::App for AppUI {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        // Self::render_custom_frame(ctx, frame, &Rc::clone(&self.shared_state), |ui| {
+    fn persist_native_window(&self) -> bool {
+        true
+    }
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        Config::save().expect("failed to save config");
+    }
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        puffin::GlobalProfiler::lock().new_frame();
         self.render_top_bar(ctx);
         self.render_current_window(ctx);
         self.render_toasts(ctx);
-        self.process_state();
+        self.process_state(ctx);
         ctx.request_repaint();
-        // });
     }
 }
 
@@ -694,26 +731,35 @@ pub fn color32_from_hex(hex: &str) -> Result<Color32> {
 }
 
 impl AppUI {
-    fn process_state(&mut self) {
-        if let Ok(mut update_list) = self.shared_state.updated_entries.try_lock() {
-            // dbg!(&update_list);
+    pub fn init() {
+        Config::load();
+        // data::init();
+        egui_video::init();
+        puffin::set_scopes_on(true);
+    }
+    fn process_state(&mut self, ctx: &Context) {
+        if let Some(mut update_list) = self.shared_state.updated_entries.try_lock() {
             if update_list.len() > 0 {
                 if let Some(gallery_container) = self
                     .windows
                     .iter_mut()
                     .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
                 {
+                    puffin::profile_scope!("update_gallery_entries");
                     let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
                     gallery_window.update_entries(&update_list);
                 }
             }
             update_list.clear();
         }
-        if let Ok(mut was_updated) = self.shared_state.tag_data_update_flag.try_lock() {
-            if *was_updated {
-                tags::reload_tag_data(&self.shared_state.tag_data_ref)
-            }
-            *was_updated = false;
+        if SharedState::consume_update_flag(&self.shared_state.tag_data_update_flag) {
+            tags::reload_tag_data(&self.shared_state.tag_data_ref);
+        }
+        if SharedState::consume_update_flag(&self.shared_state.updated_theme_selection) {
+            AppUI::load_style(ctx);
+        }
+        if SharedState::consume_update_flag(&self.shared_state.gallery_regenerate_flag) {
+            self.generate_gallery_entries();
         }
         *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
     }
@@ -777,13 +823,16 @@ impl AppUI {
 
     pub fn new() -> Self {
         let shared_state = SharedState {
+            updated_theme_selection: Arc::new(AtomicBool::new(false)),
+            gallery_regenerate_flag: Arc::new(AtomicBool::new(false)),
             tag_data_ref: tags::initialize_tag_data(),
             autocomplete_options: Rc::new(RefCell::new(None)),
             window_title: env!("CARGO_PKG_NAME").to_string(),
             toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
-            all_entries_update_flag: Arc::new(Mutex::new(false)),
+            all_entries_update_flag: Arc::new(AtomicBool::new(false)),
             updated_entries: Arc::new(Mutex::new(vec![])),
-            tag_data_update_flag: Arc::new(Mutex::new(false)),
+            tag_data_update_flag: Arc::new(AtomicBool::new(false)),
+            database_unlocked: Arc::new(AtomicBool::new(false)),
         };
         AppUI {
             shared_state: Rc::new(shared_state),
@@ -803,60 +852,45 @@ impl AppUI {
             style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(stroke_size, scale_color(color, 1.5));
         }
         if let Some(color) = Config::global().themes.tertiary_bg_fill_color() {
-            // color32_from_hex("#1c1f2b") { // tert bg (darker)
             style.visuals.extreme_bg_color = color;
         }
         if let Some(color) = Config::global().themes.secondary_bg_fill_color() {
-            //color32_from_hex("#232635") { // secondary bg (lighter)
             style.visuals.faint_bg_color = scale_color(color, 1.2);
         }
         if let Some(color) = Config::global().themes.inactive_bg_fill_color() {
-            //color32_from_hex("#292d3e") { // inactive bg fill232635
             style.visuals.widgets.inactive.bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.inactive_bg_stroke() {
-            //color32_from_hex("#a6accd") { // inactive bg stroke
             style.visuals.widgets.inactive.bg_stroke = stroke;
         }
         if let Some(stroke) = Config::global().themes.inactive_fg_stroke() {
-            //color32_from_hex("#676e95") { // inactive fg stroke
             style.visuals.widgets.noninteractive.fg_stroke = stroke;
             style.visuals.widgets.inactive.fg_stroke = stroke;
         }
         if let Some(color) = Config::global().themes.hovered_bg_fill_color() {
-            //color32_from_hex("#212532") { // hovered bg fill
             style.visuals.widgets.hovered.bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.hovered_bg_stroke() {
-            //color32_from_hex("#676e95") { // hovered bg stroke
             style.visuals.widgets.hovered.bg_stroke = stroke;
         }
         if let Some(stroke) = Config::global().themes.hovered_fg_stroke() {
-            //color32_from_hex("#a6accd") { // hovered fg stroke
             style.visuals.widgets.hovered.fg_stroke = stroke;
         }
         if let Some(color) = Config::global().themes.active_bg_fill_color() {
-            //color32_from_hex("#212532") { // active bg fill
             style.visuals.widgets.active.bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.active_bg_stroke() {
-            //color32_from_hex("#80cbc4") { // active bg stroke
             style.visuals.widgets.active.bg_stroke = stroke;
         }
         if let Some(stroke) = Config::global().themes.active_fg_stroke() {
-            //color32_from_hex("#80cbc4") { // active fg stroke
             style.visuals.widgets.active.fg_stroke = stroke;
         }
         if let Some(stroke) = Config::global().themes.selected_fg_stroke() {
-            //color32_from_hex("#80cbc4") { // selected stroke
             style.visuals.selection.stroke = stroke;
         }
         if let Some(color) = Config::global().themes.selected_bg_fill_color() {
-            //color32_from_hex("#1c1f2b") { // selected bg fill
             style.visuals.selection.bg_fill = color
         }
-
-        // accent #80cbc4
 
         ctx.set_style(style)
     }
@@ -883,10 +917,9 @@ impl AppUI {
 
     pub fn load_windows(&mut self) {
         let mut gallery_window = gallery_ui::GalleryUI::new(&self.shared_state);
-        gallery_window.generate_entries();
         self.windows = vec![
             WindowContainer {
-                window: Box::new(import_ui::ImporterUI::default()),
+                window: Box::new(import_ui::ImporterUI::new(&self.shared_state)),
                 is_open: None,
                 title: icon!(constants::IMPORT_TITLE, IMPORT_ICON),
             },
@@ -903,8 +936,8 @@ impl AppUI {
                 title: icon!(constants::TAGS_TITLE, TAG_ICON),
             },
             WindowContainer {
-                window: Box::new(config_ui::ConfigUI::default()),
-                is_open: None,
+                window: Box::new(config_ui::ConfigUI::new(&self.shared_state)),
+                is_open: Some(false),
 
                 title: icon!(constants::CONFIG_TITLE, CONFIG_ICON),
             },
@@ -914,18 +947,61 @@ impl AppUI {
 
                 title: icon!(constants::DATA_TITLE, DATA_ICON),
             },
+            WindowContainer {
+                window: Box::new(debug_ui::DebugUI::default()),
+                is_open: Some(false),
+
+                title: icon!(constants::DEBUG_TITLE, DEBUG_ICON),
+            },
         ];
+        match data::try_unlock_database_with_key(&String::new()) {
+            Ok(true) => {
+                SharedState::set_update_flag(&self.shared_state.database_unlocked, true);
+                self.generate_gallery_entries();
+            }
+            _ => ()
+        };
+    }
+
+    fn mutable_database_key(&mut self) -> &mut String {
+        for window in self.windows.iter_mut() {
+            if let Some(data_ui) = window.window.downcast_mut::<DataUI>() {
+                return &mut data_ui.database_key;
+            }
+        }
+        unreachable!()
+    }
+
+    fn generate_gallery_entries(&mut self) {
+        for window in self.windows.iter_mut() {
+            if let Some(gallery_ui) = window.window.downcast_mut::<GalleryUI>() {
+                gallery_ui.generate_entries();
+            }
+        }
     }
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
+        let lock_exclusions = vec![icon!(CONFIG_TITLE, CONFIG_ICON)];
         egui::TopBottomPanel::top("app_top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.visuals_mut().button_frame = false;
                 for window in self.windows.iter_mut() {
-                    let response = ui.selectable_label(self.current_window == window.title, window.title.clone());
-                    if response.clicked() {
-                        self.current_window = window.title.clone();
-                    }
+                    ui.add_enabled_ui(
+                        SharedState::read_update_flag(&self.shared_state.database_unlocked) || lock_exclusions.contains(&window.title),
+                        |ui| {
+                            let response = ui.selectable_label(
+                                self.current_window == window.title || matches!(window.is_open, Some(true)),
+                                window.title.clone(),
+                            );
+                            if response.clicked() {
+                                if let Some(is_open) = window.is_open.as_mut() {
+                                    *is_open ^= true;
+                                } else {
+                                    self.current_window = window.title.clone();
+                                }
+                            }
+                        },
+                    );
                 }
             });
         });
@@ -1008,7 +1084,37 @@ impl AppUI {
                         LayoutJobText::from(constants::APPLICATION_NAME).with_size(24.),
                         LayoutJobText::from(format!(" v{}", constants::APPLICATION_VERSION)).with_size(18.),
                     ]);
-                    ui.label(job_text);
+                    let splash_rect = ui.label(job_text).rect;
+                    if !SharedState::read_update_flag(&self.shared_state.database_unlocked) {
+                        let unlock_flag = Arc::clone(&self.shared_state.database_unlocked);
+                        let toasts = Arc::clone(&self.shared_state.toasts);
+                        let regenerate_flag = Arc::clone(&self.shared_state.gallery_regenerate_flag);
+                        let db_key = self.mutable_database_key();
+                        let db_key_clone = db_key.clone();
+                        let login_tedit_rect = Rect::from_center_size(splash_rect.center() + vec2(0., 40.), vec2(200., 10.));
+                        let button_rect = login_tedit_rect.translate(vec2(0., login_tedit_rect.height() + 15.));
+                        let text_edit = TextEdit::singleline(db_key).hint_text("enter database key...").password(true);
+                        let button = Button::new("unlock");
+                        ui.put(login_tedit_rect, text_edit);
+                        if ui.put(button_rect, button).clicked() {
+                            thread::spawn(move || {
+                                match data::try_unlock_database_with_key(&db_key_clone) {
+                                    Ok(true) => {
+                                        data::set_db_key(&db_key_clone);
+                                        SharedState::set_update_flag(&unlock_flag, true);
+                                        SharedState::set_update_flag(&regenerate_flag, true);
+                                        toast_success_lock(&toasts, "successfully unlocked database");
+                                    }
+                                    Ok(false) => {
+                                        toast_error_lock(&toasts, "invalid key or invalid database");
+                                    }
+                                    Err(e) => {
+                                        toast_error_lock(&toasts, format!("failed to unlock: {e}"));
+                                    }
+                                };
+                            });
+                        }
+                    }
                 });
             } else {
                 for window in self.windows.iter_mut() {
@@ -1018,10 +1124,17 @@ impl AppUI {
                 }
             }
         });
+        for window in self.windows.iter_mut() {
+            if let Some(is_open) = window.is_open.as_mut() {
+                if *is_open {
+                    Window::new(&window.title).open(is_open).show(ctx, |ui| window.window.ui(ui, ctx));
+                }
+            }
+        }
     }
 
     fn render_toasts(&self, ctx: &Context) {
-        if let Ok(mut toasts) = self.shared_state.toasts.try_lock() {
+        if let Some(mut toasts) = self.shared_state.toasts.try_lock() {
             toasts.show(ctx)
         }
     }

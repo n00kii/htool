@@ -15,6 +15,7 @@ use crate::ui::preview_ui::MediaPreview;
 use super::ui;
 use super::Config;
 
+use anyhow::anyhow;
 use anyhow::{Context, Result};
 use egui_extras::RetainedImage;
 use egui_video::VideoStream;
@@ -25,10 +26,13 @@ use image_hasher::{HashAlg, HasherConfig};
 // use infer;
 use once_cell::sync::OnceCell;
 
+use parking_lot::lock_api::RawMutex;
+use parking_lot::RwLock;
 use poll_promise::Sender;
 use r2d2::Pool;
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::ErrorCode;
 use rusqlite::Row;
 
 use rusqlite::{params, Connection};
@@ -40,30 +44,81 @@ use std::hash;
 use std::io::Cursor;
 use std::mem::discriminant;
 use std::sync::Arc;
-use std::sync::Mutex;
+// use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const DATABASE_WORKERS_PER_TASK: u32 = 15;
+static DATABASE_KEY: RwLock<String> = parking_lot::const_rwlock(String::new());
 const GENERIC_RUSQLITE_ERROR: rusqlite::Error = rusqlite::Error::InvalidQuery;
 static POOLS: OnceCell<Pool<SqliteConnectionManager>> = OnceCell::new();
 
-fn create_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
-    let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?);
-    r2d2::Pool::builder()
-        .max_size((Config::global().misc.concurrent_db_operations * 3) as u32)
-        .build(manager)
-        .context("failed to create conn pool")
-}
+// fn create_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
+//     let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?);
+//     // .with_init(|c| c.execute_batch("PRAGMA key='test'"));
+//     let connection_manager = r2d2::Pool::builder()
+//         .max_size((Config::global().misc.concurrent_db_operations * 3) as u32)
+//         .build(manager)
+//         .context("failed to create conn pool")?;
 
-pub fn init() {
-    POOLS
-        .set(create_conn_pool().expect("couldn't initialize database connections"))
-        .expect("failed to set database instance");
-}
+//     Ok(connection_manager)
+// }
+
+// pub fn init() {
+//     POOLS
+//         .set(create_conn_pool().expect("couldn't initialize database connections"))
+//         .expect("failed to set database instance");
+// }
 
 pub fn get_conn_pool() -> &'static Pool<SqliteConnectionManager> {
     // DB_MANAGER_INSTANCE.get().expect("uninitialized db")
     POOLS.get().expect("uninitialized db")
+}
+
+pub fn generate_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
+    let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?)
+        .with_init(move |c| c.execute_batch(&format!("PRAGMA key = '{}';", get_db_key())));
+
+    let connection_manager = r2d2::Pool::builder()
+        .max_size(DATABASE_WORKERS_PER_TASK)
+        .build(manager)
+        .context("failed to create conn pool")?;
+
+    Ok(connection_manager)
+}
+
+fn get_db_key() -> String {
+    DATABASE_KEY.read().to_string() //.as_deref().map(|s| s.to_string())
+}
+
+pub fn set_db_key(new_key: &String) {
+    let mut db_key = DATABASE_KEY.write(); 
+    *db_key = new_key.clone();
+}
+
+fn apply_database_key_to_conn(conn: &Connection, key: &String) -> Result<()> {
+    conn.pragma_update(None, "key", key)?;
+    Ok(())
+}
+
+pub fn is_connection_unlocked(conn: &Connection) -> Result<bool> {
+    match conn.execute("SELECT COUNT(*) FROM sqlite_master", []) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            if matches!(e.sqlite_error_code(), Some(ErrorCode::NotADatabase)) {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+    }
+}
+
+pub fn try_unlock_database_with_key(key: &String) -> Result<bool> {
+    let conn = open_database_connection()?;
+    apply_database_key_to_conn(&conn, key)?;
+    is_connection_unlocked(&conn)
 }
 
 pub struct DataRequest<T> {
@@ -72,13 +127,8 @@ pub struct DataRequest<T> {
 }
 pub struct CompleteDataRequest {
     pub info_request: DataRequest<EntryInfo>,
-    pub thumbnail_request: DataRequest<MediaPreview>,
+    pub preview_request: DataRequest<MediaPreview>,
 }
-// pub struct GalleryEntryLoadRequest {
-//     pub entry_id: EntryId,
-//     pub info_sender: Sender<Result<EntryInfo>>,
-//     pub thumbnail_sender: Sender<Result<RetainedImage>>,
-// }
 
 pub struct RegistrationForm {
     pub bytes: Arc<Vec<u8>>,
@@ -164,8 +214,8 @@ impl EntryInfo {
     }
     pub fn is_movie(&self) -> bool {
         if let EntryInfo::MediaEntry(media_info) = self {
-            if  vec!["video/webm", "video/mp4", "image/gif"].contains(&media_info.mime.as_str()) {
-                return true
+            if vec!["video/webm", "video/mp4", "image/gif"].contains(&media_info.mime.as_str()) {
+                return true;
             }
         }
         false
@@ -224,6 +274,8 @@ impl EntryInfo {
         true
     }
 }
+
+static DB_WRITE_LOCK: Mutex<()> = parking_lot::const_mutex(());
 
 #[derive(Clone, Debug)]
 pub struct MediaInfo {
@@ -305,7 +357,11 @@ pub fn generate_media_thumbnail(image_data: &[u8], is_movie: bool) -> Result<Ima
         let ctx = egui::Context::default();
         let streamer = VideoStream::new_from_bytes(&ctx, image_data)?;
         let next_frame = streamer.stream_decoder.lock().unwrap().recieve_next_packet_until_frame()?;
-        let pixels = next_frame.pixels.iter().flat_map(|c32| [c32.r(), c32.g(), c32.b(), c32.a()]).collect::<Vec<u8>>();
+        let pixels = next_frame
+            .pixels
+            .iter()
+            .flat_map(|c32| [c32.r(), c32.g(), c32.b(), c32.a()])
+            .collect::<Vec<u8>>();
         RgbaImage::from_raw(streamer.width, streamer.height, pixels).context("failed to make image")?
     } else {
         image::load_from_memory(image_data)?.to_rgba8()
@@ -356,17 +412,29 @@ pub fn generate_pool_thumbnail(constituent_thumbnails: &Vec<ImageBuffer<Rgba<u8>
 
 pub fn load_thumbnail_with_conn(conn: &Connection, entry_id: &EntryId) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     // let conn = initialize_database_connection()?;
+    puffin::profile_scope!("load_thumbnail");
+
     let mut statement = conn.prepare("SELECT bytes FROM thumbnail_cache WHERE hash = ?1 OR link_id = ?2")?;
     let bytes_res: Result<Vec<u8>, rusqlite::Error> =
         statement.query_row(params![entry_id.as_media_entry_id(), entry_id.as_pool_entry_id()], |row| row.get(0));
 
     match bytes_res {
         Ok(bytes) => {
+            puffin::profile_scope!("load_mem");
+
             let image = image::load_from_memory(&bytes)?;
             let image_buffer = image.into_rgba8();
+            // if let Some(image_buffer) = ImageBuffer::from_vec(100, 100, bytes) {
+
+            //     return Ok(image_buffer);
+            // } else {
+            //     return Err(anyhow!("hmmm"))
+            // }
+            // dbg!(bytes.len(), image_buffer.len());
             return Ok(image_buffer);
         }
         Err(error) => {
+            // dbg!(&error);
             if error == rusqlite::Error::QueryReturnedNoRows {
                 match entry_id {
                     EntryId::MediaEntry(hash) => {
@@ -375,18 +443,20 @@ pub fn load_thumbnail_with_conn(conn: &Connection, entry_id: &EntryId) -> Result
                         let mime_type: Option<String> = statement.query_row(params![hash], |row| row.get("mime"))?;
                         let bytes = load_bytes(&hash)?;
                         // if mime_type.starts_with("image") {
-                        let thumbnail_res = generate_media_thumbnail( &bytes, entry_info.is_movie());
+                        let thumbnail_res = generate_media_thumbnail(&bytes, entry_info.is_movie());
                         match thumbnail_res {
                             Ok(thumbnail) => {
                                 let mut thumbnail_bytes: Vec<u8> = Vec::new();
                                 let mut writer = Cursor::new(&mut thumbnail_bytes);
                                 thumbnail.write_to(&mut writer, image::ImageOutputFormat::Png)?;
-
+                                // let thumbnail_bytes = thumbnail.as_ref();
+                                let lock = DB_WRITE_LOCK.lock();
                                 conn.execute(
                                     "INSERT INTO thumbnail_cache (hash, bytes)
                                     VALUES (?1, ?2)",
                                     params![hash, thumbnail_bytes],
                                 )?;
+                                drop(lock);
                                 return Ok(thumbnail);
                             }
                             Err(_e) => {
@@ -438,8 +508,28 @@ pub fn load_thumbnail_with_conn(conn: &Connection, entry_id: &EntryId) -> Result
     }
 }
 
-pub fn initialize_database_connection() -> Result<Connection> {
-    let conn = Connection::open(&Config::global().path.database()?)?;
+trait FallibleSender {
+    fn fail(self, error: anyhow::Error);
+}
+
+fn initialize_database_connection_with_senders<T>(senders: T) -> Result<(Connection, T)>
+where
+    T: FallibleSender,
+{
+    match initialize_database_connection() {
+        Ok(c) => Ok((c, senders)),
+        Err(e) => {
+            senders.fail(anyhow::Error::msg(e.to_string()));
+            return Err(e);
+        }
+    }
+}
+
+fn open_database_connection() -> Result<Connection> {
+    Ok(Connection::open(&Config::global().path.database()?)?)
+}
+
+fn setup_databaste_with_conn(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS entry_info (
                 hash TEXT,
@@ -511,6 +601,19 @@ pub fn initialize_database_connection() -> Result<Connection> {
             )",
         [],
     )?;
+    Ok(())
+}
+
+fn is_database_unencrypted() -> Result<bool> {
+    let conn = open_database_connection()?;
+    apply_database_key_to_conn(&conn, &String::new())?;
+    is_connection_unlocked(&conn)
+}
+
+pub fn initialize_database_connection() -> Result<Connection> {
+    let conn = open_database_connection()?;//Connection::open(&Config::global().path.database()?)?;
+    apply_database_key_to_conn(&conn, &get_db_key())?;
+    setup_databaste_with_conn(&conn)?;
     Ok(conn)
 }
 pub fn load_bytes(hash: &String) -> Result<Vec<u8>> {
@@ -594,11 +697,14 @@ pub fn entry_info_row_to_id(row: &Row) -> Result<EntryId, rusqlite::Error> {
 
 pub fn get_all_entry_ids_with_conn(conn: &Connection) -> Result<Vec<EntryId>> {
     let mut stmt = conn.prepare("SELECT hash, link_id FROM entry_info")?;
-    let all_entry_ids = stmt.query_map([], |row| {
-        let entry_id = entry_info_row_to_id(row)?;
-        Ok(entry_id)
-    })?.filter_map(|id_res| id_res.ok()).collect::<Vec<_>>();
-    
+    let all_entry_ids = stmt
+        .query_map([], |row| {
+            let entry_id = entry_info_row_to_id(row)?;
+            Ok(entry_id)
+        })?
+        .filter_map(|id_res| id_res.ok())
+        .collect::<Vec<_>>();
+
     Ok(all_entry_ids)
 }
 
@@ -754,12 +860,10 @@ pub fn remove_media_from_link(link_id: &i32, hash: &String) -> Result<()> {
     Ok(())
 }
 
-
-
 pub fn reresolve_tags_of_entries(entry_ids: &Vec<EntryId>) -> Result<()> {
     let mut conn = initialize_database_connection()?;
     let tx = conn.transaction()?;
-    for entry_id in  entry_ids {
+    for entry_id in entry_ids {
         let entry_info = get_entry_info_with_conn(&tx, entry_id)?;
         // set tags implicitly resolves
         set_tags_with_conn(&tx, entry_info.entry_id(), &entry_info.details().tags)?;
@@ -767,7 +871,6 @@ pub fn reresolve_tags_of_entries(entry_ids: &Vec<EntryId>) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
-
 
 fn resolve_tags_with_conn(conn: &Connection, tags: &Vec<Tag>) -> Result<Vec<Tag>> {
     fn inner_resolve_tags_with_conn(conn: &Connection, tags: &Vec<Tag>, mut was_aliased_tagstrings: Vec<String>) -> Result<Vec<Tag>> {
@@ -950,6 +1053,20 @@ fn delete_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
     Ok(())
 }
 
+pub fn rekey_database(new_key: &String) -> Result<()> {
+    if is_database_unencrypted()? {
+        let conn = open_database_connection()?;
+        conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2", params!["encr.db", "test"])?;
+        conn.execute("SELECT sqlcipher_export('encrypted')",[])?;
+        conn.execute("DETACH DATABSE encrypted", [])?;
+    } else {
+        let conn = open_database_connection()?;
+        apply_database_key_to_conn(&conn, &get_db_key())?;
+        conn.pragma_update(None, "rekey", new_key)?;
+    }
+    Ok(())
+}
+
 pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
     let mut conn = initialize_database_connection()?;
     let tx = conn.transaction()?;
@@ -1092,7 +1209,7 @@ fn delegate_to_conn_pool<F>(f: F) -> Result<()>
 where
     F: Fn() + Send + 'static + Clone,
 {
-    (0..Config::global().misc.concurrent_db_operations)
+    (0..DATABASE_WORKERS_PER_TASK)
         .map(|_| thread::spawn(f.clone()))
         .collect::<Vec<_>>()
         .into_iter()
@@ -1106,16 +1223,18 @@ fn open_conn(conn_pool: &Pool<SqliteConnectionManager>) -> PooledConnection<Sqli
 }
 
 pub fn load_gallery_entries_with_requests(requests: Vec<CompleteDataRequest>) -> Result<()> {
-    let conn_pool = get_conn_pool();
+    puffin::profile_scope!("data_load_gallery_entries");
+
+    let conn_pool = generate_conn_pool()?;
     let requests = Arc::new(Mutex::new(requests));
     delegate_to_conn_pool(move || {
-        let conn = open_conn(conn_pool);
+        let conn = open_conn(&conn_pool);
         loop {
-            let mut requests = requests.lock().unwrap();
+            let mut requests = requests.lock();
             if requests.len() > 0 {
                 let CompleteDataRequest {
                     info_request,
-                    thumbnail_request,
+                    preview_request: thumbnail_request,
                 } = requests.remove(0);
                 drop(requests);
                 let entry_id = info_request.entry_id;
@@ -1158,12 +1277,12 @@ pub fn load_entry_info_with_requests(requests: Vec<DataRequest<EntryInfo>>) -> R
     //     request.sender.send(entry_info);
     // }
     // dbg!(&requests.len());
-    let conn_pool = get_conn_pool();
+    let conn_pool = generate_conn_pool()?;
     let requests = Arc::new(Mutex::new(requests));
     delegate_to_conn_pool(move || {
-        let conn = open_conn(conn_pool);
+        let conn = open_conn(&conn_pool);
         loop {
-            let mut requests = requests.lock().unwrap();
+            let mut requests = requests.lock();
             if requests.len() > 0 {
                 let next_request = requests.remove(0);
                 drop(requests);
@@ -1176,12 +1295,18 @@ pub fn load_entry_info_with_requests(requests: Vec<DataRequest<EntryInfo>>) -> R
     })
 }
 
-
+impl FallibleSender for Vec<RegistrationForm> {
+    fn fail(self, error: anyhow::Error) {
+        self.into_iter().for_each(|r| {
+            r.importation_result_sender
+                .send(ImportationStatus::Fail(anyhow::Error::msg(error.to_string())))
+        });
+    }
+}
 
 pub fn register_media_with_forms(reg_forms: Vec<RegistrationForm>) -> Result<()> {
-    let mut conn = initialize_database_connection()?;
+    let (mut conn, reg_forms) = initialize_database_connection_with_senders(reg_forms)?;
     let trans = conn.transaction()?;
-    // let reg_forms = arc_mut(reg_forms);
 
     for reg_form in reg_forms {
         let status = register_media_with_conn(&trans, &reg_form);
@@ -1254,30 +1379,23 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
             Ok(_) => {
                 conn.execute("INSERT INTO media_bytes (hash, bytes) VALUES (?1, ?2)", params![sha_hash, reg_form.bytes])?;
                 if let Some(linking_dir) = &reg_form.linking_dir {
-                    if let Ok(mut dir_link_map) = reg_form.dir_link_map.lock() {
-                        let link_id = if let Some(link_id) = dir_link_map.get(linking_dir) {
-                            *link_id
-                        } else {
-                            // new link_id
-                            // let next_id = get_next_link_id_with_conn(conn)?;
+                    let mut dir_link_map = reg_form.dir_link_map.lock();
+                    let link_id = if let Some(link_id) = dir_link_map.get(linking_dir) {
+                        *link_id
+                    } else {
+                        let next_id = create_new_link_with_conn(conn)?;
+                        dir_link_map.insert(linking_dir.clone(), next_id);
+                        next_id
+                    };
 
-                            // conn.execute(
-                            //     "INSERT INTO entry_info (link_id, date_registered) VALUES (?1, ?2)",
-                            //     params![next_id, timestamp],
-                            // )?;
-                            let next_id = create_new_link_with_conn(conn)?;
-                            dir_link_map.insert(linking_dir.clone(), next_id);
-                            next_id
-                        };
-
-                        conn.execute(
-                            "INSERT INTO media_links (link_id, hash, value)
+                    conn.execute(
+                        "INSERT INTO media_links (link_id, hash, value)
                             VALUES (?1, ?2, ?3)",
-                            params![link_id, sha_hash, reg_form.linking_value],
-                        )?;
-                    }
+                        params![link_id, sha_hash, reg_form.linking_value],
+                    )?;
                 }
 
+                // let _ = load_thumbnail_with_conn(conn, &EntryId::MediaEntry(sha_hash));
                 return Ok(ImportationStatus::Success);
             }
             Err(error) => {

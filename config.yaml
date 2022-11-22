@@ -1,20 +1,16 @@
 path:
   root: ./root
   landing: F:\Media\Documents\Projects\htool2\htool2\testing_files
-  database: data.db
-media:
-  max_score: 5
-import:
-  thumbnail_size: 100
-gallery:
-  thumbnail_size: 100
-  short_id_length: 6
-  preview_size: 500
-  base_search: independant=true limit=5000
+  database: datanew
+general:
+  entry_max_score: 5
+  gallery_base_search: independant=true limit=5000
 misc:
-  concurrent_db_operations: 20
+  entry_short_id_length: 6
 ui:
   thumbnail_resolution: 100
+  import_thumbnail_size: 62
+  gallery_thumbnail_size: 50
 themes:
   current_theme: palenight
   themes:

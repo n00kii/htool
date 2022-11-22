@@ -15,6 +15,7 @@ use crate::util::PollBuffer;
 use super::super::data;
 use super::super::ui;
 use super::super::Config;
+use super::SharedState;
 use crate::import::scan_directory;
 use crate::import::ImportationEntry;
 use anyhow::Result;
@@ -30,11 +31,13 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
+use std::time::Duration;
+use parking_lot::Mutex;
 use std::thread;
 
 pub struct ImporterUI {
-    toasts: egui_notify::Toasts,
+    shared_state: Rc<SharedState>,
     import_failures_list: Arc<Mutex<Vec<(String, Error)>>>,
     importation_entries: Option<Vec<Rc<RefCell<ImportationEntry>>>>,
     alternate_scan_dir: Option<PathBuf>,
@@ -58,8 +61,8 @@ struct ArchiveExtractionProgress {
     promise: Promise<Result<Vec<ImportationEntry>>>,
 }
 
-impl Default for ImporterUI {
-    fn default() -> Self {
+impl ImporterUI {
+    pub fn new(shared_state: &Rc<SharedState>) -> Self {
         let thumbnail_buffer = PollBuffer::new(
             Some(5_000_000),
             None,
@@ -79,7 +82,8 @@ impl Default for ImporterUI {
         let import_buffer = BatchPollBuffer::new(import_poll_buffer);
 
         Self {
-            toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
+            // toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
+            shared_state: Rc::clone(&shared_state),
             import_failures_list: Arc::new(Mutex::new(vec![])),
             thumbnail_buffer,
             pending_archive_extracts: None,
@@ -116,15 +120,12 @@ impl ImporterUI {
         }
     }
 
-    // fn is_pending_extractions(&self) -> bool {
-    //     self.pending_archive_extracts.is_some()
-    // }
 
     fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<ImportationEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
         if media_entry.are_bytes_loaded() {
             if media_entry.thumbnail.is_none() {
-                media_entry.load_thumbnail(); //FIXME: replace w config
+                media_entry.load_thumbnail();
             }
         }
         media_entry.is_thumbnail_loading() || media_entry.thumbnail.is_none()
@@ -250,24 +251,21 @@ impl ImporterUI {
                         Ok(media_entries) => {
                             let warning_amount = 15000;
                             let amount_entries = media_entries.len();
-                            ui::toast_info(&mut self.toasts, format!("found {amount_entries} entries"));
+                            ui::toast_info_lock(&self.shared_state.toasts, format!("found {amount_entries} entries"));
                             if amount_entries > warning_amount {
-                                ui::toast_warning(
-                                    &mut self.toasts,
-                                    format!(
+                                ui::toasts_with_cb(&self.shared_state.toasts, |toasts| {
+                                    toasts.error(format!(
                                         "more than {warning_amount} entries: performance may be limited. \
                                         disabling previews or splitting this directory into multiple \
                                         directories may help."
-                                    ),
-                                )
-                                .set_closable(true)
-                                .set_duration(None);
+                                    ))
+                                }, |toast| toast.set_closable(true).set_duration(None));
+
                             }
-                            // dbg!(media_entries.len());
                             self.importation_entries = Some(media_entries.into_iter().map(|i| Rc::new(RefCell::new(i))).collect());
                         }
                         Err(e) => {
-                            ui::toast_error(&mut self.toasts, format!("failed to scan directory: {e}"));
+                            ui::toast_error_lock(&self.shared_state.toasts, format!("failed to scan directory: {e}"));
                         }
                     }
                 }
@@ -314,7 +312,10 @@ impl ImporterUI {
                 {
                     let selected_media_entries = self.get_selected_media_entries();
                     let mut selected_archives_exist = false;
-                    ui::toast_info(&mut self.toasts, format!("marked {} media for importing", selected_media_entries.len()));
+                    ui::toast_info_lock(
+                        &self.shared_state.toasts,
+                        format!("marked {} media for importing", selected_media_entries.len()),
+                    );
                     for media_entry in self.get_selected_media_entries() {
                         media_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
                         media_entry.borrow_mut().is_selected = false;
@@ -335,6 +336,8 @@ impl ImporterUI {
     }
 
     fn process_extractions(&mut self) {
+        puffin::profile_scope!("import_process_extractions");
+
         let max_concurrent_extractions = 2;
         let mut new_entries = vec![];
         let mut set_none = false;
@@ -357,9 +360,8 @@ impl ImporterUI {
                                 let import_entries = import_entries.into_iter().map(|i| Rc::new(RefCell::new(i)));
                                 new_entries.extend(import_entries);
                             }
-                            Err(_e) => {
-                                ui::toast_error(&mut self.toasts, "failed extraction");
-                                //FIXME: better messagew
+                            Err(e) => {
+                                ui::toast_error_lock(&self.shared_state.toasts, format!("failed extraction: {e}"));
                             }
                         }
                     }
@@ -380,13 +382,13 @@ impl ImporterUI {
                     pending_extractions.push(prog);
 
                     thread::spawn(move || {
-                        let extract = || -> Result<()> {
+                        let extract = || -> Result<Vec<ImportationEntry>> {
                             let temp_dir = tempdir()?;
 
                             let file = File::open(entry_path)?;
                             let mut archive = ZipArchive::new(file)?;
                             for i in 0..archive.len() {
-                                let mut current_progress = current_progress.lock().unwrap();
+                                let mut current_progress = current_progress.lock();
                                 *current_progress = i as f32 / archive.len() as f32;
                                 drop(current_progress);
 
@@ -412,11 +414,17 @@ impl ImporterUI {
                                     i.bytes.as_ref().unwrap().block_until_ready();
                                 })
                             }
-                            sender.send(import_entries);
                             temp_dir.close()?;
-                            Ok(())
+                            import_entries
+                            // sender.send(import_entries);
+                            // temp_dir.close()?;
+                            // Ok(())
                         };
-                        extract()
+                        match extract() {
+                            Ok(import_entries) => sender.send(Ok(import_entries)),
+                            Err(e) => sender.send(Err(e))
+                        }
+                        
                     });
                     // remove extracting entry
                     if let Some(import_entries) = self.importation_entries.as_mut() {
@@ -434,6 +442,7 @@ impl ImporterUI {
     }
 
     fn render_files(&mut self, ui: &mut Ui) {
+        puffin::profile_scope!("import_render_files");
         ui.vertical(|files_col| {
             files_col.label("file");
             if let Some(scanned_dirs) = &mut self.importation_entries {
@@ -494,6 +503,8 @@ impl ImporterUI {
     }
 
     fn process_media(&mut self) {
+        puffin::profile_scope!("import_process_media");
+
         self.thumbnail_buffer.poll();
         self.import_buffer.poll();
 
@@ -519,7 +530,9 @@ impl ImporterUI {
                 if !self.waiting_for_extracts && media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
                     let _ = self.import_buffer.try_add_entry(&media_entry);
                 }
-                if media_entry.borrow().match_importation_status(ImportationStatus::Duplicate) || media_entry.borrow().match_importation_status(ImportationStatus::Success) {
+                if media_entry.borrow().match_importation_status(ImportationStatus::Duplicate)
+                    || media_entry.borrow().match_importation_status(ImportationStatus::Success)
+                {
                     media_entry.borrow_mut().keep_bytes_loaded = false;
                 }
             }
@@ -539,6 +552,8 @@ impl ImporterUI {
     }
 
     fn render_previews(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        puffin::profile_scope!("import_render_previews");
+
         ui.vertical(|ui| {
             ui.label("preview");
 
@@ -558,9 +573,11 @@ impl ImporterUI {
                                     let file_label_clone = file_label.clone();
 
                                     let mut options = ui::RenderLoadingImageOptions::default();
-                                    let thumbnail_size = Config::global().import.thumbnail_size as f32;
+                                    let thumbnail_size = Config::global().ui.import_thumbnail_size as f32;
                                     options.widget_margin = [10., 10.];
+                                    options.error_label_text_size = ui::LabelSize::Relative(0.8);
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
+                                    options.error_label_text = importation_entry.dir_entry.path().extension().and_then(|e| e.to_str().map(|e| e.to_string())).unwrap_or("?".to_string());
                                     options.hover_text_on_loading_image = Some(format!("{file_label} (loading thumbnail...)",).into());
                                     options.hover_text_on_error_image = Some(Box::new(move |error| format!("{file_label_clone} ({error})").into()));
                                     options.hover_text_on_none_image = Some(format!("{file_label} (waiting to load image...)").into());
@@ -631,12 +648,12 @@ impl ImporterUI {
                         prompt_show.close();
                     }
                     for pending_extraction in pending_extractions {
-                        if let Ok(progress) = pending_extraction.current_progress.try_lock() {
+                        if let Some(progress) = pending_extraction.current_progress.try_lock() {
                             ui.label(format!(
                                 "extracting {}...",
                                 pending_extraction.import_entry_path.as_os_str().to_string_lossy()
                             ));
-                            ui.add(ProgressBar::new(*progress));
+                            ui.add(ProgressBar::new(*progress).text(format!("{}%", (100. * *progress).round())));
                             ui.separator();
                         }
                     }
@@ -696,7 +713,7 @@ impl ImporterUI {
     fn render_import_status_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("import status")
             .open(&mut self.is_import_status_window_open)
-            .resizable(false)
+                .resizable(false)
             .show(ctx, |ui| {
                 if let Some(media_entries) = &mut self.importation_entries {
                     let mut total_failed = 0;
@@ -786,6 +803,5 @@ impl ui::UserInterface for ImporterUI {
         }
         self.render_import_status_window(ctx);
         self.render_filters_window(ctx);
-        self.toasts.show(ctx);
     }
 }

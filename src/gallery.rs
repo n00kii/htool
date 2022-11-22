@@ -1,6 +1,7 @@
 use super::data;
 use crate::data::CompleteDataRequest;
 use crate::data::DataRequest;
+use crate::data::EntryId;
 use crate::ui::preview_ui::MediaPreview;
 
 use anyhow::Result;
@@ -82,7 +83,7 @@ impl GalleryEntry {
                 entry_id: entry_info.entry_id().clone(),
                 sender: info_sender,
             },
-            thumbnail_request: DataRequest {
+            preview_request: DataRequest {
                 entry_id: entry_info.entry_id().clone(),
                 sender: thumbnail_sender,
             },
@@ -94,7 +95,6 @@ impl GalleryEntry {
         self.updated_entry_info = Some(promise);
         request
     }
-
 
     pub fn get_status_label(&self) -> Option<String> {
         let mut statuses = vec![];
@@ -113,6 +113,18 @@ impl GalleryEntry {
         } else {
             None
         }
+    }
+
+    pub fn new(entry_id: EntryId) -> Result<Self> {
+        let entry_info = data::get_entry_info(&entry_id)?;
+        Ok(Self {
+            is_info_dirty: false,
+            is_selected: false,
+            did_complete_request: false,
+            entry_info: Arc::new(Mutex::new(entry_info)),
+            thumbnail: None,
+            updated_entry_info: None,
+        })
     }
 }
 

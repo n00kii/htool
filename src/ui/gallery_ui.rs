@@ -17,6 +17,7 @@ use eframe::egui::Key;
 use eframe::egui::Layout;
 
 use eframe::epaint::Shadow;
+use egui::vec2;
 use egui::Align2;
 use egui::Color32;
 use egui::FontId;
@@ -47,6 +48,7 @@ use super::icon;
 use super::preview_ui::MediaPreview;
 use super::preview_ui::PreviewStatus;
 use super::preview_ui::PreviewUI;
+use super::UpdateFlag;
 
 use anyhow::Result;
 
@@ -63,6 +65,7 @@ use std::cell::RefCell;
 
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 // use std::sync::Mutex;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
@@ -71,12 +74,13 @@ use std::thread;
 pub struct GalleryUI {
     pub thumbnail_buffer: BatchPollBuffer<GalleryEntry>,
     pub refresh_buffer: BatchPollBuffer<GalleryEntry>,
-    pub toasts: Toasts,
+    pub new_gallery_entries: Arc<Mutex<Vec<GalleryEntry>>>,
     pub loading_gallery_entries: Option<Promise<Result<Vec<GalleryEntry>>>>,
-    pub shared_state: Rc<SharedState>,
-    pub gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
     pub filtered_gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
+    pub gallery_entries: Option<Vec<Rc<RefCell<GalleryEntry>>>>,
+    pub shared_state: Rc<SharedState>,
     pub preview_windows: Vec<ui::WindowContainer>,
+    pub refilter_flag: UpdateFlag,
     pub search_string: String,
     last_gallery_entry_index: usize,
     max_processed_gallery_entries_per_frame: usize,
@@ -102,12 +106,13 @@ impl GalleryUI {
         Self {
             preview_windows: vec![],
             selected_rects: vec![],
+            refilter_flag: Arc::new(AtomicBool::new(false)),
+            new_gallery_entries: Arc::new(Mutex::new(vec![])),
             is_selection_mode: false,
             search_string: String::new(),
             loading_gallery_entries: None,
             last_hovered: vec![],
             shared_state: Rc::clone(&shared_state),
-            toasts: Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             thumbnail_buffer,
             refresh_buffer,
             gallery_entries: None,
@@ -327,9 +332,7 @@ impl GalleryUI {
                                 new_previews.push(Arc::clone(&gallery_entry.borrow().entry_info))
                             }
                         }
-                        if !found {
-                            
-                        }
+                        if !found {}
                     }
                     // PreviewUI::set_status(&preview_ui.status, PreviewStatus::None);
                 }
@@ -368,6 +371,7 @@ impl GalleryUI {
 
     fn load_entries(&mut self) {
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_ref() {
+            puffin::profile_scope!("generate_requests_gallery_entries");
             let requests = gallery_entries
                 .iter()
                 .filter_map(|gallery_entry| {
@@ -378,14 +382,14 @@ impl GalleryUI {
                     }
                 })
                 .collect::<Vec<_>>();
-            // data::load_thumbnail_with_requests(requests);
             thread::spawn(|| data::load_gallery_entries_with_requests(requests));
         }
     }
 
     fn process_gallery_entries(&mut self) {
-        if let Some(gallery_entries) = self.gallery_entries.as_ref() {
-            for gallery_entry in gallery_entries {
+        if let Some(gallery_entries) = self.gallery_entries.as_mut() {
+            puffin::profile_scope!("process_gallery_entries");
+            for gallery_entry in gallery_entries.iter_mut() {
                 let mut gallery_entry = gallery_entry.borrow_mut();
                 if util::is_opt_promise_ready(&gallery_entry.updated_entry_info) {
                     if let Some(updated_info_promise) = gallery_entry.updated_entry_info.take() {
@@ -404,10 +408,24 @@ impl GalleryUI {
                     }
                 }
             }
+            if let Some(mut new_entries) = Arc::clone(&self.new_gallery_entries).try_lock() {
+                let mut added_new = false;
+                for new_entry in new_entries.drain(..) {
+                    added_new = true;
+                    gallery_entries.push(Rc::new(RefCell::new(new_entry)));
+                }
+                if added_new {
+                    self.filter_entries()
+                }
+            }
         }
 
         if self.gallery_entries.is_some() && self.filtered_gallery_entries.is_none() {
             self.filter_entries();
+        }
+
+        if SharedState::consume_update_flag(&self.refilter_flag) {
+                self.filter_entries()
         }
 
         if util::is_opt_promise_ready(&self.loading_gallery_entries) {
@@ -422,15 +440,12 @@ impl GalleryUI {
                                     .collect::<Vec<_>>(),
                             );
                             self.filter_entries();
-                            // self.load_entries();
-                            // self.load_all_thumbnails();
-                            // self.load_all_entry_info();
                         }
-                        Err(error) => {
-                            ui::toast_error(&mut self.toasts, format!("failed to load items: {}", error))
-                                .set_duration(None)
-                                .set_closable(false);
-                        }
+                        Err(error) => ui::toasts_with_cb(
+                            &self.shared_state.toasts,
+                            |toasts| toasts.error(format!("failed to load items: {}", error)),
+                            |toast| toast.set_closable(true).set_duration(None),
+                        ),
                     }
                 }
             }
@@ -438,7 +453,10 @@ impl GalleryUI {
     }
 
     pub fn generate_entries(&mut self) {
-        self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || load_gallery_entries()));
+        self.loading_gallery_entries = Some(Promise::spawn_thread("loading_gallery_entries", move || {
+            puffin::profile_scope!("generate_gallery_entries");
+            load_gallery_entries()
+        }));
     }
 
     fn is_loading_gallery_entries(&self) -> bool {
@@ -450,17 +468,8 @@ impl GalleryUI {
     }
 
     fn launch_preview(entry_info: &Arc<Mutex<EntryInfo>>, preview_windows: &mut Vec<WindowContainer>, shared_state: &Rc<SharedState>) {
-        let preview = PreviewUI::new(
-            &entry_info,
-            &shared_state, // &shared_state.tag_data_ref,
-                           // &shared_state.toasts,
-                           // &shared_state.autocomplete_options,
-        );
+        let preview = PreviewUI::new(&entry_info, &shared_state);
         let entry_info = entry_info.lock();
-        // let icon = match entry_info.entry_id() {
-        //     EntryId::MediaEntry(_) => ui::constants::GALLERY_ICON,
-        //     EntryId::PoolEntry(_) => ui::constants::LINK_ICON,
-        // };
         let title = ui::pretty_entry_id(entry_info.entry_id()); //ui::icon_text(&preview.short_id, icon);
         if !ui::does_window_exist(&title, preview_windows) {
             preview_windows.push(WindowContainer {
@@ -484,7 +493,12 @@ impl GalleryUI {
                     }
                 })
                 .collect::<Vec<_>>();
-            thread::spawn(|| data::load_entry_info_with_requests(requests));
+            let refilter_flag = Arc::clone(&self.refilter_flag);
+            thread::spawn(move || {
+                let _ = data::load_entry_info_with_requests(requests);
+                SharedState::set_update_flag(&refilter_flag, true)
+                // *refilter_flag.lock() ^= true;
+            });
         }
     }
 
@@ -548,7 +562,7 @@ impl GalleryUI {
             });
         });
     }
-    fn render_make_link_modal(&self, ctx: &egui::Context) -> Modal {
+    fn render_make_link_modal(&mut self, ctx: &egui::Context) -> Modal {
         let modal = ui::modal(ctx, "link_modal");
         let currently_selected = self.get_selected_gallery_entries();
         modal.show(|ui| {
@@ -557,11 +571,16 @@ impl GalleryUI {
             modal.buttons(ui, |ui| {
                 modal.button(ui, "cancel");
                 if modal.suggested_button(ui, ui::icon_text("make link", ui::constants::LINK_ICON)).clicked() {
+                    self.is_selection_mode = false;
+                    self.get_selected_gallery_entries()
+                        .iter()
+                        .for_each(|e| e.borrow_mut().is_selected = false);
                     let entry_ids = currently_selected
                         .iter()
                         .map(|gallery_entry| gallery_entry.borrow().entry_info.lock().entry_id().clone())
                         .collect::<Vec<_>>();
                     let toasts = Arc::clone(&self.shared_state.toasts);
+                    let new_list = Arc::clone(&self.new_gallery_entries);
                     let updated_list = Arc::clone(&self.shared_state.updated_entries);
                     thread::spawn(move || {
                         let hashes = entry_ids
@@ -569,23 +588,31 @@ impl GalleryUI {
                             .filter_map(|entry_id| entry_id.as_media_entry_id().map(|s| s.clone()))
                             .collect::<Vec<_>>();
                         if hashes.len() != entry_ids.len() {
-                            ui::toast_error_lock(&toasts, format!("links can only be made from media"))
+                            ui::toast_error_lock(&toasts, format!("links can only be made from media"));
                         } else {
                             match data::create_pool_link(&hashes) {
                                 Ok(link_id) => {
-                                    let mut updated_list = updated_list.lock().unwrap();
+                                    let mut updated_list = updated_list.lock();
+                                    let mut new_list = new_list.lock();
                                     updated_list.extend(hashes.iter().map(|h| EntryId::MediaEntry(h.clone())));
-                                    ui::toast_success_lock(&toasts, format!("successfully created {}", ui::pretty_link_id(&link_id)))
+
+                                    if let Ok(new_entry) = GalleryEntry::new(EntryId::PoolEntry(link_id)) {
+                                        new_list.push(new_entry)
+                                    }
+                                    ui::toast_success_lock(&toasts, format!("successfully created {}", ui::pretty_link_id(&link_id)));
                                 }
-                                Err(e) => ui::toast_error_lock(&toasts, format!("failed to create link: {e}")),
-                            };
-                        }
+                                Err(e) => {
+                                    ui::toast_error_lock(&toasts, format!("failed to create link: {e}"));
+                                }
+                            }
+                        };
                     });
                 }
             });
         });
         modal
     }
+
     fn render_gallery_entries(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
             ScrollArea::vertical()
@@ -600,13 +627,45 @@ impl GalleryUI {
                             for gallery_entry in gallery_entries.iter() {
                                 let status_label = gallery_entry.borrow().get_status_label().map(|label| label.into());
                                 let mut options = RenderLoadingImageOptions::default();
-                                let thumbnail_size = Config::global().gallery.thumbnail_size as f32;
+                                let thumbnail_size = Config::global().ui.gallery_thumbnail_size as f32;
                                 options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
                                 options.hover_text = status_label;
                                 options.desired_image_size = [thumbnail_size, thumbnail_size];
+                                options.error_label_text_size = ui::LabelSize::Relative(0.8);
+
                                 let response = ui::render_loading_preview(ui, ctx, gallery_entry.borrow_mut().thumbnail.as_mut(), &options);
                                 if let Some(response) = response {
+                                    let icon_size = 20.;
+                                    let icon_offset = 5.;
+                                    let icon_pos = response.rect.right_bottom() - Vec2::splat(icon_offset);
+                                    let icon_rect = Rect::from_two_pos(icon_pos, icon_pos - Vec2::splat(icon_size));
+                                    let icon_rounding = Rounding::same(3.);
+                                    let icon_color = Color32::BLACK.linear_multiply(0.7);
+                                    let icon_text_color = Color32::WHITE;
+                                    let icon_fid = ui::font_id_sized(16.);
+                                    if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
+                                        if entry_info.entry_id().is_pool_entry_id() {
+                                            ui.painter().rect_filled(icon_rect, icon_rounding, icon_color);
+                                            ui.painter().text(
+                                                icon_rect.center(),
+                                                Align2::CENTER_CENTER,
+                                                ui::constants::LINK_ICON,
+                                                icon_fid,
+                                                icon_text_color,
+                                            );
+                                        } else if entry_info.is_movie() {
+                                            ui.painter().rect_filled(icon_rect, icon_rounding, icon_color);
+                                            ui.painter().text(
+                                                icon_rect.center(),
+                                                Align2::CENTER_CENTER,
+                                                ui::constants::MOVIE_ICON,
+                                                icon_fid,
+                                                icon_text_color,
+                                            );
+                                        }
+                                    }
+
                                     if self.is_selection_mode {
                                         if response.clicked() {
                                             gallery_entry.borrow_mut().is_selected ^= true;
@@ -693,7 +752,7 @@ impl GalleryUI {
                                         expansion *= ui::ease_in_cubic(hovered_frac);
 
                                         let mut options = RenderLoadingImageOptions::default();
-                                        options.desired_image_size = [Config::global().gallery.thumbnail_size as f32; 2];
+                                        options.desired_image_size = [Config::global().ui.gallery_thumbnail_size as f32; 2];
                                         let image_mesh_size = options.scaled_image_size(rect.size().into()).into();
                                         let image_mesh_pos = rect.center() - (image_mesh_size / 2.);
                                         let image_rect = Rect::from_min_size(image_mesh_pos, image_mesh_size).expand(expansion);
@@ -738,14 +797,17 @@ impl GalleryUI {
                 if let Some(search_options) = search_options.as_ref() {
                     let autocomplete = autocomplete::create(&mut self.search_string, search_options, false, true);
                     let response = ui.add(autocomplete);
-                    if response.has_focus() {
-                        if ui.ctx().input().key_pressed(Key::Tab)
-                            || ui.ctx().input().key_pressed(Key::Space)
-                            || ui.ctx().input().key_pressed(Key::Backspace)
-                        {
-                            self.filter_entries();
-                        }
+                    if response.changed() {
+                        self.filter_entries()
                     }
+                    // if response.has_focus() {
+                    //     if ui.ctx().input().key_pressed(Key::Tab)
+                    //         || ui.ctx().input().key_pressed(Key::Space)
+                    //         || ui.ctx().input().key_pressed(Key::Backspace)
+                    //     {
+                    //         self.filter_entries();
+                    //     }
+                    // }
                 }
             });
         });
@@ -780,8 +842,9 @@ impl GalleryUI {
     }
 
     fn filter_entries(&mut self) {
-        // let BASE_SEARCH = ;
-        let base_search = Config::global().gallery.base_search.clone().unwrap_or(String::new());
+        puffin::profile_scope!("filter_gallery_entries");
+
+        let base_search = Config::global().general.gallery_base_search.clone().unwrap_or(String::new());
         let mut search = self.search_string.clone();
         search.insert_str(0, &format!("{base_search} "));
         let entry_search = EntrySearch::from(search);
@@ -793,7 +856,6 @@ impl GalleryUI {
                 .iter()
                 .filter_map(|gallery_entry| {
                     if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                        //TODO: HERE
                         if current_index < limit && entry_info.passes_entry_search(&entry_search) {
                             current_index = current_index + 1;
                             Some(Rc::clone(&gallery_entry))
@@ -812,7 +874,6 @@ impl GalleryUI {
 
 impl ui::UserInterface for GalleryUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        
         self.process_previews(ctx);
         self.process_gallery_entries();
         self.render_preview_windows(ctx);
@@ -846,6 +907,5 @@ impl ui::UserInterface for GalleryUI {
                     });
             });
         });
-        self.toasts.show(ctx);
     }
 }

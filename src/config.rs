@@ -22,22 +22,25 @@ const CONFIG_FILENAME: &str = "config.yaml";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Path {
-    pub root: Option<String>,
+    pub root: String,
     pub landing: String,
     pub database: String,
 }
 
 impl Path {
     pub fn current_root(&self) -> Result<PathBuf> {
-        if self.root.is_some() {
-            return Ok(PathBuf::from(self.root.as_ref().unwrap()).absolutize()?.to_path_buf());
-        } else {
-            let exe = env::current_exe().context("couldn't get parent path")?;
+        // let root = if self.root.is_some() {
+        //     PathBuf::from(self.root.as_ref().unwrap()).absolutize()?.to_path_buf()
+        // } else {
+        //     let exe = env::current_exe().context("couldn't get parent path")?;
 
-            let parent_path = exe.parent().ok_or(anyhow::Error::msg("message"))?;
-            let parent_path_buf = PathBuf::from(parent_path);
-            Ok(parent_path_buf)
-        }
+        //     let parent_path = exe.parent().ok_or(anyhow::Error::msg("message"))?;
+        //     let parent_path_buf = PathBuf::from(parent_path);
+        //     parent_path_buf
+        // };
+        let root = PathBuf::from(&self.root).absolutize()?.to_path_buf();
+        fs::create_dir_all(&root)?;
+        Ok(root)
     }
 
     pub fn absolutize_path(&self, local_root_path: &String) -> Result<PathBuf> {
@@ -61,28 +64,19 @@ impl Path {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Ui {
     pub thumbnail_resolution: usize,
+    pub import_thumbnail_size: usize,
+    pub gallery_thumbnail_size: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Import {
-    pub thumbnail_size: usize,
-}
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Gallery {
-    pub thumbnail_size: usize,
-    pub short_id_length: usize,
-    pub preview_size: usize,
-    pub base_search: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Media {
-    pub max_score: usize,
+pub struct General {
+    pub entry_max_score: usize,
+    pub gallery_base_search: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Misc {
-    pub concurrent_db_operations: usize,
+    pub entry_short_id_length: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -94,9 +88,7 @@ pub struct Themes {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     pub path: Path,
-    pub media: Media,
-    pub import: Import,
-    pub gallery: Gallery,
+    pub general: General,
     pub misc: Misc,
     pub ui: Ui,
     pub themes: Themes,
@@ -339,22 +331,20 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             path: Path {
-                root: Some("./root".into()),
+                root: "./root/".into(),
                 landing: "landing/".into(),
                 database: "data.db".into(),
             },
             namespaces: vec![],
-            media: Media { max_score: 5 },
-            ui: Ui { thumbnail_resolution: 100 },
-            import: Import { thumbnail_size: 100 },
-            gallery: Gallery {
-                thumbnail_size: 100,
-                preview_size: 500,
-                short_id_length: 6,
-                base_search: Some(String::from("independant=true limit=5000")),
+            general: General {
+                entry_max_score: 5,
+                gallery_base_search: Some(String::from("independant=true limit=5000")),
             },
-            misc: Misc {
-                concurrent_db_operations: 20,
+            misc: Misc { entry_short_id_length: 6 },
+            ui: Ui {
+                gallery_thumbnail_size: 100,
+                import_thumbnail_size: 100,
+                thumbnail_resolution: 100,
             },
             themes: Themes {
                 current_theme: None,

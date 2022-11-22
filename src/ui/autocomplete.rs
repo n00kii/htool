@@ -112,8 +112,8 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
     
     let mut tedit_output = tedit.show(ui);
 
-    let tedit_response = tedit_output.response;
-
+    let mut tedit_response = tedit_output.response;
+    // tedit_response.changed = false;
     if tedit_response.has_focus() {
         let id = Id::new(format!("{:?}_autocomplete", tedit_response.id));
         let mut ac_state: AutocompleteState = ui.ctx().memory().data.get_temp(id).unwrap_or_default();
@@ -157,6 +157,8 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                         });
                         set_ccursor_range(ccursor_range);
                         ac_state.selected_index = 0;
+
+                        tedit_response.mark_changed();
                     }
                 }
 

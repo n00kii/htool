@@ -382,7 +382,7 @@ impl TagsUI {
     }
     fn toast_fail_modify_tag(old_tagstring: &String, new_tagstring: &String, error: &Error, toasts: &ToastsRef) {
         ui::toast_error_lock(
-            toasts,
+            &toasts,
             format!("failed tag modification ( \"{old_tagstring}\" --> \"{new_tagstring}\"): {error} "),
         );
     }
@@ -399,22 +399,22 @@ impl TagsUI {
     }
 
     pub fn toast_failed_check_link_exists(link: &TagLink, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("error checking if link {} exists", link.to_string()));
+        ui::toast_error_lock(&toasts, format!("error checking if link {} exists", link.to_string()));
     }
     pub fn toast_failed_check_tag_exists(tagstring: &String, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("error checking if tag \"{tagstring}\" exists"));
+        ui::toast_error_lock(&toasts, format!("error checking if tag \"{tagstring}\" exists"));
     }
     pub fn toast_failed_delete_link(link: &TagLink, error: &Error, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("failed to delete link {}: {error}", link.to_string()));
+        ui::toast_error_lock(&toasts, format!("failed to delete link {}: {error}", link.to_string()));
     }
     pub fn toast_failed_delete_tag(tagstring: &String, error: &Error, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("failed to delete tag \"{tagstring}\": {error}"));
+        ui::toast_error_lock(&toasts, format!("failed to delete tag \"{tagstring}\": {error}"));
     }
     pub fn toast_failed_new_link(link: &TagLink, error: &Error, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("failed to register link {}: {error}", link.to_string()));
+        ui::toast_error_lock(&toasts, format!("failed to register link {}: {error}", link.to_string()));
     }
     pub fn toast_failed_new_tag(tagstring: &String, error: &Error, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("failed to register tag \"{tagstring}\": {error}"));
+        ui::toast_error_lock(&toasts, format!("failed to register tag \"{tagstring}\": {error}"));
     }
     pub fn toast_link_already_exists(link: &TagLink, toasts: &ToastsRef) {
         ui::toast_warning_lock(toasts, format!("link {} already exists", link.to_string()));
@@ -429,10 +429,10 @@ impl TagsUI {
         ui::toast_success_lock(toasts, format!("successfully modified tag (\"{old_tagstring}\" --> \"{new_tagstring}\")"));
     }
     pub fn toast_fail_invalid_number_tags(expected_number: usize, recieved_number: usize, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("expected {expected_number} tags, got {recieved_number}"));
+        ui::toast_error_lock(&toasts, format!("expected {expected_number} tags, got {recieved_number}"));
     }
     pub fn toast_fail_update_tags(error: &Error, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("failed to update tags: {error}"));
+        ui::toast_error_lock(&toasts, format!("failed to update tags: {error}"));
     }
     pub fn toast_success_new_link(link: &TagLink, toasts: &ToastsRef) {
         ui::toast_success_lock(toasts, format!("successfully registered link {}", link.to_string()));
@@ -447,7 +447,7 @@ impl TagsUI {
         ui::toast_warning_lock(toasts, format!("tag \"{tagstring}\" already exists"));
     }
     pub fn toast_tag_doesnt_exist(tagstring: &String, toasts: &ToastsRef) {
-        ui::toast_error_lock(toasts, format!("tag \"{tagstring}\" doesn't exist"));
+        ui::toast_error_lock(&toasts, format!("tag \"{tagstring}\" doesn't exist"));
     }
 }
 
@@ -546,7 +546,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                                 match reresolution() {
                                                     Ok(affected_entries) => {
                                                         TagsUI::toast_success_update_tags(affected_entries.len(), &toasts);
-                                                        updated_entries.lock().unwrap().extend(affected_entries);
+                                                        updated_entries.lock().extend(affected_entries);
                                                         SharedState::set_update_flag(&tag_update_flag, true);
                                                     }
                                                     Err(e) => TagsUI::toast_fail_update_tags(&e, &toasts)

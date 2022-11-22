@@ -12,9 +12,7 @@ mod util;
 use config::Config;
 
 fn main() {
-    Config::load();
-    data::init();
-    egui_video::init();
+    ui::AppUI::init();
     ui::AppUI::new().start();
-    Config::save().expect("failed to save config")
+
 }

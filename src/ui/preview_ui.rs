@@ -205,34 +205,49 @@ impl PreviewUI {
         ui.add_space(ui::constants::SPACER_SIZE);
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("options");
-
             if let Some(mut entry_info) = self.entry_info.try_lock() {
                 ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
                     if ui
-                        .button(if !entry_info.details().is_bookmarked {
-                            ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
-                        } else {
-                            ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
-                        })
-                        .clicked()
+                    .button(if !entry_info.details().is_bookmarked {
+                        ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
+                    } else {
+                        ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
+                    })
+                    .clicked()
                     {
                         let new_state = !entry_info.details().is_bookmarked;
-                        if let Err(e) = data::set_bookmark(&entry_info.entry_id(), new_state) {
-                            ui::toast_error_lock(&self.shared_state.toasts, format!("failed to set bookmarked {new_state}: {e}"));
-                        } else {
-                            entry_info.details_mut().is_bookmarked = new_state;
-                            Self::set_status(&self.status, PreviewStatus::Updated)
-                        }
+                        entry_info.details_mut().is_bookmarked = new_state;
+
+                        let entry_id = entry_info.entry_id().clone();
+                        let status = Arc::clone(&self.status);
+                        let toasts = Arc::clone(&self.shared_state.toasts);
+                        let entry_info = Arc::clone(&self.entry_info);
+                        thread::spawn(move || {
+                            if let Err(e) = data::set_bookmark(&entry_id, new_state) {
+                                ui::toast_error_lock(&toasts, format!("failed to set bookmarked {new_state}: {e}"));
+                                entry_info.lock().details_mut().is_bookmarked = !new_state;
+                            } else {
+                                Self::set_status(&status, PreviewStatus::Updated)
+                            }
+                        });
                     }
-                    let star_response = star_rating(ui, &mut entry_info.details_mut().score, Config::global().media.max_score);
+                    let previous_score = entry_info.details_mut().score;
+                    let star_response = star_rating(ui, &mut entry_info.details_mut().score, Config::global().general.entry_max_score);
                     if star_response.changed() {
-                        let new_value = entry_info.details().score;
-                        if let Err(e) = data::set_score(&entry_info.entry_id(), new_value) {
-                            ui::toast_error_lock(&self.shared_state.toasts, format!("failed to set score={new_value}: {e}"));
-                        } else {
-                            entry_info.details_mut().score = new_value;
-                            Self::set_status(&self.status, PreviewStatus::Updated)
-                        }
+                        let entry_id = entry_info.entry_id().clone();
+                        let status = Arc::clone(&self.status);
+                        let toasts = Arc::clone(&self.shared_state.toasts);
+                        let new_score = entry_info.details().score;
+                        entry_info.details_mut().score = new_score;
+                        let entry_info = Arc::clone(&self.entry_info);
+                        thread::spawn(move || {
+                            if let Err(e) = data::set_score(&entry_id, new_score) {
+                                ui::toast_error_lock(&toasts, format!("failed to set score={new_score}: {e}"));
+                                entry_info.lock().details_mut().score = previous_score;
+                            } else {
+                                Self::set_status(&status, PreviewStatus::Updated)
+                            }
+                        });
                     }
                 });
             } else {
@@ -281,10 +296,7 @@ impl PreviewUI {
                                 }
                             }
                             Err(e) => {
-                                // if let Ok(mut arc_toasts) = arc_toasts.lock() {
                                 ui::toast_error_lock(&arc_toasts, format!("failed to set tags: {e}"));
-                                // ui::toast_error(&mut arc_toasts, format!("failed to set tags: {e}"));
-                                // }
                             }
                         }
 
@@ -659,7 +671,7 @@ impl PreviewUI {
                                     pool_info.hashes.retain(|h| *h != hash);
                                 }
                             }
-                            let mut update_list = update_list.lock().unwrap();
+                            let mut update_list = update_list.lock();
                             match entry_info.entry_id() {
                                 EntryId::MediaEntry(_) => update_list.push(EntryId::PoolEntry(link_id)),
                                 EntryId::PoolEntry(_) => update_list.push(EntryId::MediaEntry(hash)),

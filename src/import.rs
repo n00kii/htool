@@ -7,14 +7,14 @@ use anyhow::{Error, Result};
 
 use egui_extras::RetainedImage;
 use poll_promise::Promise;
-
+use parking_lot::Mutex;
 use std::collections::HashMap;
 
 use std::{
     fs::{self, DirEntry, File},
     io::Read,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc},
     thread::{self},
 };
 
@@ -65,6 +65,8 @@ pub fn scan_directory(
     linking_dir: Option<String>,
     extension_filter: &Vec<&String>,
 ) -> Result<Vec<ImportationEntry>> {
+    puffin::profile_scope!("import_scan_directory");
+
     let dir_entries_iter = fs::read_dir(directory_path)?;
     let mut scanned_dir_entries = vec![];
     'dir_entries: for (_index, dir_entry_res) in dir_entries_iter.enumerate() {
