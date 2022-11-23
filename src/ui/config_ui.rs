@@ -70,7 +70,9 @@ impl ConfigUI {
                     hook(ui.text_edit_singleline(&mut self.config_copy.path.root));
                     ui.end_row();
                     ui.label("data path");
-                    hook(ui.text_edit_singleline(&mut self.config_copy.path.database));
+                    if hook(ui.text_edit_singleline(&mut self.config_copy.path.database)).lost_focus() {
+                        SharedState::set_update_flag(&self.shared_state.database_changed, true);
+                    };
                     ui.end_row();
                     ui.label("landing path");
                     hook(ui.text_edit_singleline(&mut self.config_copy.path.landing));

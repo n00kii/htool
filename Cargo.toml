@@ -44,6 +44,7 @@ puffin = "0.14.0"
 puffin_egui = "0.18.0"
 enum-iterator = "1.2.0"
 sqlcrypto = { version="1.0.1", features = [ "parallel" ] }
+rand = "0.8.5"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1.12"

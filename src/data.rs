@@ -32,6 +32,7 @@ use poll_promise::Sender;
 use r2d2::Pool;
 use r2d2::PooledConnection;
 use r2d2_sqlite::SqliteConnectionManager;
+use rand::distributions::DistString;
 use rusqlite::ErrorCode;
 use rusqlite::Row;
 
@@ -40,6 +41,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 
+use std::fs;
 use std::hash;
 use std::io::Cursor;
 use std::mem::discriminant;
@@ -88,7 +90,7 @@ pub fn generate_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
     Ok(connection_manager)
 }
 
-fn get_db_key() -> String {
+pub fn get_db_key() -> String {
     DATABASE_KEY.read().to_string() //.as_deref().map(|s| s.to_string())
 }
 
@@ -1054,16 +1056,28 @@ fn delete_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
 }
 
 pub fn rekey_database(new_key: &String) -> Result<()> {
-    if is_database_unencrypted()? {
+    // https://www.zetetic.net/sqlcipher/sqlcipher-api/#rekey
+    let is_key_empty = new_key.is_empty();
+    let is_database_unencrypted = is_database_unencrypted()?;
+    if  is_database_unencrypted ^ is_key_empty { // plaintext -> encry OR encry -> plaintext
+        let temp_filename =  rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let db_path = Config::global().path.database()?;
         let conn = open_database_connection()?;
-        conn.execute("ATTACH DATABASE ?1 AS encrypted KEY ?2", params!["encr.db", "test"])?;
-        conn.execute("SELECT sqlcipher_export('encrypted')",[])?;
-        conn.execute("DETACH DATABSE encrypted", [])?;
-    } else {
+        apply_database_key_to_conn(&conn, &get_db_key())?;
+        conn.execute("ATTACH DATABASE ?1 AS ?1 KEY ?2", params![temp_filename, new_key])?;
+        let _: Option<usize> = conn.query_row("SELECT sqlcipher_export(?1)", params![temp_filename], |row| row.get(0))?;
+        conn.execute("DETACH DATABASE ?1", params![temp_filename])?;
+        conn.close().map_err(|_| anyhow!("failed to close conn"))?;
+        
+        fs::remove_file(&db_path)?;
+        fs::rename(temp_filename, db_path)?;
+
+    } else { // encry -> encry OR plaintext -> plaintext
         let conn = open_database_connection()?;
         apply_database_key_to_conn(&conn, &get_db_key())?;
         conn.pragma_update(None, "rekey", new_key)?;
     }
+    set_db_key(new_key);
     Ok(())
 }
 

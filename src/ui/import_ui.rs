@@ -575,7 +575,7 @@ impl ImporterUI {
                                     let mut options = ui::RenderLoadingImageOptions::default();
                                     let thumbnail_size = Config::global().ui.import_thumbnail_size as f32;
                                     options.widget_margin = [10., 10.];
-                                    options.error_label_text_size = ui::LabelSize::Relative(0.8);
+                                    options.error_label_text_size = ui::LabelSize::Relative(0.3);
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
                                     options.error_label_text = importation_entry.dir_entry.path().extension().and_then(|e| e.to_str().map(|e| e.to_string())).unwrap_or("?".to_string());
                                     options.hover_text_on_loading_image = Some(format!("{file_label} (loading thumbnail...)",).into());
@@ -653,7 +653,7 @@ impl ImporterUI {
                                 "extracting {}...",
                                 pending_extraction.import_entry_path.as_os_str().to_string_lossy()
                             ));
-                            ui.add(ProgressBar::new(*progress).text(format!("{}%", (100. * *progress).round())));
+                            ui.add(ui::progress_bar(*progress));
                             ui.separator();
                         }
                     }

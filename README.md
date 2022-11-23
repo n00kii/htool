@@ -21,3 +21,4 @@
  - (DONE) make importer use shared state
  - encryption
  
+ - if i make a new database, is it fine to use the key currently in memeory? (changing database name in config)
