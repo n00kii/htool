@@ -1,7 +1,7 @@
 use std::{fmt::Display, rc::Rc, sync::{Arc, atomic::Ordering}};
 
 use super::{
-    autocomplete::{self, AutocompleteOption},
+    widgets::autocomplete::{self, AutocompleteOption},
     icon_text, SharedState, UserInterface,
 };
 use crate::config::Config;
@@ -31,8 +31,8 @@ impl Display for ConfigSection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConfigSection::General => write!(f, "{}", icon!("general", CONFIG_ICON)),
-            ConfigSection::Ui => write!(f, "{}", icon!("ui", WINDOW_ICON)),
-            ConfigSection::Paths => write!(f, "{}", icon!("paths", DATA_ICON)),
+            ConfigSection::Ui => write!(f, "{}", icon!("ui", FONT_ICON)),
+            ConfigSection::Paths => write!(f, "{}", icon!("paths", FOLDER_ICON)),
             ConfigSection::Misc => write!(f, "{}", icon!("misc", MISC_ICON)),
             ConfigSection::Themes => write!(f, "{}", icon!("themes", SPARKLE_ICON)),
         }
@@ -100,6 +100,18 @@ impl ConfigUI {
                     ui.label("gallery thumbnail size");
                     hook(ui.add(DragValue::new(&mut self.config_copy.ui.gallery_thumbnail_size).clamp_range(25..=1000)));
                     ui.end_row();
+                    ui.label("preview size");
+                    hook(ui.add(DragValue::new(&mut self.config_copy.ui.preview_size).clamp_range(25..=1000)));
+                    ui.end_row();
+                    ui.label("pool preview size");
+                    hook(ui.add(DragValue::new(&mut self.config_copy.ui.preview_pool_size).clamp_range(25..=1000)));
+                    ui.end_row();
+                    ui.label("preview pool columns");
+                    hook(ui.add(DragValue::new(&mut self.config_copy.ui.preview_pool_columns).clamp_range(2..=10)));
+                    ui.end_row();
+                    ui.label("pool reordering preview size");
+                    hook(ui.add(DragValue::new(&mut self.config_copy.ui.preview_reorder_size).clamp_range(25..=1000)));
+                    ui.end_row();
                 });
             }
             ConfigSection::Misc => {
@@ -155,6 +167,22 @@ impl ConfigUI {
 
 impl UserInterface for ConfigUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.vertical_centered_justified(|ui| {
+            if ui.button("load from file").clicked() {
+                let config = Config::load_from_file();
+                self.config_copy = config.clone();
+                Config::set(config);
+                self.shared_state.updated_theme_selection.store(true, Ordering::Relaxed);
+            };
+            if ui.button("save to file").clicked() {
+                if let Err(e) = Config::save() {
+                    ui::toast_error_lock(&self.shared_state.toasts, format!("failed to save config: {e}"));
+                } else {
+                    ui::toast_success_lock(&self.shared_state.toasts, "successfully saved config");
+                };
+            };
+            ui::space(ui);
+        });
         StripBuilder::new(ui)
             .size(Size::exact(0.))
             .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))

@@ -18,6 +18,7 @@ pub struct GalleryEntry {
     pub is_info_dirty: bool,
     pub did_complete_request: bool,
     pub entry_info: Arc<Mutex<EntryInfo>>,
+    // pub entry_id: EntryId,
     pub updated_entry_info: Option<Promise<Result<EntryInfo>>>,
     pub thumbnail: Option<Promise<Result<MediaPreview>>>,
 }
@@ -115,29 +116,34 @@ impl GalleryEntry {
         }
     }
 
-    pub fn new(entry_id: EntryId) -> Result<Self> {
-        let entry_info = data::get_entry_info(&entry_id)?;
+    pub fn new(entry_id: &EntryId) -> Result<Self> {
+        let entry_info = data::get_entry_info(entry_id)?;
         Ok(Self {
             is_info_dirty: false,
             is_selected: false,
             did_complete_request: false,
+            // entry_id: entry_id.clone(),
             entry_info: Arc::new(Mutex::new(entry_info)),
             thumbnail: None,
             updated_entry_info: None,
         })
+    }
+    pub fn new_from_entry_info(entry_info: EntryInfo) -> Self {
+        Self {
+            is_info_dirty: false,
+            is_selected: false,
+            did_complete_request: false,
+            // entry_id: entry_info.entry_id().clone(),
+            entry_info: Arc::new(Mutex::new(entry_info)),
+            thumbnail: None,
+            updated_entry_info: None,
+        }
     }
 }
 
 pub fn load_gallery_entries() -> Result<Vec<GalleryEntry>> {
     Ok(data::get_all_entry_info()?
         .into_iter()
-        .map(|entry_info| GalleryEntry {
-            is_info_dirty: false,
-            is_selected: false,
-            did_complete_request: false,
-            entry_info: Arc::new(Mutex::new(entry_info)),
-            thumbnail: None,
-            updated_entry_info: None,
-        })
+        .map(|entry_info| GalleryEntry::new_from_entry_info(entry_info))
         .collect())
 }

@@ -66,6 +66,10 @@ pub struct Ui {
     pub thumbnail_resolution: usize,
     pub import_thumbnail_size: usize,
     pub gallery_thumbnail_size: usize,
+    pub preview_pool_columns: usize,
+    pub preview_pool_size: usize,
+    pub preview_reorder_size: usize,
+    pub preview_size: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -345,6 +349,10 @@ impl Default for Config {
                 gallery_thumbnail_size: 100,
                 import_thumbnail_size: 100,
                 thumbnail_resolution: 100,
+                preview_pool_columns: 4,
+                preview_reorder_size: 600,
+                preview_pool_size: 200,
+                preview_size: 500,
             },
             themes: Themes {
                 current_theme: None,
@@ -373,8 +381,12 @@ impl Config {
     }
 
     pub fn load() {
-        let config: Config = Config::figment().extract().expect("couldn't load config");
+        let config: Config = Self::load_from_file();
         CONFIG_INSTANCE.set(ArcSwap::from_pointee(config)).expect("couldn't initialize config");
+    }
+
+    pub fn load_from_file() -> Config{
+        Config::figment().extract().expect("couldn't load config")
     }
 
     pub fn save() -> Result<()> {

@@ -1,7 +1,7 @@
 path:
-  root: ./root
+  root: E:\root
   landing: F:\Media\Documents\Projects\htool2\htool2\testing_files
-  database: data
+  database: data-test
 general:
   entry_max_score: 5
   gallery_base_search: independant=true limit=5000
@@ -11,6 +11,10 @@ ui:
   thumbnail_resolution: 100
   import_thumbnail_size: 63
   gallery_thumbnail_size: 50
+  preview_pool_columns: 4
+  preview_pool_size: 263
+  preview_reorder_size: 543
+  preview_size: 500
 themes:
   current_theme: palenight
   themes:

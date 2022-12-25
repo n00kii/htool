@@ -6,21 +6,26 @@ use crate::ui::preview_ui::MediaPreview;
 use anyhow::{Error, Result};
 
 use egui_extras::RetainedImage;
-use poll_promise::Promise;
 use parking_lot::Mutex;
+use poll_promise::Promise;
 use std::collections::HashMap;
 
 use std::{
     fs::{self, DirEntry, File},
     io::Read,
     path::PathBuf,
-    sync::{Arc},
+    sync::Arc,
     thread::{self},
 };
+
+pub const SUCCESS_IMPORT_DIR: &str = "imported";
+pub const FAILED_IMPORT_DIR: &str = "failed";
+pub const DUPLICATE_IMPORT_DIR: &str = "duplicate";
 
 // #[derive(Clone)]
 pub struct ImportationEntry {
     pub is_selected: bool,
+    pub attempted_organize: bool,
 
     pub dir_entry: DirEntry,
     pub file_label: String,
@@ -40,7 +45,7 @@ impl PartialEq for ImportationEntry {
     }
 }
 
-fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
+fn reverse_path_truncate(path: &PathBuf, num_components: usize) -> PathBuf {
     let mut reverse_components = path.components().rev();
     let mut desired_components = vec![];
     let mut truncated_path = PathBuf::from("");
@@ -61,9 +66,9 @@ fn reverse_path_truncate(path: &PathBuf, num_components: u8) -> PathBuf {
 
 pub fn scan_directory(
     directory_path: PathBuf,
-    directory_level: u8,
+    directory_level: usize,
     linking_dir: Option<String>,
-    extension_filter: &Vec<&String>,
+    extension_filter: &Vec<String>,
 ) -> Result<Vec<ImportationEntry>> {
     puffin::profile_scope!("import_scan_directory");
 
@@ -73,6 +78,9 @@ pub fn scan_directory(
         if let Ok(dir_entry) = dir_entry_res {
             // TODO: don't error whole function for one entry (? below)
             if dir_entry.metadata()?.is_dir() {
+                if vec![SUCCESS_IMPORT_DIR, FAILED_IMPORT_DIR, DUPLICATE_IMPORT_DIR].contains(&dir_entry.file_name().to_str().unwrap_or_default()) {
+                    continue;
+                }
                 let linking_dir = if let Some(linking_dir) = &linking_dir {
                     Some(linking_dir.clone())
                 } else {
@@ -92,37 +100,13 @@ pub fn scan_directory(
                 scanned_dir_entries.extend(media_entries);
             } else {
                 let dir_entry_path = dir_entry.path();
-                let mut is_archive = false;
                 if let Some(ext) = dir_entry_path.extension() {
-                    if ext == "zip" {
-                        is_archive = true;
-                    }
-                    for exclude_ext in extension_filter {
-                        if ext.to_str().unwrap_or("") == exclude_ext.as_str() {
-                            continue 'dir_entries;
-                        }
+                    if !extension_filter.contains(&&ext.to_string_lossy().to_string()) {
+                        continue 'dir_entries;
                     }
                 }
 
-                let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string()
-                    .replace("\\", "/");
-
-                let file_size = dir_entry.metadata()?.len();
-                scanned_dir_entries.push(ImportationEntry {
-                    thumbnail: None,
-                    keep_bytes_loaded: false,
-                    file_size: file_size as usize,
-                    dir_entry,
-                    file_label,
-                    bytes: None,
-                    is_selected: false,
-                    is_archive,
-                    importation_status: None,
-                    linking_dir: linking_dir.clone(),
-                });
+                scanned_dir_entries.push(ImportationEntry::new(dir_entry, &linking_dir, directory_level)?)
             }
         }
     }
@@ -131,6 +115,36 @@ pub fn scan_directory(
 }
 
 impl ImportationEntry {
+    pub fn new(dir_entry: DirEntry, linking_dir: &Option<String>, directory_level: usize) -> Result<Self> {
+        let mut is_archive = false;
+        let dir_entry_path = dir_entry.path();
+        if let Some(ext) = dir_entry_path.extension() {
+            if ext == "zip" {
+                is_archive = true;
+            }
+        }
+
+        let file_label = reverse_path_truncate(&dir_entry_path, 2 + directory_level)
+            .to_str()
+            .unwrap_or("")
+            .to_string()
+            .replace("\\", "/");
+
+        let file_size = dir_entry.metadata()?.len();
+        Ok(ImportationEntry {
+            thumbnail: None,
+            keep_bytes_loaded: false,
+            attempted_organize: false,
+            file_size: file_size as usize,
+            dir_entry,
+            file_label,
+            bytes: None,
+            is_selected: false,
+            is_archive,
+            importation_status: None,
+            linking_dir: linking_dir.clone(),
+        })
+    }
     pub fn generate_reg_form(&mut self, dir_link_map: Arc<Mutex<HashMap<String, i32>>>) -> Result<RegistrationForm> {
         let bytes = self.bytes.as_ref();
         let fail = |_message: String| -> Result<_, Error> { Err(anyhow::Error::msg("bytes not loaded")) };

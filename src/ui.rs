@@ -13,8 +13,8 @@ use eframe::{
     epaint::{Color32, PathShape},
 };
 use egui::{
-    hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Layout,
-    Mesh, Painter, Pos2, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, TopBottomPanel, Window, ProgressBar,
+    hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, Event, FontData, FontDefinitions, FontFamily, FontId, Frame, Id,
+    Key, Layout, Mesh, Modifiers, Painter, Pos2, ProgressBar, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, TopBottomPanel, Window, layers,
 };
 use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
@@ -37,18 +37,17 @@ use std::{
     vec,
 };
 
-use self::{autocomplete::AutocompleteOption, constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview};
+use self::{widgets::autocomplete::AutocompleteOption, constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview};
 
 pub type ToastsRef = Arc<Mutex<Toasts>>;
 
-pub mod autocomplete;
 pub mod config_ui;
 pub mod data_ui;
 pub mod debug_ui;
 pub mod gallery_ui;
 pub mod import_ui;
 pub mod preview_ui;
-pub mod star_rating;
+pub mod widgets;
 pub mod tags_ui;
 
 pub mod constants {
@@ -88,15 +87,20 @@ pub mod constants {
     pub const COPY_ICON: &str = "📋";
     pub const TOOL_ICON: &str = "🔨";
     pub const REORDER_ICON: &str = "↔";
-    pub const DATA_ICON: &str = "🗂";
+    pub const DATA_ICON: &str = "⛃";
+    pub const FOLDER_ICON: &str = "🗁";
     pub const CONFIG_ICON: &str = "⚙";
     pub const MISC_ICON: &str = "✱";
     pub const SPARKLE_ICON: &str = "✨";
     pub const WINDOW_ICON: &str = "🗖";
+    pub const FONT_ICON: &str = "🗛";
     pub const LINK_ICON: &str = "📎";
     pub const OPEN_ICON: &str = "↗";
     pub const MOVIE_ICON: &str = "▶";
     pub const DEBUG_ICON: &str = "🐞";
+    pub const REKEY_ICON: &str = "🔑";
+    pub const KEY_ICON: &str = "🔐";
+    pub const SHUFFLE_ICON: &str = "🔀";
 
     pub const GALLERY_TITLE: &str = "gallery";
     pub const IMPORT_TITLE: &str = "importer";
@@ -109,11 +113,12 @@ pub mod constants {
     pub const DISABLED_LABEL_REKEY_DATABASE: &str = "database is rekeying";
 
     pub const SPACER_SIZE: f32 = 10.;
+    pub const TABLE_ROW_HEIGHT: f32 = 20.;
     pub const OPTIONS_COLUMN_WIDTH: f32 = 100.;
 
     pub const FAVORITE_ICON_SELECTED_FILL: Color32 = Color32::from_rgb(252, 191, 73);
-    pub const DEFAULT_ACCENT_STROKE_COLOR: Color32 = Color32::from_rgb(141, 182, 242);
-    pub const DEFAULT_ACCENT_FILL_COLOR: Color32 = Color32::from_rgb(20, 70, 60);
+    pub const DEFAULT_ACCENT_STROKE_COLOR: Color32 = Color32::from_rgb(171, 208, 241);
+    pub const DEFAULT_ACCENT_FILL_COLOR: Color32 = Color32::from_rgb(0, 92, 128);
 
     pub const IMPORT_IMAGE_HIDDEN_TINT: Color32 = Color32::from_rgb(220, 220, 220);
     pub const IMPORT_IMAGE_UNLOADED_TINT: Color32 = Color32::from_rgb(200, 200, 200);
@@ -267,6 +272,10 @@ pub fn generate_star_shape(radius: f32, center_point: [f32; 2], fill: Color32, s
     ))
 }
 
+pub fn space(ui: &mut Ui) {
+    ui.add_space(constants::SPACER_SIZE);
+}
+
 pub fn generate_regular_polygon(
     num_sides: usize,
     side_length: f32,
@@ -295,7 +304,9 @@ pub fn generate_regular_polygon(
     }
     points
 }
-
+pub fn does_ui_have_focus(ui: &mut Ui, ctx: &Context) -> bool {
+    ctx.memory().layer_ids().filter(|l| l.order == layers::Order::Middle).last() == Some(ui.layer_id())
+}
 pub fn generate_layout_job(text: Vec<impl Into<LayoutJobText>>) -> LayoutJob {
     let mut job = LayoutJob::default();
     for text_data in text {
@@ -672,9 +683,11 @@ pub struct SharedState {
     pub window_title: String,
     pub all_entries_update_flag: UpdateFlag,
     pub updated_entries: UpdateList<EntryId>,
+    pub deleted_entries: UpdateList<EntryId>,
     pub tag_data_update_flag: UpdateFlag,
     pub updated_theme_selection: UpdateFlag,
     pub gallery_regenerate_flag: UpdateFlag,
+    // pub database_info_modified_flag: UpdateFlag,
     pub database_unlocked: UpdateFlag,
     pub disable_navbar: UpdateList<String>,
     pub database_changed: UpdateFlag,
@@ -726,9 +739,9 @@ impl eframe::App for AppUI {
     fn persist_native_window(&self) -> bool {
         true
     }
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        Config::save().expect("failed to save config");
-    }
+    // fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    //     Config::save().expect("failed to save config");
+    // }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         puffin::GlobalProfiler::lock().new_frame();
         self.render_top_bar(ctx);
@@ -756,6 +769,12 @@ impl AppUI {
         egui_video::init();
         puffin::set_scopes_on(true);
     }
+    fn find_window<T>(&mut self) -> Option<&mut T> where T: UserInterface {
+        self.windows
+            .iter_mut()
+            .find(|container| container.window.downcast_ref::<T>().is_some())
+            .map(|c| c.window.downcast_mut::<T>().unwrap())
+    }
     fn process_state(&mut self, ctx: &Context) {
         if let Some(mut update_list) = self.shared_state.updated_entries.try_lock() {
             if update_list.len() > 0 {
@@ -771,6 +790,20 @@ impl AppUI {
             }
             update_list.clear();
         }
+        if let Some(mut delete_list) = self.shared_state.deleted_entries.try_lock() {
+            if delete_list.len() > 0 {
+                if let Some(gallery_container) = self
+                    .windows
+                    .iter_mut()
+                    .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
+                {
+                    puffin::profile_scope!("update_gallery_entries");
+                    let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
+                    gallery_window.delete_entries(&delete_list);
+                }
+            }
+            delete_list.clear();
+        }
         if SharedState::consume_update_flag(&self.shared_state.tag_data_update_flag) {
             tags::reload_tag_data(&self.shared_state.tag_data_ref);
         }
@@ -782,6 +815,9 @@ impl AppUI {
         }
         if SharedState::consume_update_flag(&self.shared_state.database_changed) {
             self.check_database();
+            if let Some(data_ui) = self.find_window::<DataUI>() {
+                data_ui.database_info = None;
+            }
         }
         *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
     }
@@ -853,16 +889,18 @@ impl AppUI {
             toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
             all_entries_update_flag: Arc::new(AtomicBool::new(false)),
             updated_entries: Arc::new(Mutex::new(vec![])),
+            deleted_entries: Arc::new(Mutex::new(vec![])),
             tag_data_update_flag: Arc::new(AtomicBool::new(false)),
             database_unlocked: Arc::new(AtomicBool::new(false)),
             disable_navbar: Arc::new(Mutex::new(vec![])),
             database_changed: Arc::new(AtomicBool::new(false)),
+            // database_info_modified_flag: Arc::new(AtomicBool::new(false)),
         };
         AppUI {
             shared_state: Rc::new(shared_state),
             windows: vec![],
             current_window: String::new(),
-            input_database_key: Arc::new(Mutex::new(String::new()))
+            input_database_key: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -872,8 +910,8 @@ impl AppUI {
         let stroke_size = 1.;
         if let Some(color) = Config::global().themes.bg_fill_color() {
             style.visuals.widgets.noninteractive.bg_fill = color;
-        }
-        if let Some(color) = Config::global().themes.bg_fill_color() {
+            style.visuals.window_fill = color;
+            style.visuals.panel_fill = color;
             style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(stroke_size, scale_color(color, 1.5));
         }
         if let Some(color) = Config::global().themes.tertiary_bg_fill_color() {
@@ -972,18 +1010,18 @@ impl AppUI {
 
                 title: icon!(constants::DATA_TITLE, DATA_ICON),
             },
-            WindowContainer {
-                window: Box::new(debug_ui::DebugUI::default()),
-                is_open: Some(false),
+            // WindowContainer {
+            //     window: Box::new(debug_ui::DebugUI::default()),
+            //     is_open: Some(false),
 
-                title: icon!(constants::DEBUG_TITLE, DEBUG_ICON),
-            },
+            //     title: icon!(constants::DEBUG_TITLE, DEBUG_ICON),
+            // },
         ];
         self.check_database();
     }
 
     fn check_database(&mut self) {
-        match data::try_unlock_database_with_key(&String::new()) {
+        match data::try_unlock_database_with_key(&data::get_database_key()) {
             Ok(true) => {
                 self.generate_gallery_entries();
                 tags::reload_tag_data(&self.shared_state.tag_data_ref);
@@ -994,7 +1032,7 @@ impl AppUI {
                 self.current_window = String::new();
                 SharedState::set_update_flag(&self.shared_state.database_unlocked, false);
                 SharedState::add_disabled_reason(&self.shared_state.disable_navbar, constants::DISABLED_LABEL_LOCKED_DATABASE);
-            },
+            }
         };
     }
 
@@ -1008,17 +1046,25 @@ impl AppUI {
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
         let lock_exclusions = vec![icon!(CONFIG_TITLE, CONFIG_ICON)];
-        let disable_reasons = self.shared_state.disable_navbar.try_lock().as_deref().map(|v| v.clone()).unwrap_or_default();
+        let disable_reasons = self
+            .shared_state
+            .disable_navbar
+            .try_lock()
+            .as_deref()
+            .map(|v| v.clone())
+            .unwrap_or_default();
         let disabled_message = format!("disabled because {}", disable_reasons.join(", "));
         egui::TopBottomPanel::top("app_top_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.visuals_mut().button_frame = false;
                 for window in self.windows.iter_mut() {
                     ui.add_enabled_ui(disable_reasons.is_empty() || lock_exclusions.contains(&window.title), |ui| {
-                        let response = ui.selectable_label(
-                            self.current_window == window.title || matches!(window.is_open, Some(true)),
-                            window.title.clone(),
-                        ).on_disabled_hover_text(&disabled_message);
+                        let response = ui
+                            .selectable_label(
+                                self.current_window == window.title || matches!(window.is_open, Some(true)),
+                                window.title.clone(),
+                            )
+                            .on_disabled_hover_text(&disabled_message);
                         if response.clicked() {
                             if let Some(is_open) = window.is_open.as_mut() {
                                 *is_open ^= true;
@@ -1111,10 +1157,9 @@ impl AppUI {
                     ]);
                     let splash_rect = ui.label(job_text).rect;
                     if !SharedState::read_update_flag(&self.shared_state.database_unlocked) {
-                        let unlock_flag = Arc::clone(&self.shared_state.database_unlocked);
                         let toasts = Arc::clone(&self.shared_state.toasts);
                         let disabled_navbar_reasons = Arc::clone(&self.shared_state.disable_navbar);
-                        let regenerate_flag = Arc::clone(&self.shared_state.gallery_regenerate_flag);
+                        let database_update = Arc::clone(&self.shared_state.database_changed);
                         let input_db_key_arc = Arc::clone(&self.input_database_key);
                         if let Some(input_db_key) = self.input_database_key.try_lock().as_deref_mut() {
                             let input_db_key_clone = input_db_key.clone();
@@ -1123,13 +1168,13 @@ impl AppUI {
                             let text_edit = TextEdit::singleline(input_db_key).hint_text("enter database key...").password(true);
                             let button = Button::new("unlock");
                             ui.put(login_tedit_rect, text_edit);
-                            if ui.put(button_rect, button).clicked() {
+
+                            if ui.put(button_rect, button).clicked() || key_pressed(ctx, Key::Enter, Modifiers::NONE) {
                                 thread::spawn(move || {
                                     match data::try_unlock_database_with_key(&input_db_key_clone) {
                                         Ok(true) => {
                                             data::set_db_key(&input_db_key_clone);
-                                            SharedState::set_update_flag(&unlock_flag, true);
-                                            SharedState::set_update_flag(&regenerate_flag, true);
+                                            SharedState::raise_update_flag(&database_update);
                                             SharedState::remove_disabled_reason(&disabled_navbar_reasons, constants::DISABLED_LABEL_LOCKED_DATABASE);
                                             input_db_key_arc.lock().clear();
                                             toast_success_lock(&toasts, "successfully unlocked database");
@@ -1143,9 +1188,7 @@ impl AppUI {
                                     };
                                 });
                             }
-
                         }
-
                     }
                 });
             } else {
@@ -1170,4 +1213,12 @@ impl AppUI {
             toasts.show(ctx)
         }
     }
+}
+
+fn key_pressed(ctx: &Context, key: Key, modifiers: Modifiers) -> bool {
+    ctx.input().events.contains(&Event::Key {
+        key,
+        modifiers,
+        pressed: true,
+    })
 }

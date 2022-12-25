@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Color32Opt, Config},
     data,
-    ui::autocomplete::AutocompleteOption,
+    ui::widgets::autocomplete::AutocompleteOption,
     ui::{self, LayoutJobText},
 };
 

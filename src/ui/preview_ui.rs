@@ -1,5 +1,5 @@
 use super::{
-    autocomplete, icon, star_rating::star_rating, tags_ui::TagsUI, AutocompleteOptionsRef, RenderLoadingImageOptions, SharedState, ToastsRef,
+    widgets::autocomplete, icon, widgets::star_rating::star_rating, tags_ui::TagsUI, AutocompleteOptionsRef, RenderLoadingImageOptions, SharedState, ToastsRef,
     UpdateList,
 };
 use crate::{
@@ -12,14 +12,15 @@ use anyhow::Result;
 use arboard::Clipboard;
 use chrono::{TimeZone, Utc};
 use egui::{
-    pos2, vec2, Align, Area, Color32, DragValue, Event, FontId, Grid, Label, Layout, Mesh, Order, Painter, Pos2, Rect, RichText, Rounding,
-    ScrollArea, Sense, TextureId, Ui, Vec2,
+    layers, pos2, vec2, Align, Area, Color32, Context, DragValue, Event, FontId, Grid, Id, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2,
+    Rect, RichText, Rounding, ScrollArea, Sense, TextureId, Ui, Vec2,
 };
 use egui_extras::RetainedImage;
 use egui_modal::Modal;
 use egui_video::VideoStream;
 use image::FlatSamples;
 use parking_lot::Mutex;
+use rfd::FileDialog;
 use std::{rc::Rc, sync::Arc, thread};
 // use eg;
 use poll_promise::Promise;
@@ -50,8 +51,6 @@ pub struct PreviewUI {
     streamer: Option<VideoStream>,
     disassociated_entry_ids: Arc<Mutex<Vec<EntryId>>>,
     register_unknown_tags: bool,
-    preview_scaling: f32,
-    preview_columns: i32,
     is_reordering: bool,
     original_order: Option<Vec<String>>,
 }
@@ -81,6 +80,7 @@ pub enum PreviewStatus {
 
 impl ui::UserInterface for PreviewUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.process_keybinds(ui, ctx);
         self.process_preview(ctx);
         ui.centered_and_justified(|ui| {
             egui::Grid::new(format!("preview_ui_{}", self.id))
@@ -119,8 +119,6 @@ impl PreviewUI {
             view_offset: [0., 0.],
             view_zoom: 0.5,
             ignore_fullscreen_edit: 0,
-            preview_scaling: 1.,
-            preview_columns: 4,
             entry_info: Arc::clone(&entry_info),
             is_editing_tags: false,
             status: Arc::new(Mutex::new(PreviewStatus::None)),
@@ -208,12 +206,12 @@ impl PreviewUI {
             if let Some(mut entry_info) = self.entry_info.try_lock() {
                 ui.add_enabled_ui(!(self.is_editing_tags || self.is_reordering), |ui| {
                     if ui
-                    .button(if !entry_info.details().is_bookmarked {
-                        ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
-                    } else {
-                        ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
-                    })
-                    .clicked()
+                        .button(if !entry_info.details().is_bookmarked {
+                            ui::icon_text("bookmark", ui::constants::BOOKMARK_ICON)
+                        } else {
+                            ui::icon_text("unbookmark", ui::constants::REMOVE_ICON)
+                        })
+                        .clicked()
                     {
                         let new_state = !entry_info.details().is_bookmarked;
                         entry_info.details_mut().is_bookmarked = new_state;
@@ -329,12 +327,6 @@ impl PreviewUI {
                 // if let Some(entry_info_promise) = self.entry_info.as_mut() {
                 if let EntryInfo::PoolEntry(pool_info) = &*entry_info {
                     if self.is_reordering {
-                        ui.horizontal(|ui| {
-                            ui.label("scale");
-                            ui.add(DragValue::new(&mut self.preview_scaling).clamp_range(0.5..=4.).speed(0.3));
-                            ui.label("cols");
-                            ui.add(DragValue::new(&mut self.preview_columns).clamp_range(1..=20).speed(0.3));
-                        });
                         if ui
                             .add(ui::suggested_button(ui::icon_text("save order", ui::constants::SAVE_ICON)))
                             .clicked()
@@ -424,7 +416,7 @@ impl PreviewUI {
                                 ui.close_menu();
                                 self.clipboard_image = Some(Promise::spawn_thread("load_image_clipboard", move || {
                                     let load = || -> Result<FlatSamples<Vec<u8>>> {
-                                        let bytes = data::load_bytes(&hash)?;
+                                        let bytes = data::get_media_bytes(&hash)?;
                                         let image = image::load_from_memory(&bytes)?;
                                         let rgba_image = image.to_rgba8();
                                         let flat_samples = rgba_image.into_flat_samples();
@@ -436,6 +428,16 @@ impl PreviewUI {
                         }
                         // }
                         if ui.button(ui::icon_text("to file", ui::constants::EXPORT_ICON)).clicked() {
+                            if let Some(export_path) = FileDialog::new().pick_folder() {
+                                match data::export_entry(entry_info.entry_id(), export_path) {
+                                    Err(e) => {
+                                        ui::toast_error_lock(&self.shared_state.toasts, format!("failed to export: {e}"));
+                                    }
+                                    Ok(path) => {
+                                        ui::toast_success_lock(&self.shared_state.toasts, format!("successfully exported to:\n{}", path.display()));
+                                    }
+                                }
+                            }
                             ui.close_menu();
                         }
                     });
@@ -516,7 +518,7 @@ impl PreviewUI {
                     } else {
                         // ui.ctx().set_debug_on_hover(true);
                         ScrollArea::vertical()
-                            .auto_shrink([false; 2])
+                            .auto_shrink([false, true])
                             .id_source(format!("tags_scroll_{}", self.id))
                             .show(ui, |ui| {
                                 egui::Grid::new(format!("tags_{}", self.id)).num_columns(2).striped(true).show(ui, |ui| {
@@ -719,18 +721,28 @@ impl PreviewUI {
                         // delete logic below
                         let entry_info = Arc::clone(entry_info_arc);
                         let toasts = Arc::clone(&self.shared_state.toasts);
+                        let deleted_list = Arc::clone(&self.shared_state.deleted_entries);
+                        let updated_list = Arc::clone(&self.shared_state.updated_entries);
+
                         let status = Arc::clone(&self.status);
                         let id = self.id.clone();
                         thread::spawn(move || {
-                            if let Some(entry_info) = entry_info.try_lock() {
-                                let entry_id = entry_info.entry_id();
-                                if let Err(e) = data::delete_entry(&entry_info.entry_id()) {
-                                    ui::toast_error_lock(&toasts, format!("failed to delete {}: {}", id, e));
-                                } else {
-                                    ui::toast_success_lock(&toasts, format!("successfully deleted {}", id));
-                                    Self::set_status(&status, PreviewStatus::Deleted(entry_id.clone()))
+                            let entry_info = entry_info.lock();
+                            // if let Some(entry_info) = entry_info.lock() {
+                            let entry_id = entry_info.entry_id();
+                            let associated_hashes = entry_id.as_pool_entry_id().map(|link_id| data::get_hashes_of_media_link(link_id));
+                            if let Err(e) = data::delete_entry(&entry_info.entry_id()) {
+                                ui::toast_error_lock(&toasts, format!("failed to delete {}: {}", id, e));
+                            } else {
+                                ui::toast_success_lock(&toasts, format!("successfully deleted {}", id));
+                                Self::set_status(&status, PreviewStatus::Deleted(entry_id.clone()));
+                                deleted_list.lock().push(entry_id.clone());
+                                if let Some(Ok(hashes)) = associated_hashes {
+                                    let mut updated_list = updated_list.lock();
+                                    updated_list.extend(hashes.into_iter().map(|h| EntryId::MediaEntry(h)));
                                 }
                             }
+                            // }
                         });
                     }
                 })
@@ -781,17 +793,13 @@ impl PreviewUI {
                         match image {
                             MediaPreview::Picture(_) => {
                                 let mut mesh = Mesh::with_texture(texture_id);
-                                mesh.add_rect_with_uv(
-                                    mesh_rect,
-                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
+                                mesh.add_rect_with_uv(mesh_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                                 ui.painter().add(mesh);
-                            },
+                            }
                             MediaPreview::Movie(streamer) => {
                                 streamer.process_state();
                                 streamer.ui_at(ui, mesh_rect);
-                            },
+                            }
                         }
                     }
                     Some(Err(e)) => {
@@ -804,7 +812,7 @@ impl PreviewUI {
             } else {
                 paint_text("waiting to load", text_color, screen_rect.center(), ui.painter());
             }
-            
+
             let ignore_fullscreen_frames = 20; // number of frames to ignore double click
             let mut was_rect_clicked = |rect: &Rect| -> bool {
                 if ui.rect_contains_pointer(*rect) && ctx.input().pointer.primary_released() {
@@ -857,7 +865,7 @@ impl PreviewUI {
                     let bottom_rect_pos = pos2(0., (1. - control_rect_scale_y) * screen_rect.height());
                     let bottom_rect = Rect::from_min_max(bottom_rect_pos, bottom_rect_pos + bottom_rect_size);
 
-                    if ui.rect_contains_pointer(bottom_rect) {
+                    if ui.rect_contains_pointer(bottom_rect) || *current_index == 0 || *current_index == images.len() - 1 {
                         // let inner_bottom_rect = Rect::from_center_size(bottom_rect.center(), vec2(20., 20.));
                         let text_rect = paint_text(
                             format!("{} / {}", *current_index + 1, images.len()),
@@ -875,8 +883,9 @@ impl PreviewUI {
                     }
                 }
             }
-
-            if ctx.input().pointer.primary_down() {
+            let something_dragged = ctx.memory().is_anything_being_dragged();
+            let primary_down = ctx.input().pointer.primary_down();
+            if !something_dragged && primary_down {
                 if let Some(image_size) = image_size {
                     let delta = ctx.input().pointer.delta();
                     self.view_offset = (Vec2::from(self.view_offset) + delta).into();
@@ -926,7 +935,7 @@ impl PreviewUI {
     fn render_windowed_preview(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let mut options = RenderLoadingImageOptions::default();
         options.shrink_to_image = true;
-        options.desired_image_size = [500.; 2];
+        options.desired_image_size = [Config::global().ui.preview_size as f32; 2];
         options.hover_text_on_error_image = Some(Box::new(|error| format!("failed to load image: {error}").into()));
 
         if !ctx.memory().is_anything_being_dragged() {
@@ -949,110 +958,113 @@ impl PreviewUI {
         let image_response = match self.preview.as_mut() {
             Some(Preview::MediaEntry(image_promise)) => ui::render_loading_preview(ui, ctx, Some(image_promise), &options),
             Some(Preview::PoolEntry((images_promise, current_view_index))) => {
-                options.desired_image_size = [200. * self.preview_scaling; 2];
+                options.desired_image_size = [Config::global().ui.preview_pool_size as f32; 2];
                 options.sense.push(Sense::drag());
                 ScrollArea::vertical()
                     .min_scrolled_height(500.)
                     .id_source(format!("{}_pool_scroll", self.id))
                     .show(ui, |ui| {
                         ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                            let grid = Grid::new(format!("{}_pool_grid", self.id)).show(ui, |ui| {
-                                // let mut removed_images = vec![];
-                                if let Some(EntryInfo::PoolEntry(pool_info)) = self.entry_info.try_lock().as_deref_mut() {
-                                    images_promise.retain(|(h, _)| pool_info.hashes.contains(h))
-                                }
-                                for (image_index, (hash, image_promise)) in images_promise.iter_mut().enumerate() {
-                                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                        if self.current_dragged_index.is_some() && image_index == 0 {
-                                            if let Some(current_drop_index) = self.current_drop_index.as_ref() {
-                                                if *current_drop_index == 0 && self.current_dragged_index.unwrap() != 0 {
-                                                    ui.separator();
-                                                }
-                                            }
-                                        }
-
-                                        if let Some(current_drag_index) = self.current_dragged_index.as_ref() {
-                                            if *current_drag_index == image_index {
-                                                options.image_tint = Some(ui::constants::IMPORT_IMAGE_UNLOADED_TINT);
-                                            }
-                                        }
-
-                                        let image_response = ui::render_loading_preview(ui, ctx, Some(image_promise), &options);
-                                        options.image_tint = None;
-                                        if let Some(mut image_response) = image_response {
-                                            if image_response.dragged() && self.is_reordering {
-                                                if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
-                                                    let mut options = RenderLoadingImageOptions::default();
-                                                    options.desired_image_size = [600.; 2];
-                                                    options.shrink_to_image = true;
-                                                    egui::Area::new("dragged_item")
-                                                        .interactable(false)
-                                                        .fixed_pos(pointer_pos)
-                                                        .order(Order::Foreground)
-                                                        .show(ctx, |ui| ui::render_loading_preview(ui, ctx, Some(image_promise), &options));
-                                                }
-                                                if self.current_dragged_index.is_none() {
-                                                    self.current_dragged_index = Some(image_index)
-                                                }
-                                            }
-                                            if image_response.double_clicked() {
-                                                *current_view_index = image_index;
-                                                self.view_zoom = 1.;
-                                                self.view_offset = [0., 0.];
-                                                self.is_fullscreen = true;
-                                            }
-                                            if let Some(EntryId::PoolEntry(link_id)) = self.entry_info.try_lock().map(|i| i.entry_id().clone()) {
-                                                let remove_media_from_link_modal = Self::render_remove_link_modal(
-                                                    ctx,
-                                                    hash,
-                                                    &link_id,
-                                                    &self.id,
-                                                    &self.shared_state.toasts,
-                                                    &self.status,
-                                                    &self.entry_info,
-                                                    &self.shared_state.updated_entries,
-                                                );
-                                                image_response = image_response.context_menu(|ui| {
-                                                    if ui.button(icon!("open media", OPEN_ICON)).clicked() {
-                                                        Self::set_status(
-                                                            &self.status,
-                                                            PreviewStatus::RequestingNew(EntryId::MediaEntry(hash.clone())),
-                                                        );
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button(icon!("remove link", REMOVE_ICON)).clicked() {
-                                                        remove_media_from_link_modal.open();
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.add(ui::caution_button(icon!("delete media", DELETE_ICON))).clicked() {
-                                                        ui.close_menu();
-                                                    }
-                                                });
-                                            }
-
-                                            if let Some(current_dragged_index) = self.current_dragged_index.as_ref() {
-                                                if ui.rect_contains_pointer(image_response.rect) {
-                                                    if (*current_dragged_index == image_index)
-                                                        || (((*current_dragged_index as i32) - 1).max(0) as usize == image_index)
-                                                    {
-                                                        self.current_drop_index = None;
-                                                    } else {
-                                                        self.current_drop_index = Some(image_index.max(1));
+                            ui.group(|ui| {
+                                let grid = Grid::new(format!("{}_pool_grid", self.id)).show(ui, |ui| {
+                                    // let mut removed_images = vec![];
+                                    if let Some(EntryInfo::PoolEntry(pool_info)) = self.entry_info.try_lock().as_deref_mut() {
+                                        images_promise.retain(|(h, _)| pool_info.hashes.contains(h))
+                                    }
+                                    for (image_index, (hash, image_promise)) in images_promise.iter_mut().enumerate() {
+                                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                            if self.current_dragged_index.is_some() && image_index == 0 {
+                                                if let Some(current_drop_index) = self.current_drop_index.as_ref() {
+                                                    if *current_drop_index == 0 && self.current_dragged_index.unwrap() != 0 {
                                                         ui.separator();
                                                     }
                                                 }
-                                            };
-                                        };
-                                    });
+                                            }
 
-                                    if (image_index + 1) % self.preview_columns as usize == 0 {
-                                        ui.end_row()
+                                            if let Some(current_drag_index) = self.current_dragged_index.as_ref() {
+                                                if *current_drag_index == image_index {
+                                                    options.image_tint = Some(ui::constants::IMPORT_IMAGE_UNLOADED_TINT);
+                                                }
+                                            }
+
+                                            let image_response = ui::render_loading_preview(ui, ctx, Some(image_promise), &options);
+                                            options.image_tint = None;
+                                            if let Some(mut image_response) = image_response {
+                                                if image_response.dragged() && self.is_reordering {
+                                                    if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                                                        let mut options = RenderLoadingImageOptions::default();
+                                                        options.desired_image_size = [Config::global().ui.preview_reorder_size as f32; 2];
+                                                        options.shrink_to_image = true;
+                                                        egui::Area::new("dragged_item")
+                                                            .interactable(false)
+                                                            .fixed_pos(pointer_pos)
+                                                            .order(Order::Foreground)
+                                                            .show(ctx, |ui| ui::render_loading_preview(ui, ctx, Some(image_promise), &options));
+                                                    }
+                                                    if self.current_dragged_index.is_none() {
+                                                        self.current_dragged_index = Some(image_index)
+                                                    }
+                                                }
+                                                if image_response.double_clicked() {
+                                                    *current_view_index = image_index;
+                                                    self.view_zoom = 1.;
+                                                    self.view_offset = [0., 0.];
+                                                    self.is_fullscreen = true;
+                                                }
+                                                if let Some(EntryId::PoolEntry(link_id)) = self.entry_info.try_lock().map(|i| i.entry_id().clone()) {
+                                                    let remove_media_from_link_modal = Self::render_remove_link_modal(
+                                                        ctx,
+                                                        hash,
+                                                        &link_id,
+                                                        &self.id,
+                                                        &self.shared_state.toasts,
+                                                        &self.status,
+                                                        &self.entry_info,
+                                                        &self.shared_state.updated_entries,
+                                                    );
+                                                    image_response = image_response.context_menu(|ui| {
+                                                        if ui.button(icon!("open media", OPEN_ICON)).clicked() {
+                                                            Self::set_status(
+                                                                &self.status,
+                                                                PreviewStatus::RequestingNew(EntryId::MediaEntry(hash.clone())),
+                                                            );
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button(icon!("remove link", REMOVE_ICON)).clicked() {
+                                                            remove_media_from_link_modal.open();
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.add(ui::caution_button(icon!("delete media", DELETE_ICON))).clicked() {
+                                                            ui.close_menu();
+                                                        }
+                                                    });
+                                                }
+
+                                                if let Some(current_dragged_index) = self.current_dragged_index.as_ref() {
+                                                    if ui.rect_contains_pointer(image_response.rect) {
+                                                        if (*current_dragged_index == image_index)
+                                                            || (((*current_dragged_index as i32) - 1).max(0) as usize == image_index)
+                                                        {
+                                                            self.current_drop_index = None;
+                                                        } else {
+                                                            self.current_drop_index = Some(image_index.max(1));
+                                                            ui.separator();
+                                                        }
+                                                    }
+                                                };
+                                            };
+                                        });
+
+                                        if (image_index + 1) % Config::global().ui.preview_pool_columns as usize == 0 {
+                                            ui.end_row()
+                                        }
                                     }
+                                });
+
+                                if self.current_dragged_index.is_some() && !ui.rect_contains_pointer(grid.response.rect) {
+                                    self.current_drop_index = Some(0);
                                 }
                             });
-                            if self.current_dragged_index.is_some() && !ui.rect_contains_pointer(grid.response.rect) {
-                                self.current_drop_index = Some(0);
-                            }
                         });
                     });
                 None
@@ -1079,7 +1091,7 @@ impl PreviewUI {
     pub fn load_preview(&mut self, ctx: &egui::Context) {
         // let ctx = ctx.clone();
         let load = |hash: &String, ctx: egui::Context| -> Result<MediaPreview> {
-            let bytes = data::load_bytes(hash)?;
+            let bytes = data::get_media_bytes(hash)?;
             let entry_info = data::get_entry_info(&EntryId::MediaEntry(hash.clone()))?;
             if entry_info.is_movie() {
                 let mut stream = VideoStream::new_from_bytes(&ctx, &bytes)?;
@@ -1122,8 +1134,19 @@ impl PreviewUI {
         }
     }
 
+    fn process_keybinds(&mut self, ui: &mut Ui, ctx: &Context) {
+        if ui::does_ui_have_focus(ui, ctx) {
+            if let Some(entry_info) = self.entry_info.try_lock() {
+                if ui::key_pressed(ctx, Key::ArrowLeft, Modifiers::NONE) {
+                    Self::set_status(&self.status, PreviewStatus::Previous(entry_info.entry_id().clone()))
+                } else if ui::key_pressed(ctx, Key::ArrowRight, Modifiers::NONE) {
+                    Self::set_status(&self.status, PreviewStatus::Next(entry_info.entry_id().clone()))
+                }
+            }
+        }
+    }
+
     pub fn load_entry_info(&self) {
-        // let entry_id = entry_id.clone();
         let status = Arc::clone(&self.status);
         let entry_info = Arc::clone(&self.entry_info);
         thread::spawn(move || {

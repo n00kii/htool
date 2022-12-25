@@ -168,7 +168,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                 let ac_rect_inner_padding = 2.;
 
                 let visuals = ui.style().interact_selectable(&tedit_response, false);
-                let icon_font = FontId::default();
+                let icon_font = ui::font_id_sized(14.);
 
                 let mut text_height = 0.;
                 let mut ac_height = ac_rect_padding * 2.;
@@ -258,7 +258,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                 ui.ctx().memory().lock_focus(tedit_response.id, false);
                 insert_key(ui, Key::Tab);
                 dbg!("hmm2");
-                // tedit_response.surrender_focus()
+                tedit_response.surrender_focus()
                 // tedit_response.surrender_focus()
             }
         }

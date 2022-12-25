@@ -1,5 +1,5 @@
 use super::{
-    autocomplete,
+    widgets::autocomplete,
     tags::{self, Namespace, Tag, TagDataRef, TagLink},
 };
 use crate::{
@@ -15,7 +15,7 @@ use eframe::{
     emath::Align,
 };
 use egui::{Label, Sense};
-use egui_extras::{Size, StripBuilder, TableBuilder};
+use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use egui_modal::Modal;
 
 use std::{rc::Rc, sync::Arc, thread, vec};
@@ -44,6 +44,28 @@ impl TagsUI {
             register_unknown_tags: false,
         }
     }
+}
+
+fn render_content_with_options(ui: &mut egui::Ui, options_ui: impl FnOnce(&mut egui::Ui), content_ui: impl FnOnce(&mut egui::Ui)) {
+    StripBuilder::new(ui)
+        .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
+        .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
+        .size(Size::exact(ui::constants::SPACER_SIZE))
+        .size(Size::remainder())
+        .horizontal(|mut strip| {
+            strip.empty();
+            strip.cell(|ui| {
+                options_ui(ui);
+            });
+            strip.cell(|ui| {
+                ui.with_layout(Layout::left_to_right(Align::Center).with_cross_justify(true), |ui| {
+                    ui.separator();
+                });
+            });
+            strip.cell(|ui| {
+                content_ui(ui);
+            });
+        });
 }
 
 impl ui::UserInterface for TagsUI {
@@ -208,14 +230,14 @@ impl TagsUI {
                 Some(Ok(all_tag_data)) => {
                     TableBuilder::new(ui)
                         .striped(true)
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .column(Size::remainder())
-                        .header(20.0, |mut header| {
+                        .column(Column::auto())
+                        .column(Column::remainder())
+                        .column(Column::remainder().resizable(true))
+                        .column(Column::remainder().resizable(true))
+                        .column(Column::remainder().resizable(true))
+                        .column(Column::remainder().resizable(true))
+                        .column(Column::remainder().resizable(true))
+                        .header(ui::constants::TABLE_ROW_HEIGHT, |mut header| {
                             header.col(|ui| {
                                 ui.label("count");
                             });
@@ -338,7 +360,7 @@ impl TagsUI {
                                                                     &link.to_tagstring
                                                                 };
                                                                 let job_text_1 = LayoutJobText::new(format!(
-                                                                    "{} {} with ",
+                                                                    "{} delete {} with ",
                                                                     ui::constants::DELETE_ICON,
                                                                     &link_type.to_string()
                                                                 ));
@@ -458,8 +480,7 @@ struct ModifyTagLinkUI {
     link_type: TagLinkType,
     from_tagstrings: String,
     to_tagstrings: String,
-    shared_state: Rc<SharedState>
-    // loaded_tag_data: TagDataRef,
+    shared_state: Rc<SharedState>, // loaded_tag_data: TagDataRef,
 }
 
 impl ModifyTagLinkUI {
@@ -549,7 +570,7 @@ impl ui::UserInterface for ModifyTagLinkUI {
                                                         updated_entries.lock().extend(affected_entries);
                                                         SharedState::set_update_flag(&tag_update_flag, true);
                                                     }
-                                                    Err(e) => TagsUI::toast_fail_update_tags(&e, &toasts)
+                                                    Err(e) => TagsUI::toast_fail_update_tags(&e, &toasts),
                                                 }
                                             });
                                             tags::reload_tag_data(&self.shared_state.tag_data_ref);
@@ -676,7 +697,6 @@ impl UserInterface for ModifyTagUI {
                             }
                         }
                     }
-                    if ui.add(ui::caution_button("delete")).clicked() {}
                 }
             });
         });
@@ -704,9 +724,9 @@ impl UserInterface for ModifyNamespacesUI {
         let mut config = Config::clone();
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             TableBuilder::new(ui)
-                .column(Size::remainder())
-                .column(Size::relative(0.1).at_most(100.))
-                .header(20., |mut header| {
+                .column(Column::auto())
+                .column(Column::initial(0.1).at_most(100.))
+                .header(ui::constants::TABLE_ROW_HEIGHT, |mut header| {
                     header.col(|ui| {
                         ui.label("namespace");
                     });

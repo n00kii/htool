@@ -1,24 +1,24 @@
-# current bugs
- - (FIXED) deleting a link either seems to delete inner media or doesnt set them independant 
- - (FIXED) extracted stuff keeps bytes forever, even after import
- - if something is a duplicate but will belong to a new pool, it should get a link to that new pool (currently doesnt)
- - crash when trying to import everything with extracts (panics with sender dropped) (perhaps data running out of threads?)
- - skipping extraction should not import leftover zips
- - (FIXED) deleting (or adding) a media of a pool needs to update any living entry_info of that pool
- - (FIXED) removing media from link updates globally updates pool previews, not but media previews
- - tags ui should be using threads for tag ops
+# htool
+htool is a media management/gallery application with a focus on simplicity. 
 
-# to change
- - make namespaces live in the db, add a field to sharedstate
- - figure out why you cant use threadpool when importing
- - implement logging (tracing)
- - implement profiling (puffin)
- - (DONE) implement view of links, way to remove from lin
- - (DONE) implement selection options in galler
- - use "with requests" loading for pools
- - figure out how to make preview windows use strips (weird tag list sizing)
- - exts filter for importing should be whitelist, not blacklist
- - (DONE) make importer use shared state
+🚧 htool is still in active development and should not be considered anywhere close to complete. do not use it without other copies of your media or you risk data loss from bugs. 🚧
+
+## features
+ - exact deduplication
+ - tagging
+  - immplications, aliases, namespaces
  - encryption
+ - themeing
+ - (planned) automatic backups
+ - (planned) source finding
+ - (planned) fuzzy deduplication
+ - (planned) keybinds/hotkeys
+ - (planned) slideshow
+
+## how to use
+htool keeps all its data stored in a single sqlite database. when media is imported, the files are copied over to the database without affecting the original files at all. 
+
+in the "importer" tab, you can select a folder to scan for media. most image formats are compatible with htool, and video support is WIP (no audio). when trying to import an archive (`.zip`, `.rar`) or an inner directory, htool will import it as a "pool", keeping all contained media grouped together.
+
+media can be viewed and modified in the "gallery" tab. in a preview window, double click the preview to enter (or exit) fullscreen. while in fullscreen, the hovering/clicking edges of the window perform different actions. the outermost left/right edges of the window will view the next/previous gallery entry. when viewing a pool, the center area of the left/right sides of the window will view the next/previous media entry of that pool. hovering over the bottom of the window will display the page number.
  
- - if i make a new database, is it fine to use the key currently in memeory? (changing database name in config)

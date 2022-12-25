@@ -45,42 +45,121 @@ use std::fs;
 use std::hash;
 use std::io::Cursor;
 use std::mem::discriminant;
+use std::path::PathBuf;
 use std::sync::Arc;
 // use std::sync::Mutex;
 use parking_lot::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DATABASE_WORKERS_PER_TASK: u32 = 15;
+const DATABASE_WORKERS_PER_TASK: u32 = 5;
 static DATABASE_KEY: RwLock<String> = parking_lot::const_rwlock(String::new());
 const GENERIC_RUSQLITE_ERROR: rusqlite::Error = rusqlite::Error::InvalidQuery;
 static POOLS: OnceCell<Pool<SqliteConnectionManager>> = OnceCell::new();
 
-// fn create_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
-//     let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?);
-//     // .with_init(|c| c.execute_batch("PRAGMA key='test'"));
-//     let connection_manager = r2d2::Pool::builder()
-//         .max_size((Config::global().misc.concurrent_db_operations * 3) as u32)
-//         .build(manager)
-//         .context("failed to create conn pool")?;
+pub struct DatabaseInfo {
+    pub thumbnail_cache_size: usize,
+    pub media_bytes_size: usize,
+    pub entry_info_size: usize,
+    pub entry_tags_size: usize,
+    pub media_links_size: usize,
+    pub tag_info_size: usize,
+    pub is_unencrypted: bool,
+    pub current_key: String,
+    pub thumbnail_cache_count: usize,
+    pub tag_info_count: usize,
+    pub entry_info_count: usize,
+    pub media_bytes_count: usize,
+    pub tag_links_size: usize,
+    pub entry_tags_count: usize,
+}
 
-//     Ok(connection_manager)
-// }
+pub fn load_database_info() -> Result<DatabaseInfo> {
+    // todo!()
+    let conn = initialize_database_connection()?;
+    let mut table_size_stmt = conn.prepare("SELECT SUM(pgsize) FROM dbstat WHERE name = ?1")?;
+    // let mut table_count_stmt = conn.prepare("SELECT COUNT(*) from ?1")?;
+    let mut get_table_size = |table_name: &str| table_size_stmt.query_row(params![table_name], |row| row.get(0));
+    // let mut get_table_count = |table_name: &str| table_count_stmt.query_row(params![table_name], |row| row.get(0));
 
-// pub fn init() {
-//     POOLS
-//         .set(create_conn_pool().expect("couldn't initialize database connections"))
-//         .expect("failed to set database instance");
-// }
+    let thumbnail_cache_size: usize = get_table_size("thumbnail_cache")?;
+    // let media_bytes_size: usize = get_table_size("media_bytes")?; // this takes too long
+    let entry_info_size: usize = get_table_size("entry_info")?;
+    let entry_tags_size: usize = get_table_size("entry_tags")?;
+    let media_links_size: usize = get_table_size("media_links")?;
+    let tag_info_size: usize = get_table_size("tag_info")?;
+    let tag_links_size: usize = get_table_size("tag_links")?;
+    let media_bytes_size: usize = fs::metadata(Config::global().path.database()?)?.len() as usize
+        - entry_info_size
+        - entry_tags_size
+        - tag_info_size
+        - tag_links_size
+        - media_links_size
+        - thumbnail_cache_size;
 
+    let media_bytes_count: usize = conn.query_row("SELECT COUNT(*) from media_bytes", [], |row| row.get(0))?;
+    let entry_info_count: usize = conn.query_row("SELECT COUNT(*) from entry_info", [], |row| row.get(0))?;
+    let thumbnail_cache_count: usize = conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
+    let tag_info_count: usize = conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
+    let entry_tags_count: usize = conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
+    // let media_bytes_count: usize = get_table_count("media_bytes")?;
+    // let entry_info_count: usize = get_table_count("entry_info")?; // conn.query_row("SELECT COUNT(*) from entry_info", [], |row| row.get(0))?;
+    // let thumbnail_cache_count: usize = get_table_count("thumbnail_cache")?; // conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
+    // let tag_info_count: usize = get_table_count("tag_info")?; // conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
+    // let entry_tags_count: usize = get_table_count("entry_tags")?; // conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
+
+    Ok(DatabaseInfo {
+        entry_info_count,
+        media_bytes_count,
+        tag_links_size,
+        thumbnail_cache_count,
+        tag_info_count,
+        thumbnail_cache_size,
+        media_bytes_size,
+        entry_info_size,
+        entry_tags_count,
+        entry_tags_size,
+        media_links_size,
+        tag_info_size,
+        is_unencrypted: is_database_unencrypted()?,
+        current_key: get_database_key(),
+    })
+}
 pub fn get_conn_pool() -> &'static Pool<SqliteConnectionManager> {
-    // DB_MANAGER_INSTANCE.get().expect("uninitialized db")
     POOLS.get().expect("uninitialized db")
+}
+
+pub fn flush_thumbnail_cache() -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DROP TABLE thumbnail_cache", [])?;
+    Ok(())
+}
+pub fn flush_media_bytes() -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DROP TABLE media_bytes", [])?;
+    Ok(())
+}
+pub fn flush_entry_info_media_links() -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DROP TABLE entry_info", [])?;
+    conn.execute("DROP TABLE media_links", [])?;
+    Ok(())
+}
+pub fn flush_tag_definitions() -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DROP TABLE tag_info", [])?;
+    conn.execute("DROP TABLE tag_links", [])?;
+    Ok(())
+}
+pub fn flush_entry_tags() -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DROP TABLE entry_tags", [])?;
+    Ok(())
 }
 
 pub fn generate_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
     let manager = SqliteConnectionManager::file(Config::global().path.database().context("failed to initialize database manager")?)
-        .with_init(move |c| c.execute_batch(&format!("PRAGMA key = '{}';", get_db_key())));
+        .with_init(move |c| c.execute_batch(&format!("PRAGMA key = '{}';", get_database_key())));
 
     let connection_manager = r2d2::Pool::builder()
         .max_size(DATABASE_WORKERS_PER_TASK)
@@ -90,12 +169,12 @@ pub fn generate_conn_pool() -> Result<Pool<SqliteConnectionManager>> {
     Ok(connection_manager)
 }
 
-pub fn get_db_key() -> String {
+pub fn get_database_key() -> String {
     DATABASE_KEY.read().to_string() //.as_deref().map(|s| s.to_string())
 }
 
 pub fn set_db_key(new_key: &String) {
-    let mut db_key = DATABASE_KEY.write(); 
+    let mut db_key = DATABASE_KEY.write();
     *db_key = new_key.clone();
 }
 
@@ -443,7 +522,7 @@ pub fn load_thumbnail_with_conn(conn: &Connection, entry_id: &EntryId) -> Result
                         let mut statement = conn.prepare("SELECT mime FROM entry_info WHERE hash = ?1")?;
                         let entry_info = get_entry_info_with_conn(conn, entry_id)?;
                         let mime_type: Option<String> = statement.query_row(params![hash], |row| row.get("mime"))?;
-                        let bytes = load_bytes(&hash)?;
+                        let bytes = get_media_bytes(&hash)?;
                         // if mime_type.starts_with("image") {
                         let thumbnail_res = generate_media_thumbnail(&bytes, entry_info.is_movie());
                         match thumbnail_res {
@@ -606,20 +685,25 @@ fn setup_databaste_with_conn(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn is_database_unencrypted() -> Result<bool> {
+pub fn is_database_unencrypted() -> Result<bool> {
     let conn = open_database_connection()?;
     apply_database_key_to_conn(&conn, &String::new())?;
     is_connection_unlocked(&conn)
 }
 
 pub fn initialize_database_connection() -> Result<Connection> {
-    let conn = open_database_connection()?;//Connection::open(&Config::global().path.database()?)?;
-    apply_database_key_to_conn(&conn, &get_db_key())?;
+    let conn = open_database_connection()?; //Connection::open(&Config::global().path.database()?)?;
+    apply_database_key_to_conn(&conn, &get_database_key())?;
     setup_databaste_with_conn(&conn)?;
     Ok(conn)
 }
-pub fn load_bytes(hash: &String) -> Result<Vec<u8>> {
+
+pub fn get_media_bytes(hash: &String) -> Result<Vec<u8>> {
     let conn = initialize_database_connection()?;
+    get_media_bytes_with_conn(&conn, hash)
+}
+
+pub fn get_media_bytes_with_conn(conn: &Connection, hash: &String) -> Result<Vec<u8>> {
     let mut statement = conn.prepare("SELECT bytes FROM media_bytes WHERE hash = ?1")?;
     let bytes: Vec<u8> = statement.query_row(params![hash], |row| row.get(0))?;
     Ok(bytes)
@@ -1055,30 +1139,38 @@ fn delete_tag_with_conn(conn: &Connection, tag: &Tag) -> Result<()> {
     Ok(())
 }
 
-pub fn rekey_database(new_key: &String) -> Result<()> {
+pub fn rekey_database(new_key: &String) -> Result<Option<(PathBuf, PathBuf)>> {
     // https://www.zetetic.net/sqlcipher/sqlcipher-api/#rekey
     let is_key_empty = new_key.is_empty();
     let is_database_unencrypted = is_database_unencrypted()?;
-    if  is_database_unencrypted ^ is_key_empty { // plaintext -> encry OR encry -> plaintext
-        let temp_filename =  rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
-        let db_path = Config::global().path.database()?;
+    if is_database_unencrypted ^ is_key_empty {
+        // plaintext -> encry OR encry -> plaintext
+        let temp_filename = rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let old_db_path = Config::global().path.database()?;
+        let mut new_db_path = old_db_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        new_db_path.push(temp_filename.clone());
+        
+        let new_db_path_str = format!("file:///{}", new_db_path.to_str().unwrap());
         let conn = open_database_connection()?;
-        apply_database_key_to_conn(&conn, &get_db_key())?;
-        conn.execute("ATTACH DATABASE ?1 AS ?1 KEY ?2", params![temp_filename, new_key])?;
+        apply_database_key_to_conn(&conn, &get_database_key())?;
+        
+        conn.execute("ATTACH DATABASE ?1 AS ?2 KEY ?3", params![new_db_path_str, temp_filename, new_key])?;
         let _: Option<usize> = conn.query_row("SELECT sqlcipher_export(?1)", params![temp_filename], |row| row.get(0))?;
         conn.execute("DETACH DATABASE ?1", params![temp_filename])?;
         conn.close().map_err(|_| anyhow!("failed to close conn"))?;
-        
-        fs::remove_file(&db_path)?;
-        fs::rename(temp_filename, db_path)?;
 
-    } else { // encry -> encry OR plaintext -> plaintext
+        // fs::remove_file(&db_path)?;
+        // fs::rename(temp_filename, db_path)?; //TODO: recourse when we fail here
+        set_db_key(new_key);
+        Ok(Some((old_db_path, new_db_path)))
+    } else {
+        // encry -> encry OR plaintext -> plaintext
         let conn = open_database_connection()?;
-        apply_database_key_to_conn(&conn, &get_db_key())?;
+        apply_database_key_to_conn(&conn, &get_database_key())?;
         conn.pragma_update(None, "rekey", new_key)?;
+        set_db_key(new_key);
+        Ok(None)
     }
-    set_db_key(new_key);
-    Ok(())
 }
 
 pub fn rename_tag(old_tag: &Tag, new_tag: &Tag) -> Result<()> {
@@ -1248,13 +1340,13 @@ pub fn load_gallery_entries_with_requests(requests: Vec<CompleteDataRequest>) ->
             if requests.len() > 0 {
                 let CompleteDataRequest {
                     info_request,
-                    preview_request: thumbnail_request,
+                    preview_request,
                 } = requests.remove(0);
                 drop(requests);
                 let entry_id = info_request.entry_id;
                 let entry_info = get_entry_info_with_conn(&conn, &entry_id);
                 let image = load_thumbnail_with_conn(&conn, &entry_id).and_then(|image| ui::generate_retained_image(&image));
-                thumbnail_request.sender.send(image.map(|image| MediaPreview::Picture(image)));
+                preview_request.sender.send(image.map(|image| MediaPreview::Picture(image)));
                 info_request.sender.send(entry_info);
             } else {
                 break;
@@ -1491,17 +1583,101 @@ pub fn delete_cached_thumbnail(entry_id: &EntryId) -> Result<()> {
     Ok(())
 }
 
+pub fn merge_pool_links(link_id_a: &i32, link_id_b: &i32, dest_link_id: &i32) -> Result<()> {
+    let mut conn = initialize_database_connection()?;
+    let tx = conn.transaction()?;
+    let hashes = get_hashes_of_media_link_with_conn(&tx, link_id_a)?
+        .into_iter()
+        .chain(get_hashes_of_media_link_with_conn(&tx, link_id_b)?)
+        .collect::<Vec<String>>();
+    let entry_info_a = get_entry_info_with_conn(&tx, &EntryId::PoolEntry(*link_id_a))?;
+    let entry_info_b = get_entry_info_with_conn(&tx, &EntryId::PoolEntry(*link_id_b))?;
+
+    let tags = entry_info_a
+        .details()
+        .tags
+        .clone()
+        .into_iter()
+        .chain(entry_info_b.details().tags.clone())
+        .collect::<Vec<Tag>>();
+
+    let (keep_id, delete_id) = if dest_link_id == link_id_a {
+        (link_id_a, link_id_b)
+    } else if dest_link_id == link_id_b {
+        (link_id_b, link_id_a)
+    } else {
+        unreachable!();
+        // delete_entry_with_conn(&tx, entry_info_a.entry_id())?;
+        // delete_entry_with_conn(&tx, entry_info_b.entry_id())?;
+        // let entry_id = EntryId::PoolEntry(create_pool_link(&hashes)?);
+        // set_tags(&entry_id, &tags)?;
+    };
+
+    delete_entry_with_conn(&tx, &EntryId::PoolEntry(*delete_id))?;
+    add_media_to_link_with_conn(&tx, keep_id, &hashes)?;
+    set_tags_with_conn(&tx, &EntryId::PoolEntry(*keep_id), &tags)?;
+
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn add_media_to_link(link_id: &i32, hashes: &Vec<String>) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    add_media_to_link_with_conn(&conn, link_id, hashes)
+}
+
+fn add_media_to_link_with_conn(conn: &Connection, link_id: &i32, hashes: &Vec<String>) -> Result<()> {
+    for hash in hashes {
+        let mut statement = conn.prepare("SELECT 1 FROM media_links WHERE link_id = ?1 AND hash = ?2")?;
+        if !statement.exists(params![link_id, hash])? {
+            conn.execute(
+                "INSERT INTO media_links (link_id, value, hash) VALUES (?1, ?2, ?3)",
+                params![link_id, None::<&i32>, hash],
+            )?;
+        }
+        set_independance_with_conn(&conn, hash, false)?;
+    }
+    Ok(())
+}
+
 pub fn create_pool_link(hashes: &Vec<String>) -> Result<i32> {
     let mut conn = initialize_database_connection()?;
     let tx = conn.transaction()?;
     let next_id = create_new_link_with_conn(&tx)?;
-    for (index, hash) in hashes.iter().enumerate() {
-        tx.execute(
-            "INSERT INTO media_links (link_id, value, hash) VALUES (?1, ?2, ?3)",
-            params![next_id, index, hash],
-        )?;
-        set_independance_with_conn(&tx, hash, false)?;
-    }
+    add_media_to_link_with_conn(&tx, &next_id, hashes)?;
+    // for (index, hash) in hashes.iter().enumerate() {
+    //     tx.execute(
+    //         "INSERT INTO media_links (link_id, value, hash) VALUES (?1, ?2, ?3)",
+    //         params![next_id, index, hash],
+    //     )?;
+    //     set_independance_with_conn(&tx, hash, false)?;
+    // }
     tx.commit()?;
     Ok(next_id)
+}
+
+pub fn get_media_mime_with_conn(conn: &Connection, hash: &String) -> Result<Option<String>> {
+    let mut statement = conn.prepare("SELECT mime FROM entry_info WHERE hash = ?1")?;
+    let mime_type: Option<String> = statement.query_row(params![hash], |row| row.get("mime"))?;
+    Ok(mime_type)
+}
+
+pub fn export_entry(entry_id: &EntryId, mut export_path: PathBuf) -> Result<PathBuf> {
+    let conn = initialize_database_connection()?;
+    match entry_id {
+        EntryId::PoolEntry(link_id) => todo!(),
+        EntryId::MediaEntry(hash) => {
+            let bytes = get_media_bytes(hash)?;
+            let mime = get_media_mime_with_conn(&conn, hash)?;
+            let ext = mime.and_then(|ms| mime_guess::get_mime_extensions_str(ms.as_str()).map(|m| m[0]));
+            export_path.push(hash);
+
+            if let Some(ext) = ext {
+                export_path.set_extension(ext);
+            }
+            fs::write(&export_path, bytes)?;
+            Ok(export_path)
+        }
+    }
+    // Ok(())
 }

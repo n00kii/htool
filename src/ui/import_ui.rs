@@ -1,7 +1,17 @@
+use anyhow::anyhow;
 use anyhow::Error;
 use data::ImportationStatus;
+use egui::Align2;
+use egui::Color32;
 use egui::Context;
 
+use egui::FontId;
+use egui::Id;
+use egui::LayerId;
+use egui::Order;
+use egui::Rect;
+use egui::Rounding;
+use egui::Stroke;
 use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_modal::Icon;
@@ -9,12 +19,15 @@ use egui_modal::Modal;
 use tempfile::tempdir;
 use zip::ZipArchive;
 
+use crate::import;
+use crate::ui::widgets;
 use crate::util::BatchPollBuffer;
 use crate::util::PollBuffer;
 
 use super::super::data;
 use super::super::ui;
 use super::super::Config;
+use super::icon;
 use super::SharedState;
 use crate::import::scan_directory;
 use crate::import::ImportationEntry;
@@ -26,15 +39,17 @@ use rfd::FileDialog;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use std::fs;
 use std::fs::File;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use std::sync::{Arc};
-use std::time::Duration;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 pub struct ImporterUI {
     shared_state: Rc<SharedState>,
@@ -43,6 +58,7 @@ pub struct ImporterUI {
     alternate_scan_dir: Option<PathBuf>,
     hide_errored_entries: bool,
     skip_thumbnails: bool,
+    organize_directory: bool,
     scan_extension_filter: HashMap<String, HashMap<String, bool>>,
     batch_import_status: Option<Promise<Arc<Result<()>>>>,
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
@@ -89,6 +105,7 @@ impl ImporterUI {
             pending_archive_extracts: None,
             import_buffer,
             skip_thumbnails: false,
+            organize_directory: false,
             is_import_status_window_open: false,
             is_filters_window_open: false,
             hide_errored_entries: true,
@@ -96,19 +113,92 @@ impl ImporterUI {
             waiting_for_extracts: false,
             importation_entries: None,
             alternate_scan_dir: None,
-            scan_extension_filter: HashMap::from([
-                (
-                    "image".into(),
-                    HashMap::from([("png".into(), true), ("jpg".into(), true), ("webp".into(), true)]),
-                ),
-                (
-                    "video".into(),
-                    HashMap::from([("gif".into(), true), ("mp4".into(), true), ("webm".into(), true)]),
-                ),
-                ("archive".into(), HashMap::from([("zip".into(), true), ("rar".into(), true)])),
+            scan_extension_filter: Self::build_extension_filter_hashmap(vec![
+                ("image", vec!["png", "jpg", "webp"]),
+                ("movie", vec!["gif", "mp4", "webm"]),
+                ("archive", vec!["zip", "rar"]),
             ]),
-
             dir_link_map: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn build_extension_filter_hashmap(exts: Vec<(&str, Vec<&str>)>) -> HashMap<String, HashMap<String, bool>> {
+        let mut map = HashMap::new();
+        for (ext_group, exts) in exts {
+            let mut inner_map = HashMap::new();
+            for ext in exts {
+                inner_map.insert(ext.to_string(), true);
+            }
+            map.insert(ext_group.to_string(), inner_map);
+        }
+        return map;
+    }
+
+    fn process_dropped_files(&mut self, ctx: &Context) {
+        let dropped_files = ctx.input().raw.dropped_files.clone();
+        if !dropped_files.is_empty() {
+            let mut new_entries = vec![];
+            for dropped_file in dropped_files {
+                if let Some(path) = dropped_file.path {
+                    if let Some(parent) = path.parent() {
+                        let dir_iter = fs::read_dir(parent);
+                        if let Ok(mut dir_iter) = dir_iter {
+                            if let Some(Ok(dir_entry)) = dir_iter.find(|dir_entry| {
+                                if let Ok(dir_entry) = dir_entry {
+                                    dir_entry.path() == path
+                                } else {
+                                    false
+                                }
+                            }) {
+                                if let Ok(importation_entry) = ImportationEntry::new(dir_entry, &None, 0) {
+                                    new_entries.push(Rc::new(RefCell::new(importation_entry)))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if new_entries.len() > 0 {
+                if self.importation_entries.is_none() {
+                    self.importation_entries = Some(vec![]);
+                }
+                self.importation_entries.as_mut().unwrap().extend(new_entries)
+            }
+        }
+    }
+
+    fn render_dropping_files(&self, ui: &mut Ui, ctx: &Context) {
+        // todo!()
+        let screen_rect = ctx.input().screen_rect;
+        let hovering_count = ctx.input().raw.hovered_files.len();
+        if hovering_count > 0 {
+            let drop_text = format!("+ {} file{}", hovering_count, if hovering_count > 1 { "s" } else { "" });
+            let rect_size = Vec2::splat(100.);
+            let rect = Rect::from_center_size(screen_rect.center(), rect_size);
+            ui.painter()
+                .rect_filled(screen_rect, Rounding::none(), Color32::BLACK.linear_multiply(0.5));
+            ui.painter().rect(
+                rect.expand(10.),
+                Rounding::same(10.),
+                ui.visuals().faint_bg_color,
+                Stroke::new(1., Config::global().themes.accent_stroke_color().unwrap_or(Color32::BLACK)),
+            );
+
+            // let text_rect = ui.painter().text(
+            //     rect.center(),
+            //     Align2::CENTER_CENTER,
+            //     &drop_text,
+            //     FontId::default(),
+            //     ui.visuals().text_color(),
+            // );
+
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                &drop_text,
+                ui::font_id_sized(24.),
+                ui.visuals().text_color(),
+            );
         }
     }
 }
@@ -119,7 +209,6 @@ impl ImporterUI {
             media_entry.borrow_mut().load_bytes();
         }
     }
-
 
     fn thumbnail_buffer_poll(media_entry: &Rc<RefCell<ImportationEntry>>) -> bool {
         let mut media_entry = media_entry.borrow_mut();
@@ -197,6 +286,18 @@ impl ImporterUI {
         self.filter_media_entries(|import_entry| import_entry.borrow().match_importation_status(ImportationStatus::Pending))
     }
 
+    fn generate_extension_filter_vec(&self) -> Vec<String> {
+        let mut extension_filter = vec![];
+        for (_extension_group, extensions) in &self.scan_extension_filter {
+            for (extension, do_include) in extensions {
+                if *do_include {
+                    extension_filter.push(extension.clone())
+                }
+            }
+        }
+        extension_filter
+    }
+
     fn get_number_of_loading_bytes(media_entries: &Vec<ImportationEntry>) -> u32 {
         let mut num_loading = 0;
         for media_entry in media_entries {
@@ -219,6 +320,14 @@ impl ImporterUI {
                     self.import_buffer.poll_buffer.entries.clear();
                 }
             }
+            // if ui.button("open").clicked() {
+            //     if let Some(path) = FileDialog::new().pick_folder() {
+            //         self.alternate_scan_dir = Some(path);
+            //         self.importation_entries = None;
+            //         self.thumbnail_buffer.entries.clear();
+            //         self.import_buffer.poll_buffer.entries.clear();
+            //     }
+            // }
             if self.alternate_scan_dir.as_ref().is_some() && ui.button("remove").clicked() {
                 self.alternate_scan_dir = None;
                 self.importation_entries = None
@@ -239,28 +348,23 @@ impl ImporterUI {
                     ))
                     .clicked()
                 {
-                    let mut extension_filter = vec![];
-                    for (_extension_group, extensions) in &self.scan_extension_filter {
-                        for (extension, do_include) in extensions {
-                            if !do_include {
-                                extension_filter.push(extension)
-                            }
-                        }
-                    }
-                    match scan_directory(self.get_scan_dir(), 0, None, &extension_filter) {
+                    match scan_directory(self.get_scan_dir(), 0, None, &self.generate_extension_filter_vec()) {
                         Ok(media_entries) => {
                             let warning_amount = 15000;
                             let amount_entries = media_entries.len();
                             ui::toast_info_lock(&self.shared_state.toasts, format!("found {amount_entries} entries"));
                             if amount_entries > warning_amount {
-                                ui::toasts_with_cb(&self.shared_state.toasts, |toasts| {
-                                    toasts.error(format!(
-                                        "more than {warning_amount} entries: performance may be limited. \
+                                ui::toasts_with_cb(
+                                    &self.shared_state.toasts,
+                                    |toasts| {
+                                        toasts.error(format!(
+                                            "more than {warning_amount} entries: performance may be limited. \
                                         disabling previews or splitting this directory into multiple \
                                         directories may help."
-                                    ))
-                                }, |toast| toast.set_closable(true).set_duration(None));
-
+                                        ))
+                                    },
+                                    |toast| toast.set_closable(true).set_duration(None),
+                                );
                             }
                             self.importation_entries = Some(media_entries.into_iter().map(|i| Rc::new(RefCell::new(i))).collect());
                         }
@@ -277,6 +381,7 @@ impl ImporterUI {
                 ui.add_space(ui::constants::SPACER_SIZE);
                 ui.group(|ui| {
                     ui.checkbox(&mut self.skip_thumbnails, "disable previews");
+                    ui.checkbox(&mut self.organize_directory, "organize directory");
                 });
 
                 ui.add_space(ui::constants::SPACER_SIZE);
@@ -304,24 +409,56 @@ impl ImporterUI {
                 let prompt = self.render_extraction_prompt(ctx);
 
                 if ui
-                    .add_enabled(
-                        self.is_any_entry_selected(),
-                        ui::suggested_button(format!("{} import", ui::constants::IMPORT_ICON)),
-                    )
+                    .add_enabled(self.is_any_entry_selected(), ui::suggested_button(icon!("import", IMPORT_ICON)))
                     .clicked()
                 {
+                    if self.organize_directory {
+                        let import_success_path = self.get_import_success_path();
+                        let import_fail_path = self.get_import_fail_path();
+                        let import_duplicate_path = self.get_import_duplicate_path();
+
+                        let all_dir_creation_res = vec![
+                            if import_success_path.exists() {
+                                Ok(())
+                            } else {
+                                fs::create_dir(import_success_path)
+                            },
+                            if import_fail_path.exists() {
+                                Ok(())
+                            } else {
+                                fs::create_dir(import_fail_path)
+                            },
+                            if import_duplicate_path.exists() {
+                                Ok(())
+                            } else {
+                                fs::create_dir(import_duplicate_path)
+                            },
+                        ];
+
+                        if all_dir_creation_res.iter().any(|res| res.is_err()) {
+                            for res in all_dir_creation_res {
+                                if let Err(e) = res {
+                                    ui::toast_error_lock(&self.shared_state.toasts, format!("failed to create dir: {e}"))
+                                }
+                            }
+                            return;
+                        }
+                    }
+
                     let selected_media_entries = self.get_selected_media_entries();
                     let mut selected_archives_exist = false;
                     ui::toast_info_lock(
                         &self.shared_state.toasts,
                         format!("marked {} media for importing", selected_media_entries.len()),
                     );
-                    for media_entry in self.get_selected_media_entries() {
-                        media_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
-                        media_entry.borrow_mut().is_selected = false;
-                        if media_entry.borrow().is_archive {
+
+                    for import_entry in self.get_selected_media_entries() {
+                        if import_entry.borrow().is_archive {
                             selected_archives_exist = true;
+                            // continue;
                         }
+                        import_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
+                        import_entry.borrow_mut().is_selected = false;
                     }
                     if selected_archives_exist {
                         self.waiting_for_extracts = true;
@@ -335,9 +472,19 @@ impl ImporterUI {
         });
     }
 
+    fn get_import_success_path(&self) -> PathBuf {
+        self.get_scan_dir().join(import::SUCCESS_IMPORT_DIR)
+    }
+    fn get_import_fail_path(&self) -> PathBuf {
+        self.get_scan_dir().join(import::FAILED_IMPORT_DIR)
+    }
+    fn get_import_duplicate_path(&self) -> PathBuf {
+        self.get_scan_dir().join(import::DUPLICATE_IMPORT_DIR)
+    }
+
     fn process_extractions(&mut self) {
         puffin::profile_scope!("import_process_extractions");
-
+        let extension_filter = self.generate_extension_filter_vec();
         let max_concurrent_extractions = 2;
         let mut new_entries = vec![];
         let mut set_none = false;
@@ -384,8 +531,7 @@ impl ImporterUI {
                     thread::spawn(move || {
                         let extract = || -> Result<Vec<ImportationEntry>> {
                             let temp_dir = tempdir()?;
-
-                            let file = File::open(entry_path)?;
+                            let file = File::open(&entry_path)?;
                             let mut archive = ZipArchive::new(file)?;
                             for i in 0..archive.len() {
                                 let mut current_progress = current_progress.lock();
@@ -404,8 +550,9 @@ impl ImporterUI {
                                 temp_dir.path().to_path_buf(),
                                 0,
                                 Some(temp_dir.path().as_os_str().to_string_lossy().to_string()),
-                                &vec![],
+                                &extension_filter,
                             );
+
                             if let Ok(import_entries) = import_entries.as_mut() {
                                 import_entries.iter_mut().for_each(|i| {
                                     i.keep_bytes_loaded = true;
@@ -416,15 +563,11 @@ impl ImporterUI {
                             }
                             temp_dir.close()?;
                             import_entries
-                            // sender.send(import_entries);
-                            // temp_dir.close()?;
-                            // Ok(())
                         };
                         match extract() {
                             Ok(import_entries) => sender.send(Ok(import_entries)),
-                            Err(e) => sender.send(Err(e))
+                            Err(e) => sender.send(Err(e)),
                         }
-                        
                     });
                     // remove extracting entry
                     if let Some(import_entries) = self.importation_entries.as_mut() {
@@ -508,32 +651,57 @@ impl ImporterUI {
         self.thumbnail_buffer.poll();
         self.import_buffer.poll();
 
-        if let Some(media_entries) = self.importation_entries.as_ref() {
-            for media_entry in media_entries {
+        if let Some(import_entries) = self.importation_entries.as_ref() {
+            for import_entry in import_entries {
                 //unload bytes if uneccesary
-                if !media_entry.borrow().keep_bytes_loaded && media_entry.borrow().are_bytes_loaded() {
-                    if !media_entry.borrow().is_importing()
-                        && !((media_entry.borrow().is_thumbnail_loading() || media_entry.borrow().thumbnail.is_none()) && !self.skip_thumbnails)
+                if !import_entry.borrow().keep_bytes_loaded && import_entry.borrow().are_bytes_loaded() {
+                    if !import_entry.borrow().is_importing()
+                        && !((import_entry.borrow().is_thumbnail_loading() || import_entry.borrow().thumbnail.is_none()) && !self.skip_thumbnails)
                     {
                         // dbg!("bytes unloaded");
-                        media_entry.borrow_mut().bytes = None
+                        import_entry.borrow_mut().bytes = None
                     }
                 }
                 if !self.skip_thumbnails {
-                    if media_entry.borrow().thumbnail.is_none() && !self.thumbnail_buffer.is_full() {
-                        let _ = self.thumbnail_buffer.try_add_entry(&media_entry);
+                    if import_entry.borrow().thumbnail.is_none() && !self.thumbnail_buffer.is_full() {
+                        let _ = self.thumbnail_buffer.try_add_entry(&import_entry);
                     }
                 } else {
                     self.thumbnail_buffer.entries.clear();
-                    media_entry.borrow_mut().thumbnail = None;
+                    import_entry.borrow_mut().thumbnail = None;
                 }
-                if !self.waiting_for_extracts && media_entry.borrow().match_importation_status(ImportationStatus::Pending) {
-                    let _ = self.import_buffer.try_add_entry(&media_entry);
+                if !self.waiting_for_extracts && import_entry.borrow().match_importation_status(ImportationStatus::Pending) {
+                    let _ = self.import_buffer.try_add_entry(&import_entry);
                 }
-                if media_entry.borrow().match_importation_status(ImportationStatus::Duplicate)
-                    || media_entry.borrow().match_importation_status(ImportationStatus::Success)
+                if import_entry.borrow().match_importation_status(ImportationStatus::Duplicate)
+                    || import_entry.borrow().match_importation_status(ImportationStatus::Success)
                 {
-                    media_entry.borrow_mut().keep_bytes_loaded = false;
+                    import_entry.borrow_mut().keep_bytes_loaded = false;
+                }
+                if self.organize_directory {
+                    if !import_entry.borrow().attempted_organize {
+                        let entry_path = import_entry.borrow().dir_entry.path();
+                        if Path::exists(&entry_path) {
+                            let entry_file_name = entry_path.file_name().unwrap_or_default();
+                            let new_path = if import_entry.borrow().match_importation_status(ImportationStatus::Duplicate) {
+                                Some(self.get_import_duplicate_path().join(entry_file_name))
+                            } else if import_entry.borrow().match_importation_status(ImportationStatus::Fail(anyhow!(""))) {
+                                Some(self.get_import_fail_path().join(entry_file_name))
+                            } else if import_entry.borrow().match_importation_status(ImportationStatus::Success) {
+                                Some(self.get_import_success_path().join(entry_file_name))
+                            } else {
+                                None
+                            };
+                            if let Some(new_path) = new_path {
+                                if let Err(e) = fs::rename(entry_path, new_path) {
+                                    ui::toast_error_lock(&self.shared_state.toasts, format!("failed to organize entry: {e}"))
+                                }
+                            }
+                        }
+
+                        import_entry.borrow_mut().attempted_organize = true;
+                    }
+                    // if media_entry.borrow().dir_entry.path().starts_with(base)
                 }
             }
             if self.import_buffer.ready_for_batch_action() {
@@ -577,7 +745,12 @@ impl ImporterUI {
                                     options.widget_margin = [10., 10.];
                                     options.error_label_text_size = ui::LabelSize::Relative(0.3);
                                     options.desired_image_size = [thumbnail_size, thumbnail_size];
-                                    options.error_label_text = importation_entry.dir_entry.path().extension().and_then(|e| e.to_str().map(|e| e.to_string())).unwrap_or("?".to_string());
+                                    options.error_label_text = importation_entry
+                                        .dir_entry
+                                        .path()
+                                        .extension()
+                                        .and_then(|e| e.to_str().map(|e| e.to_string()))
+                                        .unwrap_or("?".to_string());
                                     options.hover_text_on_loading_image = Some(format!("{file_label} (loading thumbnail...)",).into());
                                     options.hover_text_on_error_image = Some(Box::new(move |error| format!("{file_label_clone} ({error})").into()));
                                     options.hover_text_on_none_image = Some(format!("{file_label} (waiting to load image...)").into());
@@ -602,6 +775,7 @@ impl ImporterUI {
                                         if response.clicked() && importation_entry.is_importable() {
                                             importation_entry.is_selected = !importation_entry.is_selected
                                         }
+                                        widgets::selected(importation_entry.is_selected, response, ui.painter());
                                     }
                                 }
                             });
@@ -713,7 +887,7 @@ impl ImporterUI {
     fn render_import_status_window(&mut self, ctx: &egui::Context) {
         egui::Window::new("import status")
             .open(&mut self.is_import_status_window_open)
-                .resizable(false)
+            .resizable(false)
             .show(ctx, |ui| {
                 if let Some(media_entries) = &mut self.importation_entries {
                     let mut total_failed = 0;
@@ -763,6 +937,7 @@ impl ui::UserInterface for ImporterUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_media();
         self.process_extractions();
+        self.process_dropped_files(ctx);
         self.render_scan_directory_selection(ui);
         ui.separator();
 
@@ -803,5 +978,7 @@ impl ui::UserInterface for ImporterUI {
         }
         self.render_import_status_window(ctx);
         self.render_filters_window(ctx);
+
+        self.render_dropping_files(ui, ctx);
     }
 }

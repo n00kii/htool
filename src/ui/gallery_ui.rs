@@ -33,6 +33,7 @@ use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_modal::Modal;
 use egui_notify::Toasts;
+use rand::seq::SliceRandom;
 use regex::Regex;
 use ui::{constants, icon_text};
 
@@ -43,11 +44,12 @@ use crate::util::PollBuffer;
 use super::super::data;
 use super::super::ui;
 use super::super::Config;
-use super::autocomplete;
 use super::icon;
 use super::preview_ui::MediaPreview;
 use super::preview_ui::PreviewStatus;
 use super::preview_ui::PreviewUI;
+use super::widgets;
+use super::widgets::autocomplete;
 use super::UpdateFlag;
 
 use anyhow::Result;
@@ -64,8 +66,8 @@ use poll_promise::Promise;
 use std::cell::RefCell;
 
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 // use std::sync::Mutex;
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
@@ -258,8 +260,30 @@ impl From<String> for EntrySearch {
 }
 
 impl GalleryUI {
+    pub fn delete_entries(&mut self, delete_list: &Vec<EntryId>) {
+        if let Some(gallery_entries) = self.gallery_entries.as_mut() {
+            gallery_entries.retain(|e| !delete_list.contains(e.borrow().entry_info.lock().entry_id()))
+        }
+        if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
+            gallery_entries.retain(|e| !delete_list.contains(e.borrow().entry_info.lock().entry_id()))
+        }
+        self.preview_windows.retain(|w| {
+            if let Some(preview_window) = w.window.downcast_ref::<PreviewUI>() {
+                !delete_list.contains(preview_window.entry_info.lock().entry_id())
+            } else {
+                true
+            }
+        });
+        self.filter_entries()
+    }
     fn get_selected_gallery_entries(&self) -> Vec<Rc<RefCell<GalleryEntry>>> {
         util::filter_opt_vec(&self.gallery_entries, |gallery_entry| gallery_entry.borrow().is_selected)
+    }
+    fn get_selected_gallery_entry_ids(&self) -> Vec<EntryId> {
+        self.get_selected_gallery_entries()
+            .iter()
+            .map(|gallery_entry| gallery_entry.borrow().entry_info.lock().entry_id().clone())
+            .collect::<Vec<_>>()
     }
     fn process_previews(&mut self, ctx: &egui::Context) {
         let mut do_refiter = false;
@@ -398,7 +422,7 @@ impl GalleryUI {
                                 let mut gallery_entry_info = gallery_entry.entry_info.lock();
                                 *gallery_entry_info = updated_info
                             }
-                            Ok(Err(e)) => {
+                            Ok(Err(_e)) => {
                                 // print!("failed {e}")
                             }
                             Err(_p) => {
@@ -409,14 +433,16 @@ impl GalleryUI {
                 }
             }
             if let Some(mut new_entries) = Arc::clone(&self.new_gallery_entries).try_lock() {
-                let mut added_new = false;
                 for new_entry in new_entries.drain(..) {
-                    added_new = true;
-                    gallery_entries.push(Rc::new(RefCell::new(new_entry)));
+                    let entry_info = Arc::clone(&new_entry.entry_info);
+                    let new_entry = Rc::new(RefCell::new(new_entry));
+                    gallery_entries.insert(0, Rc::clone(&new_entry));
+                    if let Some(filtered_gallery_entries) = self.filtered_gallery_entries.as_mut() {
+                        filtered_gallery_entries.insert(0, new_entry);
+                    }
+                    Self::launch_preview(&entry_info, &mut self.preview_windows, &self.shared_state);
                 }
-                if added_new {
-                    self.filter_entries()
-                }
+                self.filter_entries();
             }
         }
 
@@ -425,7 +451,7 @@ impl GalleryUI {
         }
 
         if SharedState::consume_update_flag(&self.refilter_flag) {
-                self.filter_entries()
+            self.filter_entries()
         }
 
         if util::is_opt_promise_ready(&self.loading_gallery_entries) {
@@ -433,6 +459,7 @@ impl GalleryUI {
                 if let Ok(loaded_gallery_entries_res) = loaded_gallery_entries_promise.try_take() {
                     match loaded_gallery_entries_res {
                         Ok(loaded_gallery_entries) => {
+                            self.filtered_gallery_entries = None;
                             self.gallery_entries = Some(
                                 loaded_gallery_entries
                                     .into_iter()
@@ -512,6 +539,7 @@ impl GalleryUI {
 
     fn render_options(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let link_modal = self.render_make_link_modal(ctx);
+        let delete_selected_modal = self.render_delete_selected_modal(ctx);
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("gallery");
             ui.add_enabled_ui(!self.is_loading_gallery_entries(), |ui| {
@@ -528,15 +556,19 @@ impl GalleryUI {
                 }
             });
             ui.add_space(ui::constants::SPACER_SIZE);
-            let currently_selected_len = self.get_selected_gallery_entries().len();
+            let currently_selected = self.get_selected_gallery_entries();
             ui.group(|ui| {
                 ui.checkbox(&mut self.is_selection_mode, "selection mode");
-                if currently_selected_len > 0 {
-                    let text = RichText::new(format!("{} selected", currently_selected_len)).weak().italics();
+                if currently_selected.len() > 0 {
+                    let text = RichText::new(format!("{} selected", currently_selected.len())).weak().italics();
                     ui.label(text);
                 }
             });
 
+            ui.add_space(ui::constants::SPACER_SIZE);
+            if ui.button(icon!("shuffle", SHUFFLE_ICON)).clicked() {
+                self.shuffle_entries();
+            }
             ui.add_space(ui::constants::SPACER_SIZE);
             if ui.button("select all").clicked() {
                 util::opt_vec_applyeach_refcell(&mut self.filtered_gallery_entries, |gallery_entry| gallery_entry.is_selected = true)
@@ -549,66 +581,221 @@ impl GalleryUI {
             if ui.button("invert").clicked() {
                 util::opt_vec_applyeach_refcell(&mut self.filtered_gallery_entries, |gallery_entry| gallery_entry.is_selected ^= true)
             }
-            ui.add_enabled_ui(currently_selected_len > 0, |ui| {
+            ui.add_enabled_ui(currently_selected.len() > 0, |ui| {
                 ui.add_space(ui::constants::SPACER_SIZE);
-                ui.add_enabled_ui(currently_selected_len > 1, |ui| {
-                    if ui.button(ui::icon_text("link", ui::constants::LINK_ICON)).clicked() {
+                ui.add_enabled_ui(currently_selected.len() > 1, |ui| {
+                    if ui.button(ui::icon_text("merge", ui::constants::LINK_ICON)).clicked() {
                         link_modal.open();
                     }
                 });
                 ui.add_space(ui::constants::SPACER_SIZE);
 
-                if ui.add(ui::caution_button(ui::icon_text("delete", ui::constants::DELETE_ICON))).clicked() {}
+                if ui.add(ui::caution_button(ui::icon_text("delete", ui::constants::DELETE_ICON))).clicked() {
+                    delete_selected_modal.open()
+                }
             });
         });
     }
-    fn render_make_link_modal(&mut self, ctx: &egui::Context) -> Modal {
-        let modal = ui::modal(ctx, "link_modal");
-        let currently_selected = self.get_selected_gallery_entries();
+
+    fn reset_selection(&mut self) {
+        self.is_selection_mode = false;
+        self.get_selected_gallery_entries()
+            .iter()
+            .for_each(|e| e.borrow_mut().is_selected = false);
+    }
+
+    fn render_delete_selected_modal(&mut self, ctx: &egui::Context) -> Modal {
+        let modal = ui::modal(ctx, "delete_selected_modal");
+        let currently_selected = self.get_selected_gallery_entry_ids();
         modal.show(|ui| {
-            modal.title(ui, "new link");
-            modal.body(ui, format!("make a new link between {} media?", currently_selected.len()));
+            modal.title(ui, "delete selected");
+            modal.body(ui, format!("permanently delete {} media?", currently_selected.len()));
             modal.buttons(ui, |ui| {
                 modal.button(ui, "cancel");
-                if modal.suggested_button(ui, ui::icon_text("make link", ui::constants::LINK_ICON)).clicked() {
-                    self.is_selection_mode = false;
-                    self.get_selected_gallery_entries()
-                        .iter()
-                        .for_each(|e| e.borrow_mut().is_selected = false);
-                    let entry_ids = currently_selected
-                        .iter()
-                        .map(|gallery_entry| gallery_entry.borrow().entry_info.lock().entry_id().clone())
-                        .collect::<Vec<_>>();
+                if modal.caution_button(ui, ui::icon_text("delete", ui::constants::DELETE_ICON)).clicked() {
+                    self.reset_selection();
+                    let deleted_entries = Arc::clone(&self.shared_state.deleted_entries);
                     let toasts = Arc::clone(&self.shared_state.toasts);
-                    let new_list = Arc::clone(&self.new_gallery_entries);
-                    let updated_list = Arc::clone(&self.shared_state.updated_entries);
                     thread::spawn(move || {
-                        let hashes = entry_ids
-                            .iter()
-                            .filter_map(|entry_id| entry_id.as_media_entry_id().map(|s| s.clone()))
-                            .collect::<Vec<_>>();
-                        if hashes.len() != entry_ids.len() {
-                            ui::toast_error_lock(&toasts, format!("links can only be made from media"));
-                        } else {
-                            match data::create_pool_link(&hashes) {
-                                Ok(link_id) => {
-                                    let mut updated_list = updated_list.lock();
-                                    let mut new_list = new_list.lock();
-                                    updated_list.extend(hashes.iter().map(|h| EntryId::MediaEntry(h.clone())));
-
-                                    if let Ok(new_entry) = GalleryEntry::new(EntryId::PoolEntry(link_id)) {
-                                        new_list.push(new_entry)
-                                    }
-                                    ui::toast_success_lock(&toasts, format!("successfully created {}", ui::pretty_link_id(&link_id)));
+                        for entry_id in currently_selected {
+                            match data::delete_entry(&entry_id) {
+                                Ok(()) => {
+                                    ui::toast_success_lock(&toasts, format!("successfully deleted {}", ui::pretty_entry_id(&entry_id)));
+                                    deleted_entries.lock().push(entry_id)
                                 }
                                 Err(e) => {
-                                    ui::toast_error_lock(&toasts, format!("failed to create link: {e}"));
+                                    ui::toast_error_lock(&toasts, format!("failed to delete {}: {e}", ui::pretty_entry_id(&entry_id)));
                                 }
-                            }
-                        };
+                            };
+                        }
                     });
                 }
             });
+        });
+        modal
+    }
+
+    fn render_make_link_modal(&mut self, ctx: &egui::Context) -> Modal {
+        let modal = ui::modal(ctx, "link_modal");
+        let currently_selected = self.get_selected_gallery_entry_ids();
+        modal.show(|ui| {
+            let selected_media = self
+                .get_selected_gallery_entry_ids()
+                .into_iter()
+                .filter_map(|entry_id| entry_id.as_media_entry_id().map(|s| s.clone()))
+                .collect::<Vec<String>>();
+            let selected_pools = self
+                .get_selected_gallery_entry_ids()
+                .into_iter()
+                .filter_map(|entry_id| entry_id.as_pool_entry_id().map(|s| s.clone()))
+                .collect::<Vec<i32>>();
+            match (selected_media.len(), selected_pools.len()) {
+                (_, 0) => {
+                    modal.title(ui, "new link");
+                    modal.body(ui, format!("make a new link between {} media?", currently_selected.len()));
+                    modal.buttons(ui, |ui| {
+                        modal.button(ui, "cancel");
+                        if modal.suggested_button(ui, ui::icon_text("make link", ui::constants::LINK_ICON)).clicked() {
+                            self.reset_selection();
+                            let toasts = Arc::clone(&self.shared_state.toasts);
+                            let new_list = Arc::clone(&self.new_gallery_entries);
+                            let updated_list = Arc::clone(&self.shared_state.updated_entries);
+                            thread::spawn(move || {
+                                // let hashes = currently_selected
+                                //     .iter()
+                                //     .filter_map(|entry_id| entry_id.as_media_entry_id().map(|s| s.clone()))
+                                //     .collect::<Vec<_>>();
+                                // if hashes.len() != currently_selected.len() {
+                                //     ui::toast_error_lock(&toasts, format!("links can only be made from media"));
+                                // } else {
+                                match data::create_pool_link(&selected_media) {
+                                    Ok(link_id) => {
+                                        let mut updated_list = updated_list.lock();
+                                        let mut new_list = new_list.lock();
+                                        updated_list.extend(selected_media.iter().map(|h| EntryId::MediaEntry(h.clone())));
+
+                                        if let Ok(new_entry) = GalleryEntry::new(&EntryId::PoolEntry(link_id)) {
+                                            new_list.push(new_entry)
+                                        }
+                                        ui::toast_success_lock(&toasts, format!("successfully created {}", ui::pretty_link_id(&link_id)));
+                                    }
+                                    Err(e) => {
+                                        ui::toast_error_lock(&toasts, format!("failed to create link: {e}"));
+                                    }
+                                }
+                                // };
+                            });
+                        }
+                    });
+                }
+                (_, 1) => {
+                    let link_id = selected_pools.get(0).unwrap().clone();
+                    modal.title(ui, "merging media");
+                    modal.body(ui, format!("merge {} media into {}?", selected_media.len(), ui::pretty_link_id(&link_id)));
+                    modal.buttons(ui, |ui| {
+                        modal.button(ui, "cancel");
+                        if modal.suggested_button(ui, ui::icon_text("merge", ui::constants::LINK_ICON)).clicked() {
+                            self.reset_selection();
+                            let toasts = Arc::clone(&self.shared_state.toasts);
+                            let updated_list = Arc::clone(&self.shared_state.updated_entries);
+                            thread::spawn(move || {
+                                match data::add_media_to_link(&link_id, &selected_media) {
+                                    Ok(()) => {
+                                        data::delete_cached_thumbnail(&EntryId::PoolEntry(link_id));
+
+                                        let mut updated_list = updated_list.lock();
+                                        updated_list.extend(selected_media.iter().map(|h| EntryId::MediaEntry(h.clone())));
+                                        updated_list.push(EntryId::PoolEntry(link_id));
+
+                                        ui::toast_success_lock(
+                                            &toasts,
+                                            format!("successfully merged {} media into {}", selected_media.len(), ui::pretty_link_id(&link_id)),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        ui::toast_error_lock(&toasts, format!("failed to complete merge: {e}"));
+                                    }
+                                }
+                                // };
+                            });
+                        }
+                    });
+                }
+                (_, 2) => {
+                    let link_id_a = selected_pools.get(0).unwrap().clone();
+                    let link_id_b = selected_pools.get(1).unwrap().clone();
+                    modal.title(
+                        ui,
+                        if selected_media.len() > 0 {
+                            format!(
+                                "merging {} media, {}, and {}",
+                                selected_media.len(),
+                                ui::pretty_link_id(&link_id_a),
+                                ui::pretty_link_id(&link_id_b)
+                            )
+                        } else {
+                            format!("merging {} and {}", ui::pretty_link_id(&link_id_a), ui::pretty_link_id(&link_id_b))
+                        },
+                    );
+                    modal.body(ui, "select a pool to merge into:");
+                    modal.buttons(ui, |ui| {
+                        modal.button(ui, "cancel");
+                        let mut merge_ids = None;
+                        if modal.suggested_button(ui, ui::pretty_link_id(&link_id_a)).clicked() {
+                            merge_ids = Some((link_id_a, link_id_b));
+                        }
+                        if modal.suggested_button(ui, ui::pretty_link_id(&link_id_b)).clicked() {
+                            merge_ids = Some((link_id_b, link_id_a));
+                        }
+                        if let Some((keep_id, delete_id)) = merge_ids {
+                            self.reset_selection();
+                            let toasts = Arc::clone(&self.shared_state.toasts);
+                            let updated_list = Arc::clone(&self.shared_state.updated_entries);
+                            let deleted_list = Arc::clone(&self.shared_state.deleted_entries);
+                            thread::spawn(move || {
+                                let merge = || -> Result<()> {
+                                    data::merge_pool_links(&link_id_a, &link_id_b, &keep_id)?;
+                                    data::add_media_to_link(&keep_id, &selected_media)?;
+                                    Ok(())
+                                };
+                                match merge() {
+                                    Ok(()) => {
+                                        data::delete_cached_thumbnail(&EntryId::PoolEntry(keep_id));
+                                        let mut updated_list = updated_list.lock();
+                                        let mut deleted_list = deleted_list.lock();
+                                        updated_list.extend(selected_media.iter().map(|h| EntryId::MediaEntry(h.clone())));
+                                        updated_list.push(EntryId::PoolEntry(keep_id));
+
+                                        deleted_list.push(EntryId::PoolEntry(delete_id));
+                                        ui::toast_success_lock(
+                                            &toasts,
+                                            if selected_media.len() > 0 {
+                                                format!(
+                                                    "successfully merged {} media and {} into {}",
+                                                    selected_media.len(),
+                                                    ui::pretty_link_id(&delete_id),
+                                                    ui::pretty_link_id(&keep_id)
+                                                )
+                                            } else {
+                                                format!(
+                                                    "successfully merged {} into {}",
+                                                    ui::pretty_link_id(&delete_id),
+                                                    ui::pretty_link_id(&keep_id)
+                                                )
+                                            },
+                                        );
+                                    }
+                                    Err(e) => {
+                                        ui::toast_error_lock(&toasts, format!("failed to complete merge: {e}"));
+                                    }
+                                }
+                                // };
+                            });
+                        }
+                    });
+                }
+                (_, _) => {}
+            }
         });
         modal
     }
@@ -635,7 +822,7 @@ impl GalleryUI {
                                 options.error_label_text_size = ui::LabelSize::Relative(0.8);
 
                                 let response = ui::render_loading_preview(ui, ctx, gallery_entry.borrow_mut().thumbnail.as_mut(), &options);
-                                if let Some(response) = response {
+                                if let Some(mut response) = response {
                                     let icon_size = 20.;
                                     let icon_offset = 5.;
                                     let icon_pos = response.rect.right_bottom() - Vec2::splat(icon_offset);
@@ -670,24 +857,34 @@ impl GalleryUI {
                                         if response.clicked() {
                                             gallery_entry.borrow_mut().is_selected ^= true;
                                         }
+                                        response = response.on_hover_text_at_pointer(
+                                            gallery_entry
+                                                .borrow()
+                                                .entry_info
+                                                .try_lock()
+                                                .map(|i| ui::pretty_entry_id(i.entry_id()))
+                                                .unwrap_or(String::from("...")),
+                                        );
 
-                                        if gallery_entry.borrow().is_selected {
-                                            let base_color = Config::global().themes.accent_fill_color().unwrap_or(Color32::WHITE);
-                                            let secondary_color = Config::global().themes.accent_stroke_color().unwrap_or(Color32::BLACK);
-                                            let stroke = Stroke::new(3., base_color);
-                                            let mut text_fid = FontId::default();
-                                            text_fid.size = 32.;
-                                            ui.painter()
-                                                .rect(response.rect, Rounding::from(3.), secondary_color.linear_multiply(0.3), stroke);
-                                            ui.painter().circle(response.rect.center(), 20., base_color, Stroke::none());
-                                            ui.painter().text(
-                                                response.rect.center(),
-                                                Align2::CENTER_CENTER,
-                                                ui::constants::SUCCESS_ICON,
-                                                text_fid,
-                                                secondary_color,
-                                            );
-                                        } else if response.hovered() {
+                                        widgets::selected(gallery_entry.borrow().is_selected, &response, ui.painter());
+
+                                        // if gallery_entry.borrow().is_selected {
+                                        //     let base_color = Config::global().themes.accent_fill_color().unwrap_or(Color32::WHITE);
+                                        //     let secondary_color = Config::global().themes.accent_stroke_color().unwrap_or(Color32::BLACK);
+                                        //     let stroke = Stroke::new(3., base_color);
+                                        //     let mut text_fid = FontId::default();
+                                        //     text_fid.size = 32.;
+                                        //     ui.painter()
+                                        //         .rect(response.rect, Rounding::from(3.), secondary_color.linear_multiply(0.3), stroke);
+                                        //     ui.painter().circle(response.rect.center(), 20., base_color, Stroke::NONE);
+                                        //     ui.painter().text(
+                                        //         response.rect.center(),
+                                        //         Align2::CENTER_CENTER,
+                                        //         ui::constants::SUCCESS_ICON,
+                                        //         text_fid,
+                                        //         secondary_color,
+                                        //     );
+                                        if response.hovered() && !gallery_entry.borrow().is_selected {
                                             ui.painter()
                                                 .rect_stroke(response.rect, Rounding::from(3.), Stroke::new(2., Color32::GRAY));
                                         }
@@ -851,24 +1048,44 @@ impl GalleryUI {
 
         let mut current_index = 0;
         let limit = entry_search.limit.unwrap_or(i64::MAX);
-        self.filtered_gallery_entries = self.gallery_entries.as_ref().map(|gallery_entries| {
-            gallery_entries
-                .iter()
-                .filter_map(|gallery_entry| {
-                    if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                        if current_index < limit && entry_info.passes_entry_search(&entry_search) {
-                            current_index = current_index + 1;
-                            Some(Rc::clone(&gallery_entry))
+
+        let mut filter_entries = |gallery_entries_opt: &Option<Vec<Rc<RefCell<GalleryEntry>>>>,
+                                  already_included: &Option<Vec<Rc<RefCell<GalleryEntry>>>>|
+         -> Option<Vec<Rc<RefCell<GalleryEntry>>>> {
+            gallery_entries_opt.as_ref().map(|galllery_entries| {
+                galllery_entries
+                    .iter()
+                    .filter_map(|gallery_entry| {
+                        if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
+                            let entry = Rc::clone(&gallery_entry);
+                            let is_duplicate = already_included.as_ref().map(|v| v.contains(&entry)).unwrap_or(false);
+                            if !is_duplicate && current_index < limit && entry_info.passes_entry_search(&entry_search) {
+                                current_index = current_index + 1;
+                                Some(entry)
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        });
+                    })
+                    .collect()
+            })
+        };
+
+        let initial_filtered_entries = filter_entries(&self.filtered_gallery_entries, &None);
+        let continued_filtered_entries = filter_entries(&self.gallery_entries, &initial_filtered_entries);
+        let mut filtered_entries = continued_filtered_entries.unwrap_or(vec![]);
+        filtered_entries.append(&mut initial_filtered_entries.unwrap_or(vec![]));
+        self.filtered_gallery_entries = Some(filtered_entries);
+
         self.load_entries();
+    }
+    fn shuffle_entries(&mut self) {
+        if let Some(entries) = self.filtered_gallery_entries.as_mut() {
+            use rand::thread_rng;
+            entries.shuffle(&mut thread_rng());
+        }
     }
 }
 
