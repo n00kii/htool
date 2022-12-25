@@ -229,7 +229,7 @@ impl TagLink {
 pub type TagDataRef = Rc<RefCell<Promise<Result<Vec<TagData>>>>>;
 
 pub fn reload_tag_data(tag_data_ref: &TagDataRef) {
-    tag_data_ref.replace(load_tag_data());
+    let _ = tag_data_ref.replace(load_tag_data());
 }
 
 pub fn initialize_tag_data() -> TagDataRef {

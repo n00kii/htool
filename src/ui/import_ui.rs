@@ -5,10 +5,10 @@ use egui::Align2;
 use egui::Color32;
 use egui::Context;
 
-use egui::FontId;
-use egui::Id;
-use egui::LayerId;
-use egui::Order;
+
+
+
+
 use egui::Rect;
 use egui::Rounding;
 use egui::Stroke;
@@ -32,7 +32,7 @@ use super::SharedState;
 use crate::import::scan_directory;
 use crate::import::ImportationEntry;
 use anyhow::Result;
-use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
+use eframe::egui::{self, Button, Direction, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
 use poll_promise::Promise;
 use rfd::FileDialog;
@@ -49,7 +49,7 @@ use std::rc::Rc;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+
 
 pub struct ImporterUI {
     shared_state: Rc<SharedState>,

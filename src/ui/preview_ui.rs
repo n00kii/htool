@@ -1,19 +1,19 @@
 use super::{
-    widgets::autocomplete, icon, widgets::star_rating::star_rating, tags_ui::TagsUI, AutocompleteOptionsRef, RenderLoadingImageOptions, SharedState, ToastsRef,
+    widgets::autocomplete, icon, widgets::star_rating::star_rating, tags_ui::TagsUI, RenderLoadingImageOptions, SharedState, ToastsRef,
     UpdateList,
 };
 use crate::{
     config::Config,
     data::{self, EntryId, EntryInfo},
-    tags::{Tag, TagDataRef},
+    tags::{Tag},
     ui,
 };
 use anyhow::Result;
 use arboard::Clipboard;
 use chrono::{TimeZone, Utc};
 use egui::{
-    layers, pos2, vec2, Align, Area, Color32, Context, DragValue, Event, FontId, Grid, Id, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2,
-    Rect, RichText, Rounding, ScrollArea, Sense, TextureId, Ui, Vec2,
+    pos2, vec2, Align, Area, Color32, Context, Event, FontId, Grid, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2,
+    Rect, RichText, Rounding, ScrollArea, Sense, Ui, Vec2,
 };
 use egui_extras::RetainedImage;
 use egui_modal::Modal;
@@ -483,9 +483,9 @@ impl PreviewUI {
             ui.label("info");
             if let Some(entry_info) = self.entry_info.try_lock() {
                 egui::Grid::new(format!("info_{}", self.id)).num_columns(2).show(ui, |ui| {
-                    let datetime = Utc.timestamp(entry_info.details().date_registered, 0);
+                    let datetime = Utc.timestamp_opt(entry_info.details().date_registered, 0);
                     ui.label("registered");
-                    ui.label(datetime.format("%B %e, %Y @%l:%M%P").to_string());
+                    ui.label(datetime.unwrap().format("%B %e, %Y @%l:%M%P").to_string());
                     ui.end_row();
 
                     ui.label("size");
@@ -751,7 +751,7 @@ impl PreviewUI {
         modal
     }
 
-    fn render_fullscreen_preview(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+    fn render_fullscreen_preview(&mut self, _ui: &mut Ui, ctx: &egui::Context) {
         let area = Area::new("media_fullview").interactable(true).fixed_pos(Pos2::ZERO);
         area.show(ctx, |ui: &mut Ui| {
             let screen_rect = ui.ctx().input().screen_rect;

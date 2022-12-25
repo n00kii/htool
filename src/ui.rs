@@ -13,16 +13,16 @@ use eframe::{
     epaint::{Color32, PathShape},
 };
 use egui::{
-    hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, Event, FontData, FontDefinitions, FontFamily, FontId, Frame, Id,
-    Key, Layout, Mesh, Modifiers, Painter, Pos2, ProgressBar, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, TopBottomPanel, Window, layers,
+    pos2, text::LayoutJob, vec2, Align2, CentralPanel, Context, Event, FontData, FontDefinitions, FontFamily, FontId, Frame, Id,
+    Key, Layout, Mesh, Modifiers, Painter, Pos2, ProgressBar, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, Window, layers,
 };
 use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
 use egui_notify::{Toast, Toasts};
-use egui_video::VideoStream;
+
 use hex_color::HexColor;
 use image::{ImageBuffer, Rgba};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Mutex};
 use poll_promise::Promise;
 use std::{
     cell::RefCell,
@@ -1086,7 +1086,7 @@ impl AppUI {
             let max_rect = ui.max_rect();
             let painter = ui.painter();
 
-            painter.rect(max_rect.shrink(1.), 0., ctx.style().visuals.window_fill(), Stroke::none());
+            painter.rect(max_rect.shrink(1.), 0., ctx.style().visuals.window_fill(), Stroke::NONE);
             painter.text(
                 max_rect.center_top() + vec2(0., height / 2.),
                 Align2::CENTER_CENTER,

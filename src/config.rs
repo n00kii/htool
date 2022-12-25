@@ -2,17 +2,16 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use egui::{Color32, Stroke};
 use figment::{
-    providers::{self, Data, Format, Serialized, Toml, Yaml},
-    Figment, Profile,
+    providers::{Format, Serialized, Yaml},
+    Figment,
 };
 use once_cell::sync::OnceCell;
 use path_absolutize::*;
 use serde::{
-    de::{self, SeqAccess, Visitor},
-    ser::SerializeTupleStruct,
+    de::{self, Visitor},
     Deserialize, Serialize,
 };
-use std::{env, fs, marker::PhantomData, path::PathBuf, sync::Arc};
+use std::{fs, marker::PhantomData, path::PathBuf, sync::Arc};
 
 use crate::{tags::Namespace, ui};
 
@@ -107,11 +106,11 @@ macro_rules! color_opt {
         }
     };
 }
-macro_rules! color_opt_field {
-    ($name:ident) => {
-        pub name: Color32Opt,
-    };
-}
+// macro_rules! color_opt_field {
+//     ($name:ident) => {
+//         pub name: Color32Opt,
+//     };
+// }
 macro_rules! stroke_opt {
     ($type:tt, $layer:tt) => {
         paste! {
@@ -127,15 +126,15 @@ macro_rules! stroke_opt {
     };
 }
 
-macro_rules! color_opts_fields {
-    ($type:tt) => {
-        paste! {
-        color_opt_field!([<$type _bg_fill_color>]);
-        color_opt_field!([<$type _bg_stroke_color>]);
-        color_opt_field!([<$type _fg_stroke_color>]);
-        }
-    };
-}
+// macro_rules! color_opts_fields {
+//     ($type:tt) => {
+//         paste! {
+//         color_opt_field!([<$type _bg_fill_color>]);
+//         color_opt_field!([<$type _bg_stroke_color>]);
+//         color_opt_field!([<$type _fg_stroke_color>]);
+//         }
+//     };
+// }
 macro_rules! stroke_and_colors {
     ($type:tt) => {
         paste! {

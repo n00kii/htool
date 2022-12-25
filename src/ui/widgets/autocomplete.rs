@@ -34,7 +34,7 @@ impl Autocomplete {
     }
 }
 
-use eframe::epaint::{vec2, Color32, FontId, Pos2};
+use eframe::epaint::{vec2, Color32, Pos2};
 use egui::{text_edit::CCursorRange, Area, Event, Id, Key, Modifiers, Response, Ui, Widget};
 
 use crate::{config::Config, ui};

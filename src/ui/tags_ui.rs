@@ -6,7 +6,7 @@ use crate::{
     config::{Color32Opt, Config},
     data::{self, EntryId},
     tags::TagLinkType,
-    ui::{self, AutocompleteOptionsRef, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
+    ui::{self, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
 };
 use anyhow::{Error, Result};
 
@@ -16,7 +16,7 @@ use eframe::{
 };
 use egui::{Label, Sense};
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
-use egui_modal::Modal;
+
 
 use std::{rc::Rc, sync::Arc, thread, vec};
 use ui::ToastsRef;

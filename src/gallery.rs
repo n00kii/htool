@@ -7,7 +7,7 @@ use crate::ui::preview_ui::MediaPreview;
 use anyhow::Result;
 use data::EntryInfo;
 
-use egui_extras::RetainedImage;
+
 use poll_promise::Promise;
 
 use parking_lot::Mutex;

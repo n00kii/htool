@@ -1,8 +1,7 @@
-use std::{fmt::Display, rc::Rc, sync::{Arc, atomic::Ordering}};
+use std::{fmt::Display, rc::Rc, sync::{atomic::Ordering}};
 
 use super::{
-    widgets::autocomplete::{self, AutocompleteOption},
-    icon_text, SharedState, UserInterface,
+    widgets::autocomplete::{self, AutocompleteOption}, SharedState, UserInterface,
 };
 use crate::config::Config;
 use crate::ui;
@@ -166,7 +165,7 @@ impl ConfigUI {
 }
 
 impl UserInterface for ConfigUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.vertical_centered_justified(|ui| {
             if ui.button("load from file").clicked() {
                 let config = Config::load_from_file();

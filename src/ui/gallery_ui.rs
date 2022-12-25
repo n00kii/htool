@@ -13,17 +13,17 @@ use crate::util::BatchPollBuffer;
 // use anyhow::Context;
 
 use anyhow::Context;
-use eframe::egui::Key;
+
 use eframe::egui::Layout;
 
 use eframe::epaint::Shadow;
-use egui::vec2;
+
 use egui::Align2;
 use egui::Color32;
-use egui::FontId;
-use egui::Id;
-use egui::Mesh;
-use egui::Pos2;
+
+
+
+
 use egui::Rect;
 use egui::RichText;
 use egui::Rounding;
@@ -32,10 +32,10 @@ use egui::TextureId;
 use egui_extras::Size;
 use egui_extras::StripBuilder;
 use egui_modal::Modal;
-use egui_notify::Toasts;
+
 use rand::seq::SliceRandom;
 use regex::Regex;
-use ui::{constants, icon_text};
+
 
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::WindowContainer;
@@ -303,15 +303,12 @@ impl GalleryUI {
                 } else if matches!(preview_status, Some(PreviewStatus::Previous(_))) || matches!(preview_status, Some(PreviewStatus::Next(_))) {
                     let mut next_entry_info = None;
                     let mut gallery_entries_len = 0;
-                    let mut increment = 0;
-                    let preview_entry_id = match preview_status.as_ref().unwrap() {
+                    let (preview_entry_id, increment) = match preview_status.as_ref().unwrap() {
                         PreviewStatus::Previous(entry_id) => {
-                            increment = -1;
-                            entry_id.clone()
+                            (entry_id.clone(), -1)
                         }
                         PreviewStatus::Next(entry_id) => {
-                            increment = 1;
-                            entry_id.clone()
+                            (entry_id.clone(), 1)
                         }
                         _ => unreachable!(),
                     };
@@ -701,7 +698,7 @@ impl GalleryUI {
                             thread::spawn(move || {
                                 match data::add_media_to_link(&link_id, &selected_media) {
                                     Ok(()) => {
-                                        data::delete_cached_thumbnail(&EntryId::PoolEntry(link_id));
+                                        let _ = data::delete_cached_thumbnail(&EntryId::PoolEntry(link_id));
 
                                         let mut updated_list = updated_list.lock();
                                         updated_list.extend(selected_media.iter().map(|h| EntryId::MediaEntry(h.clone())));
@@ -760,7 +757,7 @@ impl GalleryUI {
                                 };
                                 match merge() {
                                     Ok(()) => {
-                                        data::delete_cached_thumbnail(&EntryId::PoolEntry(keep_id));
+                                        let _ = data::delete_cached_thumbnail(&EntryId::PoolEntry(keep_id));
                                         let mut updated_list = updated_list.lock();
                                         let mut deleted_list = deleted_list.lock();
                                         updated_list.extend(selected_media.iter().map(|h| EntryId::MediaEntry(h.clone())));

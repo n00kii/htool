@@ -1,10 +1,3 @@
-// use crate::gallery::gallery_ui::EntrySearch;
-
-// use crate::tags::tags::Tag;
-// use crate::tags::tags::TagData;
-// use crate::tags::tags::TagLink;
-// use crate::tags::tags::TagLinkType;
-
 use crate::tags::Tag;
 use crate::tags::TagData;
 use crate::tags::TagLink;
@@ -17,16 +10,14 @@ use super::Config;
 
 use anyhow::anyhow;
 use anyhow::{Context, Result};
-use egui_extras::RetainedImage;
+
 use egui_video::VideoStream;
-use image::DynamicImage;
+
 use image::RgbaImage;
 use image::{imageops, ImageBuffer, Rgba};
 use image_hasher::{HashAlg, HasherConfig};
-// use infer;
 use once_cell::sync::OnceCell;
 
-use parking_lot::lock_api::RawMutex;
 use parking_lot::RwLock;
 use poll_promise::Sender;
 use r2d2::Pool;
@@ -42,12 +33,11 @@ use std::fmt;
 use std::fmt::Display;
 
 use std::fs;
-use std::hash;
+
 use std::io::Cursor;
 use std::mem::discriminant;
 use std::path::PathBuf;
 use std::sync::Arc;
-// use std::sync::Mutex;
 use parking_lot::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -75,15 +65,11 @@ pub struct DatabaseInfo {
 }
 
 pub fn load_database_info() -> Result<DatabaseInfo> {
-    // todo!()
     let conn = initialize_database_connection()?;
     let mut table_size_stmt = conn.prepare("SELECT SUM(pgsize) FROM dbstat WHERE name = ?1")?;
-    // let mut table_count_stmt = conn.prepare("SELECT COUNT(*) from ?1")?;
     let mut get_table_size = |table_name: &str| table_size_stmt.query_row(params![table_name], |row| row.get(0));
-    // let mut get_table_count = |table_name: &str| table_count_stmt.query_row(params![table_name], |row| row.get(0));
 
     let thumbnail_cache_size: usize = get_table_size("thumbnail_cache")?;
-    // let media_bytes_size: usize = get_table_size("media_bytes")?; // this takes too long
     let entry_info_size: usize = get_table_size("entry_info")?;
     let entry_tags_size: usize = get_table_size("entry_tags")?;
     let media_links_size: usize = get_table_size("media_links")?;
@@ -102,11 +88,6 @@ pub fn load_database_info() -> Result<DatabaseInfo> {
     let thumbnail_cache_count: usize = conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
     let tag_info_count: usize = conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
     let entry_tags_count: usize = conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
-    // let media_bytes_count: usize = get_table_count("media_bytes")?;
-    // let entry_info_count: usize = get_table_count("entry_info")?; // conn.query_row("SELECT COUNT(*) from entry_info", [], |row| row.get(0))?;
-    // let thumbnail_cache_count: usize = get_table_count("thumbnail_cache")?; // conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
-    // let tag_info_count: usize = get_table_count("tag_info")?; // conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
-    // let entry_tags_count: usize = get_table_count("entry_tags")?; // conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
 
     Ok(DatabaseInfo {
         entry_info_count,
@@ -1457,10 +1438,9 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
             }
         }
 
-        let sha_hash = sha256::digest_bytes(&reg_form.bytes);
+        let sha_hash = sha256::digest(&*reg_form.bytes as &[u8]);
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let serialized_mime = reg_form.mimetype.first().map(|mime| mime.to_string());
-        // }
 
         let mut statement = conn.prepare("SELECT 1 FROM entry_info WHERE hash = ?")?;
         let exists = statement.exists(params![sha_hash])?;
@@ -1665,7 +1645,7 @@ pub fn get_media_mime_with_conn(conn: &Connection, hash: &String) -> Result<Opti
 pub fn export_entry(entry_id: &EntryId, mut export_path: PathBuf) -> Result<PathBuf> {
     let conn = initialize_database_connection()?;
     match entry_id {
-        EntryId::PoolEntry(link_id) => todo!(),
+        EntryId::PoolEntry(_link_id) => todo!(),
         EntryId::MediaEntry(hash) => {
             let bytes = get_media_bytes(hash)?;
             let mime = get_media_mime_with_conn(&conn, hash)?;
