@@ -1013,7 +1013,6 @@ impl GalleryUI {
             let window = egui::Window::new(&preview_window.title)
                 .open(preview_window.is_open.as_mut().unwrap())
                 .default_size([800.0, 400.0])
-                .collapsible(false)
                 .vscroll(false)
                 .hscroll(false)
                 .resizable(false);
