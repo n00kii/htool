@@ -1,6 +1,7 @@
 use super::{
-    widgets::autocomplete,
+    icon,
     tags::{self, Namespace, Tag, TagDataRef, TagLink},
+    widgets::autocomplete,
 };
 use crate::{
     config::{Color32Opt, Config},
@@ -13,10 +14,10 @@ use anyhow::{Error, Result};
 use eframe::{
     egui::{self, Layout, RichText, Window},
     emath::Align,
+    wgpu::Color,
 };
-use egui::{Label, Sense};
-use egui_extras::{Column, Size, StripBuilder, TableBuilder};
-
+use egui::{Color32, Label, Sense};
+use egui_extras::{Column, Size, Strip, StripBuilder, TableBuilder};
 
 use std::{rc::Rc, sync::Arc, thread, vec};
 use ui::ToastsRef;
@@ -148,7 +149,7 @@ impl TagsUI {
                 if !ui::does_window_exist(&title, &self.modify_windows) {
                     self.modify_windows.push(WindowContainer {
                         title,
-                        window: Box::new(ModifyNamespacesUI::new(Arc::clone(&self.shared_state.toasts))),
+                        window: Box::new(ModifyNamespacesUI::new(&self.shared_state)),
                         is_open: Some(true),
                     })
                 }
@@ -176,7 +177,11 @@ impl TagsUI {
                 delete_tag_modal.frame(ui, |ui| {
                     delete_tag_modal.body(
                         ui,
-                        ui::generate_layout_job(vec!["delete ".into(), tag_pending_delete.to_layout_job_text(), "?".into()]),
+                        ui::generate_layout_job(vec![
+                            "delete ".into(),
+                            tag_pending_delete.to_layout_job_text(&self.shared_state),
+                            "?".into(),
+                        ]),
                     );
                 });
                 delete_tag_modal.buttons(ui, |ui| {
@@ -205,7 +210,7 @@ impl TagsUI {
         if let Some(link_pending_delete) = self.link_pending_delete.as_ref() {
             link_delete_modal.show(|ui| {
                 link_delete_modal.frame(ui, |ui| {
-                    let mut job_text = link_pending_delete.to_layout_job_text();
+                    let mut job_text = link_pending_delete.to_layout_job_text(&self.shared_state);
                     job_text.insert(0, "delete ".into());
                     job_text.push("?".into());
                     link_delete_modal.body(ui, ui::generate_layout_job(job_text));
@@ -281,12 +286,12 @@ impl TagsUI {
                                         ui.label(tag_data.occurances.to_string());
                                     });
                                     row.col(|ui| {
-                                        let tag_label = egui::Label::new(tag_data.tag.to_rich_text()).sense(egui::Sense::click());
+                                        let tag_label = egui::Label::new(tag_data.tag.to_rich_text(&self.shared_state)).sense(egui::Sense::click());
                                         let response = ui.add(tag_label).context_menu(|ui| {
                                             let delete_jt = LayoutJobText::new(format!("{} delete ", ui::constants::DELETE_ICON,));
                                             let edit_jt = LayoutJobText::new(format!("{} edit ", ui::constants::EDIT_ICON,));
                                             let tag_jt = LayoutJobText::new(&tag_data.tag.name)
-                                                .with_color(tag_data.tag.namespace_color().unwrap_or(ui::text_color()));
+                                                .with_color(tag_data.tag.namespace_color(&self.shared_state).unwrap_or(ui::text_color()));
                                             let delete_lj = ui::generate_layout_job(vec![delete_jt, tag_jt.clone()]);
                                             let edit_lj = ui::generate_layout_job(vec![edit_jt, tag_jt]);
                                             if ui.button(edit_lj).clicked() {
@@ -323,9 +328,9 @@ impl TagsUI {
                                         });
                                         let tag_labels_iter = iter.clone().into_iter().map(|tag_link| {
                                             if target_from_tagstring {
-                                                Label::new(Tag::from_tagstring(&tag_link.from_tagstring).to_rich_text())
+                                                Label::new(Tag::from_tagstring(&tag_link.from_tagstring).to_rich_text(&self.shared_state))
                                             } else {
-                                                Label::new(Tag::from_tagstring(&tag_link.to_tagstring).to_rich_text())
+                                                Label::new(Tag::from_tagstring(&tag_link.to_tagstring).to_rich_text(&self.shared_state))
                                             }
                                         });
 
@@ -367,7 +372,7 @@ impl TagsUI {
                                                                 let job_text_2 = LayoutJobText::new(Tag::from_tagstring(&target_tagstring).name)
                                                                     .with_color(
                                                                         Tag::from_tagstring(&target_tagstring)
-                                                                            .namespace_color()
+                                                                            .namespace_color(&self.shared_state)
                                                                             .unwrap_or(ui::text_color()),
                                                                     );
                                                                 let job = ui::generate_layout_job(vec![job_text_1, job_text_2]);
@@ -704,48 +709,51 @@ impl UserInterface for ModifyTagUI {
 }
 
 struct ModifyNamespacesUI {
-    toasts: ToastsRef,
-    editing: Vec<usize>,
+    editing_indices: Vec<(usize, String, Color32, Color32)>,
+    shared_state: Rc<SharedState>,
     new_namespace: Namespace,
+    save_delay: Option<usize>,
 }
 
 impl ModifyNamespacesUI {
-    fn new(toasts: ToastsRef) -> Self {
+    fn new(shared_state: &Rc<SharedState>) -> Self {
         Self {
-            toasts,
-            editing: vec![],
+            shared_state: Rc::clone(shared_state),
+            editing_indices: vec![],
             new_namespace: Namespace::empty(),
+            save_delay: None,
         }
     }
 }
 
 impl UserInterface for ModifyNamespacesUI {
     fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        let mut config = Config::clone();
+        let mut shared_colors = self.shared_state.namespace_colors.borrow_mut();
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             TableBuilder::new(ui)
                 .column(Column::auto())
+                .column(Column::auto())
                 .column(Column::initial(0.1).at_most(100.))
-                .header(ui::constants::TABLE_ROW_HEIGHT, |mut header| {
-                    header.col(|ui| {
-                        ui.label("namespace");
-                    });
-                    header.col(|ui| {
-                        ui.label("color");
-                    });
-                })
+                // .header(ui::constants::TABLE_ROW_HEIGHT, |mut header| {
+                //     header.col(|ui| {
+                //         ui.label("namespace");
+                //     });
+                //     header.col(|ui| {
+                //         ui.label("color");
+                //     });
+                // })
                 .body(|mut body| {
-                    body.row(18., |mut row| {
+                    body.row(ui::constants::TABLE_ROW_HEIGHT, |mut row| {
                         row.col(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.add_enabled_ui(!self.new_namespace.name.is_empty(), |ui| {
-                                    if ui.button("new").clicked() {
-                                        config.namespaces.push(self.new_namespace.clone());
-                                        Config::set(config.clone());
-                                    }
-                                });
-                                ui.text_edit_singleline(&mut self.new_namespace.name);
+                            ui.add_enabled_ui(!self.new_namespace.name.is_empty(), |ui| {
+                                if ui.button(icon!("new", ADD_ICON)).clicked() {
+                                    shared_colors.insert(self.new_namespace.name.clone(), self.new_namespace.color32());
+                                    self.new_namespace = Namespace::empty();
+                                }
                             });
+                        });
+                        row.col(|ui| {
+                            ui.text_edit_singleline(&mut self.new_namespace.name);
                         });
                         row.col(|ui| {
                             let mut color_array = self.new_namespace.color_array();
@@ -754,50 +762,104 @@ impl UserInterface for ModifyNamespacesUI {
                             }
                         });
                     });
-                    let mut config_changed = false;
-                    let mut deleted = vec![];
-                    for (index, namespace) in config.namespaces.iter_mut().enumerate() {
-                        body.row(18., |mut row| {
+                    let mut to_stop_editing = vec![];
+                    let mut to_start_editing = vec![];
+
+                    for (index, (namespace, color)) in shared_colors.clone().iter().enumerate() {
+                        body.row(ui::constants::TABLE_ROW_HEIGHT, |mut row| {
+                            let mut is_editing = self.editing_indices.iter_mut().find(|(i, _, _, _)| *i == index);
                             row.col(|ui| {
-                                if self.editing.contains(&index) {
-                                    let response = ui.text_edit_singleline(&mut namespace.name);
-                                    if response.lost_focus() {
-                                        self.editing.retain(|x| x != &index);
-                                    } else if response.changed() {
-                                        config_changed = true;
-                                    }
-                                    response.request_focus()
-                                } else {
-                                    let text = RichText::new(&namespace.name).color(namespace.color32());
-                                    let label = Label::new(text).sense(Sense::click());
-                                    ui.add(label).context_menu(|ui| {
-                                        if ui.button("edit").clicked() {
-                                            self.editing.push(index)
-                                        }
-                                        if ui.button("delete").clicked() {
-                                            self.editing.clear();
-                                            deleted.push(index);
+                                StripBuilder::new(ui)
+                                    .size(Size::remainder())
+                                    .size(Size::remainder())
+                                    .horizontal(|mut strip| {
+                                        if let Some((_, namespace_mut, color_mut, original_color)) = is_editing.as_mut() {
+                                            strip.cell(|ui| {
+                                                if ui
+                                                    .add_enabled(!namespace_mut.is_empty(), ui::suggested_button(ui::constants::SAVE_ICON))
+                                                    .clicked()
+                                                {
+                                                    shared_colors.remove(namespace);
+                                                    shared_colors.insert(namespace_mut.clone(), color_mut.clone());
+                                                    to_stop_editing.push(index);
+                                                    let toasts = Arc::clone(&self.shared_state.toasts);
+                                                    let shared_colors = shared_colors.clone();
+                                                    thread::spawn(move || {
+                                                        if let Err(e) = data::set_namespace_colors(&shared_colors) {
+                                                            ui::toast_error_lock(&toasts, format!("failed to save namespaces: {e}"))
+                                                        };
+                                                    });
+                                                }
+                                            });
+
+                                            strip.cell(|ui| {
+                                                if ui.button(ui::constants::REMOVE_ICON).clicked() {
+                                                    shared_colors.insert(namespace.clone(), original_color.clone());
+                                                    to_stop_editing.push(index);
+                                                }
+                                            });
+                                        } else {
+                                            strip.cell(|ui| {
+                                                if ui.add(ui::caution_button(ui::constants::DELETE_ICON)).clicked() {
+                                                    shared_colors.remove(namespace);
+                                                    let toasts = Arc::clone(&self.shared_state.toasts);
+                                                    let namespace = namespace.clone();
+                                                    thread::spawn(move || {
+                                                        if let Err(e) = data::delete_namespace_color(&namespace) {
+                                                            ui::toast_error_lock(&toasts, format!("failed to delete namespace: {e}"))
+                                                        };
+                                                    });
+                                                }
+                                            });
+                                            strip.cell(|ui| {
+                                                if ui.button(ui::constants::EDIT_ICON).clicked() {
+                                                    to_start_editing.push((index, namespace.clone(), color.clone(), color.clone()));
+                                                }
+                                            });
                                         }
                                     });
+                            });
+                            row.col(|ui| {
+                                if let Some((_, namespace_mut, _, _)) = is_editing.as_mut() {
+                                    ui.text_edit_singleline(namespace_mut);
+                                } else {
+                                    let text = RichText::new(namespace).color(*color);
+                                    let label = Label::new(text).sense(Sense::click());
+                                    ui.add(label);
                                 }
                             });
                             row.col(|ui| {
-                                let mut color_array = namespace.color_array();
-                                if ui.color_edit_button_rgba_unmultiplied(&mut color_array).changed() {
-                                    namespace.color = Color32Opt::from_array(color_array);
-                                    config_changed = true;
+                                if let Some((_, _, color_mut, _)) = is_editing.as_mut() {
+                                    let mut color_array_f32 = color_mut.to_array().map(|u| u as f32 / 255.);
+                                    if ui.color_edit_button_rgba_unmultiplied(&mut color_array_f32).changed() {
+                                        let color_array_us = color_array_f32.map(|v| (v * 255.) as u8);
+                                        *color_mut = Color32::from_rgba_unmultiplied(
+                                            color_array_us[0],
+                                            color_array_us[1],
+                                            color_array_us[2],
+                                            color_array_us[3],
+                                        );
+
+                                        shared_colors.insert(namespace.clone(), color_mut.clone());
+                                    }
                                 }
                             });
-                        })
+                        });
                     }
-                    deleted.sort();
-                    deleted.reverse();
-                    for d_index in deleted {
-                        config.namespaces.remove(d_index);
-                        config_changed = true;
+                    for remove_index in to_stop_editing {
+                        self.editing_indices.retain(|(i, _, _, _)| *i != remove_index);
                     }
-                    if config_changed {
-                        Config::set(config);
+                    self.editing_indices.append(&mut to_start_editing);
+
+                    if self.save_delay.is_some() {
+                        if self.save_delay.unwrap() > 0 {
+                            let save_delay = self.save_delay.as_mut().unwrap();
+                            *save_delay = *save_delay - 1
+                        } else {
+                            let namespaces = shared_colors.clone();
+                            self.save_delay = None;
+                            thread::spawn(move || dbg!(data::set_namespace_colors(&namespaces)));
+                        }
                     }
                 });
         });

@@ -2,6 +2,8 @@ use crate::tags::Tag;
 use crate::tags::TagData;
 use crate::tags::TagLink;
 use crate::tags::TagLinkType;
+use crate::ui::color32_from_hex;
+use crate::ui::color32_to_hex;
 use crate::ui::gallery_ui::EntrySearch;
 use crate::ui::preview_ui::MediaPreview;
 
@@ -11,6 +13,7 @@ use super::Config;
 use anyhow::anyhow;
 use anyhow::{Context, Result};
 
+use egui::Color32;
 use egui_video::VideoStream;
 
 use image::RgbaImage;
@@ -34,11 +37,11 @@ use std::fmt::Display;
 
 use std::fs;
 
+use parking_lot::Mutex;
 use std::io::Cursor;
 use std::mem::discriminant;
 use std::path::PathBuf;
 use std::sync::Arc;
-use parking_lot::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -663,7 +666,59 @@ fn setup_databaste_with_conn(conn: &Connection) -> Result<()> {
             )",
         [],
     )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS namespaces (
+                namespace TEXT,
+                color TEXT
+            )",
+        [],
+    )?;
     Ok(())
+}
+
+pub fn delete_namespace_color(namespace: &String) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DELETE from namespaces WHERE namespace = ?1", params![namespace])?;
+    Ok(())
+}
+
+pub fn set_namespace_colors(namespaces: &HashMap<String, Color32>) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    let mut delete_stmt = conn.prepare("DELETE FROM namespaces WHERE namespace = ?1")?;
+    let mut insert_stmt = conn.prepare("INSERT INTO namespaces (namespace, color) VALUES (?1, ?2)")?;
+    for (namespace, color) in namespaces {
+        let color_str = color32_to_hex(color);
+        delete_stmt.execute(params![namespace])?;
+        insert_stmt.execute(params![namespace, color_str])?;
+    }
+    Ok(())
+}
+// pub fn set_namespace_color(namespace: &String, color: &Color32) -> Result<()> {
+//     let conn = initialize_database_connection()?;
+//     let color_str = color32_to_hex(color);
+//     conn.execute("DELETE FROM namespaces WHERE namespace = ?1", params![namespace])?;
+//     conn.execute("INSERT INTO namespaces (namespace, color) VALUES (?1, ?2)", params![namespace, color_str])?;
+//     Ok(())
+// }
+
+// pub fn get_namespace(namespace: &String) -> Result<Option<Color32>> {
+//     let conn = initialize_database_connection()?;
+//     let color_str : Option<String> = conn.query_row("SELECT namespace FROM namespaces WHERE namespace = ?1", params![namespace], |row| row.get("namespace"))?;
+//     Ok(color_str.and_then(|cs| color32_from_hex(cs).ok()))
+// }
+pub fn get_namespace_colors() -> Result<HashMap<String, Color32>> {
+    let conn = initialize_database_connection()?;
+    let mut stmt = conn.prepare("SELECT namespace, color FROM namespaces")?;
+    let colors = stmt
+    .query_map([], |row| Ok((row.get("namespace")?, row.get("color")?)))?
+    .filter_map(|res| res.ok())
+    .collect::<HashMap<String, String>>();
+
+    Ok(colors
+        .into_iter()
+        .map(|(namespace, color_str)| (namespace, color32_from_hex(color_str).unwrap()))
+        .collect::<HashMap<String, Color32>>())
 }
 
 pub fn is_database_unencrypted() -> Result<bool> {
@@ -1130,11 +1185,11 @@ pub fn rekey_database(new_key: &String) -> Result<Option<(PathBuf, PathBuf)>> {
         let old_db_path = Config::global().path.database()?;
         let mut new_db_path = old_db_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         new_db_path.push(temp_filename.clone());
-        
+
         let new_db_path_str = format!("file:///{}", new_db_path.to_str().unwrap());
         let conn = open_database_connection()?;
         apply_database_key_to_conn(&conn, &get_database_key())?;
-        
+
         conn.execute("ATTACH DATABASE ?1 AS ?2 KEY ?3", params![new_db_path_str, temp_filename, new_key])?;
         let _: Option<usize> = conn.query_row("SELECT sqlcipher_export(?1)", params![temp_filename], |row| row.get(0))?;
         conn.execute("DETACH DATABASE ?1", params![temp_filename])?;

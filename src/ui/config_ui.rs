@@ -132,6 +132,7 @@ impl ConfigUI {
                             value: t.name.clone(),
                             color: None,
                             description: String::from("theme"),
+                            succeeding_space: false,
                         })
                         .collect();
                     options.insert(
@@ -141,6 +142,7 @@ impl ConfigUI {
                             value: String::new(),
                             color: None,
                             description: String::from("theme"),
+                            succeeding_space: false,
                         },
                     );
                     if hook(ui.add(autocomplete::create(

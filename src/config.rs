@@ -95,7 +95,6 @@ pub struct Config {
     pub misc: Misc,
     pub ui: Ui,
     pub themes: Themes,
-    pub namespaces: Vec<Namespace>,
 }
 
 use paste::paste;
@@ -210,7 +209,7 @@ impl Serialize for Color32Opt {
     where
         S: serde::Serializer,
     {
-        let state = match self.0.map(|c| ui::color32_to_hex(c)) {
+        let state = match self.0.map(|c| ui::color32_to_hex(&c)) {
             Some(ref h) => serializer.serialize_some(h),
             None => serializer.serialize_none(),
         };
@@ -338,7 +337,6 @@ impl Default for Config {
                 landing: "landing/".into(),
                 database: "data.db".into(),
             },
-            namespaces: vec![],
             general: General {
                 entry_max_score: 5,
                 gallery_base_search: Some(String::from("independant=true limit=5000")),

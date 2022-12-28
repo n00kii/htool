@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{Color32Opt, Config},
     data,
-    ui::widgets::autocomplete::AutocompleteOption,
+    ui::{widgets::autocomplete::AutocompleteOption, SharedState},
     ui::{self, LayoutJobText},
 };
 
@@ -35,7 +35,7 @@ pub struct Namespace {
 impl Namespace {
     pub fn empty() -> Self {
         Self {
-            name: "".to_string(),
+            name: String::new(),
             color: Color32Opt::none(),
         }
     }
@@ -110,18 +110,18 @@ pub struct TagData {
 impl Tag {
     pub fn empty() -> Self {
         Self {
-            name: "".to_string(),
-            namespace: Some("".to_string()),
-            description: Some("".to_string()),
+            name: String::new(),
+            namespace: Some(String::new()),
+            description: Some(String::new()),
         }
     }
     pub fn someified(&self) -> Self {
         let mut clone = self.clone();
         if clone.namespace.is_none() {
-            clone.namespace = Some("".to_string());
+            clone.namespace = Some(String::new());
         }
         if clone.description.is_none() {
-            clone.description = Some("".to_string());
+            clone.description = Some(String::new());
         }
         clone
     }
@@ -150,30 +150,26 @@ impl Tag {
         let space = if let Some(space) = self.namespace.as_ref() {
             space.clone()
         } else {
-            "".to_string()
+            String::new()
         };
         format!("{}{}{}", space, if space.is_empty() { "" } else { TAG_DELIM }, self.name)
     }
-    pub fn to_rich_text(&self) -> RichText {
+    pub fn to_rich_text(&self, shared_state: &Rc<SharedState>) -> RichText {
         let mut text = RichText::new(&self.name);
-        if let Some(namespace_color) = self.namespace_color() {
+        if let Some(namespace_color) = self.namespace_color(shared_state) {
             text = text.color(namespace_color)
         }
         text
     }
-    pub fn to_layout_job_text(&self) -> LayoutJobText {
-        LayoutJobText::new(&self.name).with_color(self.namespace_color().unwrap_or(ui::text_color()))
+    pub fn to_layout_job_text(&self, shared_state: &Rc<SharedState>) -> LayoutJobText {
+        LayoutJobText::new(&self.name).with_color(self.namespace_color(shared_state).unwrap_or(ui::text_color()))
     }
-    pub fn namespace_color(&self) -> Option<Color32> {
+    pub fn namespace_color(&self, shared_state: &Rc<SharedState>) -> Option<Color32> {
         if let Some(namespace) = self.noneified().namespace {
-            let config = Config::global();
-            for c_namespace in config.namespaces.iter() {
-                if c_namespace.name == namespace {
-                    return Some(c_namespace.color32());
-                }
-            }
+            shared_state.namespace_colors.borrow().get(&namespace).copied()
+        } else {
+            None
         }
-        None
     }
     pub fn from_tagstring(tagstring: &String) -> Self {
         let tag_parts = tagstring.split(TAG_DELIM).collect::<Vec<_>>();
@@ -204,24 +200,24 @@ impl Tag {
 impl TagLink {
     pub fn empty_implication() -> Self {
         Self {
-            from_tagstring: "".to_string(),
-            to_tagstring: "".to_string(),
+            from_tagstring: String::new(),
+            to_tagstring: String::new(),
             link_type: TagLinkType::Implication,
         }
     }
-    pub fn to_layout_job_text(&self) -> Vec<LayoutJobText> {
+    pub fn to_layout_job_text(&self, shared_state: &Rc<SharedState>) -> Vec<LayoutJobText> {
         vec![
             format!("({} from ", self.link_type.to_string()).into(),
-            Tag::from_tagstring(&self.from_tagstring).to_layout_job_text(),
+            Tag::from_tagstring(&self.from_tagstring).to_layout_job_text(shared_state),
             " to ".into(),
-            Tag::from_tagstring(&self.to_tagstring).to_layout_job_text(),
+            Tag::from_tagstring(&self.to_tagstring).to_layout_job_text(shared_state),
             ")".into(),
         ]
     }
     pub fn empty_alias() -> Self {
         Self {
-            from_tagstring: "".to_string(),
-            to_tagstring: "".to_string(),
+            from_tagstring: String::new(),
+            to_tagstring: String::new(),
             link_type: TagLinkType::Alias,
         }
     }
@@ -240,16 +236,17 @@ fn load_tag_data() -> Promise<Result<Vec<TagData>>> {
     Promise::spawn_thread("load_tag_data", || data::get_all_tag_data())
 }
 
-pub fn generate_autocomplete_options(tag_data_ref: &TagDataRef) -> Option<Vec<AutocompleteOption>> {
-    if let Some(Ok(tag_data)) = tag_data_ref.borrow().ready() {
+pub fn generate_autocomplete_options(shared_state: &Rc<SharedState>) -> Option<Vec<AutocompleteOption>> {
+    if let Some(Ok(tag_data)) = shared_state.tag_data_ref.borrow().ready() {
         Some(
             tag_data
                 .iter()
                 .map(|tag_data| AutocompleteOption {
                     label: tag_data.tag.name.clone(),
                     value: tag_data.tag.to_tagstring(),
-                    color: tag_data.tag.namespace_color(),
+                    color: tag_data.tag.namespace_color(shared_state),
                     description: tag_data.occurances.to_string(),
+                    succeeding_space: true
                 })
                 .collect::<Vec<_>>(),
         )

@@ -547,7 +547,7 @@ impl PreviewUI {
                                             true
                                         };
                                         ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
-                                            let mut tag_text = tag.to_rich_text();
+                                            let mut tag_text = tag.to_rich_text(&self.shared_state);
                                             if !exists_in_tag_data {
                                                 tag_text = tag_text.strikethrough();
                                             }
@@ -564,7 +564,7 @@ impl PreviewUI {
                                                         .map(|tag_data| tag_data.occurances.to_string())
                                                         .unwrap_or(String::from("?"))
                                                 ))
-                                                .color(tag.namespace_color().unwrap_or(ui.style().visuals.text_color()));
+                                                .color(tag.namespace_color(&self.shared_state).unwrap_or(ui.style().visuals.text_color()));
                                                 response.on_hover_text_at_pointer(hover_text);
                                             }
                                         });

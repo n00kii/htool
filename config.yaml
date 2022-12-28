@@ -1,7 +1,7 @@
 path:
   root: E:\root
   landing: F:\Media\Documents\Projects\htool2\htool2\testing_files
-  database: data-test
+  database: data1
 general:
   entry_max_score: 5
   gallery_base_search: independant=true limit=5000
@@ -47,12 +47,3 @@ themes:
     accent_stroke_color: '#80CBC4'
     override_widget_primary: '#80CBC4'
     override_widget_secondary: null
-namespaces:
-- name: artist
-  color: '#686FD5'
-- name: character
-  color: '#915C55'
-- name: copyright
-  color: '#91D0CC'
-- name: ref
-  color: '#FFE326'

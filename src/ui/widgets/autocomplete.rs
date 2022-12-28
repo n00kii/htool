@@ -16,6 +16,7 @@ pub struct AutocompleteOption {
     pub value: String,
     pub color: Option<Color32>,
     pub description: String,
+    pub succeeding_space: bool,
 }
 
 impl Default for AutocompleteState {
@@ -143,7 +144,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                     ac_state.selected_index = (ac_state.selected_index + 1).min(ac_matches.len() as i32 - 1);
                 } else if tab_pressed {
                     if let Some(ac_match) = ac_matches.get(ac_state.selected_index as usize) {
-                        let insert_str = format!("{} ", ac_match.value);
+                        let insert_str = format!("{}{}", ac_match.value, if  ac_match.succeeding_space {" "} else {""} );
                         search.drain(word_index_range.0..word_index_range.1);
                         search.push_str(insert_str.as_str());
 
@@ -168,7 +169,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                 let ac_rect_inner_padding = 2.;
 
                 let visuals = ui.style().interact_selectable(&tedit_response, false);
-                let icon_font = ui::font_id_sized(14.);
+                let text_font = ui::font_id_sized(12.);
 
                 let mut text_height = 0.;
                 let mut ac_height = ac_rect_padding * 2.;
@@ -178,11 +179,11 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                     .map(|option| {
                         let text_galley = painter.layout_no_wrap(
                             option.label.replace("_", " "),
-                            icon_font.clone(),
+                            text_font.clone(),
                             option.color.unwrap_or(ui::text_color()),
                         );
 
-                        let desc_galley = painter.layout_no_wrap(option.description.clone(), icon_font.clone(), ui.style().visuals.text_color());
+                        let desc_galley = painter.layout_no_wrap(option.description.clone(), text_font.clone(), ui.style().visuals.text_color());
 
                         ac_height += text_galley.rect.height() + ac_rect_inner_padding;
                         if text_height == 0. {
@@ -236,7 +237,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                             if text_selected {
                                 text_galley = painter.layout_no_wrap(
                                     format!("[ {} ]", text_galley.text().to_string()),
-                                    icon_font.clone(),
+                                    text_font.clone(),
                                     text_color.unwrap_or(ui::text_color()),
                                 );
                             }

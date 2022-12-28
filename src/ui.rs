@@ -34,7 +34,7 @@ use std::{
     },
     thread,
     time::Duration,
-    vec,
+    vec, collections::HashMap,
 };
 
 use self::{widgets::autocomplete::AutocompleteOption, constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview};
@@ -687,7 +687,7 @@ pub struct SharedState {
     pub tag_data_update_flag: UpdateFlag,
     pub updated_theme_selection: UpdateFlag,
     pub gallery_regenerate_flag: UpdateFlag,
-    // pub database_info_modified_flag: UpdateFlag,
+    pub namespace_colors: RefCell<HashMap<String, Color32>>,
     pub database_unlocked: UpdateFlag,
     pub disable_navbar: UpdateList<String>,
     pub database_changed: UpdateFlag,
@@ -752,13 +752,13 @@ impl eframe::App for AppUI {
     }
 }
 
-pub fn color32_to_hex(color: Color32) -> String {
+pub fn color32_to_hex(color: &Color32) -> String {
     let hex_color = HexColor::rgba(color.r(), color.g(), color.b(), color.a());
     hex_color.to_string()
 }
 
-pub fn color32_from_hex(hex: &str) -> Result<Color32> {
-    let hex_color = HexColor::parse(hex)?;
+pub fn color32_from_hex(hex: impl Into<String>) -> Result<Color32> {
+    let hex_color = HexColor::parse(hex.into().as_str())?;
     Ok(Color32::from_rgba_unmultiplied(hex_color.r, hex_color.g, hex_color.b, hex_color.a))
 }
 
@@ -768,6 +768,19 @@ impl AppUI {
         // data::init();
         egui_video::init();
         puffin::set_scopes_on(true);
+    }
+    
+    fn load_namespace_colors(&mut self) {
+        let load_res = data::get_namespace_colors();
+        match load_res {
+            Ok(namespace_colors) => {
+                *self.shared_state.namespace_colors.borrow_mut() = namespace_colors;
+            }
+            Err(e) => {
+                toast_error_lock(&self.shared_state.toasts, format!("failed to load namespace colors: {e}"))
+            }
+        }
+        
     }
     fn find_window<T>(&mut self) -> Option<&mut T> where T: UserInterface {
         self.windows
@@ -819,7 +832,7 @@ impl AppUI {
                 data_ui.database_info = None;
             }
         }
-        *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
+        *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state);
     }
 
     fn load_fonts(ctx: &egui::Context) {
@@ -892,6 +905,7 @@ impl AppUI {
             deleted_entries: Arc::new(Mutex::new(vec![])),
             tag_data_update_flag: Arc::new(AtomicBool::new(false)),
             database_unlocked: Arc::new(AtomicBool::new(false)),
+            namespace_colors: RefCell::new(HashMap::new()),
             disable_navbar: Arc::new(Mutex::new(vec![])),
             database_changed: Arc::new(AtomicBool::new(false)),
             // database_info_modified_flag: Arc::new(AtomicBool::new(false)),
@@ -978,6 +992,8 @@ impl AppUI {
         );
     }
 
+
+
     pub fn load_windows(&mut self) {
         let gallery_window = gallery_ui::GalleryUI::new(&self.shared_state);
         self.windows = vec![
@@ -1023,6 +1039,7 @@ impl AppUI {
     fn check_database(&mut self) {
         match data::try_unlock_database_with_key(&data::get_database_key()) {
             Ok(true) => {
+                self.load_namespace_colors();
                 self.generate_gallery_entries();
                 tags::reload_tag_data(&self.shared_state.tag_data_ref);
                 SharedState::set_update_flag(&self.shared_state.database_unlocked, true);
