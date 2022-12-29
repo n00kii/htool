@@ -4,7 +4,7 @@ use super::{
     widgets::autocomplete,
 };
 use crate::{
-    config::{Color32Opt, Config},
+    config::{Color32Opt},
     data::{self, EntryId},
     tags::TagLinkType,
     ui::{self, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
@@ -14,10 +14,9 @@ use anyhow::{Error, Result};
 use eframe::{
     egui::{self, Layout, RichText, Window},
     emath::Align,
-    wgpu::Color,
 };
 use egui::{Color32, Label, Sense};
-use egui_extras::{Column, Size, Strip, StripBuilder, TableBuilder};
+use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 
 use std::{rc::Rc, sync::Arc, thread, vec};
 use ui::ToastsRef;

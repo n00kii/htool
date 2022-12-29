@@ -7,7 +7,7 @@ use poll_promise::Promise;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Color32Opt, Config},
+    config::Color32Opt,
     data,
     ui::{widgets::autocomplete::AutocompleteOption, SharedState},
     ui::{self, LayoutJobText},

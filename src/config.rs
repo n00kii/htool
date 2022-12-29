@@ -13,7 +13,7 @@ use serde::{
 };
 use std::{fs, marker::PhantomData, path::PathBuf, sync::Arc};
 
-use crate::{tags::Namespace, ui};
+use crate::ui;
 
 // use crate::tags::tags::Namespace;
 
