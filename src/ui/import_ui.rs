@@ -40,7 +40,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use std::fs;
-use std::fs::DirEntry;
 use std::fs::File;
 use std::io;
 use std::path::Path;
@@ -458,7 +457,6 @@ impl ImporterUI {
                     for import_entry in self.get_selected_media_entries() {
                         if import_entry.borrow().is_archive {
                             selected_archives_exist = true;
-                            // continue;
                         }
                         import_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
                         import_entry.borrow_mut().is_selected = false;
