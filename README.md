@@ -3,6 +3,9 @@ htool is a media management/gallery application with a focus on simplicity.
 
 🚧 htool is still in active development and should not be considered anywhere close to complete. do not use it without other copies of your media or you risk data loss from bugs. 🚧
 
+## dependencies
+ - requires ffmpeg 5.1. can get by going to the [btbn autobuild github release page](https://github.com/BtbN/FFmpeg-Builds/releases). for windows, download `ffmpeg-master-latest-win64-gpl-shared`, extract, and put the `bin` folder on your `PATH` 
+
 ## features
  - exact deduplication
  - tagging
