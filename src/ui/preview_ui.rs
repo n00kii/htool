@@ -1,23 +1,22 @@
 use super::{
-    widgets::autocomplete, icon, widgets::star_rating::star_rating, tags_ui::TagsUI, RenderLoadingImageOptions, SharedState, ToastsRef,
-    UpdateList,
+    icon, tags_ui::TagsUI, widgets::autocomplete, widgets::star_rating::star_rating, RenderLoadingImageOptions, SharedState, ToastsRef, UpdateList,
 };
 use crate::{
     config::Config,
     data::{self, EntryId, EntryInfo},
-    tags::{Tag},
+    tags::Tag,
     ui,
 };
 use anyhow::Result;
 use arboard::Clipboard;
 use chrono::{TimeZone, Utc};
 use egui::{
-    pos2, vec2, Align, Area, Color32, Context, Event, FontId, Grid, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2,
-    Rect, RichText, Rounding, ScrollArea, Sense, Ui, Vec2,
+    pos2, vec2, Align, Area, Color32, Context, Event, FontId, Grid, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2, Rect, RichText,
+    Rounding, ScrollArea, Sense, Ui, Vec2,
 };
 use egui_extras::RetainedImage;
 use egui_modal::Modal;
-use egui_video::VideoStream;
+use egui_video::Player;
 use image::FlatSamples;
 use parking_lot::Mutex;
 use rfd::FileDialog;
@@ -48,16 +47,17 @@ pub struct PreviewUI {
     clipboard_image: Option<Promise<Result<FlatSamples<Vec<u8>>>>>,
 
     // autocomplete_options: AutocompleteOptionsRef,
-    streamer: Option<VideoStream>,
+    streamer: Option<Player>,
     disassociated_entry_ids: Arc<Mutex<Vec<EntryId>>>,
     register_unknown_tags: bool,
     is_reordering: bool,
     original_order: Option<Vec<String>>,
+    movie_loaded: bool,
 }
 
 pub enum MediaPreview {
     Picture(RetainedImage),
-    Movie(VideoStream),
+    Movie(Player),
 }
 
 pub enum Preview {
@@ -115,6 +115,7 @@ impl PreviewUI {
             current_drop_index: None,
             is_reordering: false,
             // tag_data: Rc::clone(all_tag_data),
+            movie_loaded: false,
             is_fullscreen: false,
             view_offset: [0., 0.],
             view_zoom: 0.5,
@@ -134,6 +135,30 @@ impl PreviewUI {
         if self.preview.is_none() {
             self.load_preview(ctx)
         }
+        let movie_loaded = self.preview.as_ref().map(|p| match p {
+            Preview::MediaEntry(promise) => {
+                matches!(promise.ready(), Some(Ok(MediaPreview::Movie(_))))
+            }
+            _ => false
+        }).unwrap_or(false);
+        if !self.movie_loaded && movie_loaded {
+            self.preview = match self.preview.take() {
+                Some(Preview::MediaEntry(p)) => {
+                    match p.block_and_take() {
+                        Ok(MediaPreview::Movie(player)) => {
+                            let mut player = player.with_audio(&mut self.shared_state.audio_device.borrow_mut()).ok();
+                            if let Some(player) = player.as_mut() {
+                                player.start();
+                            }
+                            player.map(|p| Preview::MediaEntry(Promise::from_ready(Ok(MediaPreview::Movie(p)))))
+                        }
+                        _ => unreachable!()
+                    }
+                }
+                _ => unreachable!()
+            };
+        }
+        self.movie_loaded = movie_loaded;
         if let Some(mut removed_list) = self.disassociated_entry_ids.try_lock() {
             match self.entry_info.try_lock().as_deref_mut() {
                 Some(EntryInfo::PoolEntry(pool_info)) => {
@@ -796,9 +821,9 @@ impl PreviewUI {
                                 mesh.add_rect_with_uv(mesh_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                                 ui.painter().add(mesh);
                             }
-                            MediaPreview::Movie(streamer) => {
-                                streamer.process_state();
-                                streamer.ui_at(ui, mesh_rect);
+                            MediaPreview::Movie(player) => {
+                                player.process_state();
+                                player.ui_at(ui, mesh_rect);
                             }
                         }
                     }
@@ -956,7 +981,13 @@ impl PreviewUI {
         }
 
         let image_response = match self.preview.as_mut() {
-            Some(Preview::MediaEntry(image_promise)) => ui::render_loading_preview(ui, ctx, Some(image_promise), &options),
+            Some(Preview::MediaEntry(image_promise)) => {
+                match image_promise.ready_mut() {
+                    Some(Ok(MediaPreview::Movie(player))) => player.process_state(),
+                    _ => ()
+                }
+                ui::render_loading_preview(ui, ctx, Some(image_promise), &options)
+            },
             Some(Preview::PoolEntry((images_promise, current_view_index))) => {
                 options.desired_image_size = [Config::global().ui.preview_pool_size as f32; 2];
                 options.sense.push(Sense::drag());
@@ -1094,7 +1125,7 @@ impl PreviewUI {
             let bytes = data::get_media_bytes(hash)?;
             let entry_info = data::get_entry_info(&EntryId::MediaEntry(hash.clone()))?;
             if entry_info.is_movie() {
-                let mut stream = VideoStream::new_from_bytes(&ctx, &bytes)?;
+                let mut stream = Player::new_from_bytes(&ctx, &bytes)?;
                 stream.start();
                 return Ok(MediaPreview::Movie(stream));
             } else {

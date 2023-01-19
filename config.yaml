@@ -26,7 +26,7 @@ themes:
     fg_stroke_width: null
     inactive_bg_fill_color: '#965671'
     inactive_bg_stroke_color: null
-    inactive_fg_stroke_color: '#C4FAFA'
+    inactive_fg_stroke_color: '#C4FAFA' 
     hovered_bg_fill_color: '#945771'
     hovered_bg_stroke_color: null
     hovered_fg_stroke_color: '#A0FFFF'

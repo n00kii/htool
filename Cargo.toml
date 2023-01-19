@@ -34,13 +34,14 @@ downcast-rs = "1.2.0"
 rusqlite = { version = "0.28.0", features = [ "blob", "modern_sqlite", "bundled-sqlcipher-vendored-openssl" ] }
 egui-notify = "0.5.0"
 egui-modal = { git = "https://github.com/n00kii/egui-modal"}
-egui-video = { path = "../../egui-video" } 
+egui-video = { git = "https://github.com/n00kii/egui-video" } 
 once_cell = "1.15.0"
 arc-swap = "1.5.1"
 arboard = "3.1.0"
 mime_guess = "2.0.4"
 parking_lot = "0.12.1"
 regex = "1.6.0"
+sdl2 = "0.35.2"
 lazy_static = "1.4.0"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.21.0"

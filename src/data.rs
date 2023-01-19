@@ -14,7 +14,7 @@ use anyhow::anyhow;
 use anyhow::{Context, Result};
 
 use egui::Color32;
-use egui_video::VideoStream;
+use egui_video::Player;
 
 use image::RgbaImage;
 use image::{imageops, ImageBuffer, Rgba};
@@ -415,19 +415,21 @@ impl EntryDetails {
     }
 }
 
+use egui_video::Streamer;
+
 // todo: move stuff out of struct
 pub fn generate_media_thumbnail(image_data: &[u8], is_movie: bool) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
     let thumbnail_size = Config::global().ui.thumbnail_resolution as u32;
     let image = if is_movie {
         let ctx = egui::Context::default();
-        let streamer = VideoStream::new_from_bytes(&ctx, image_data)?;
-        let next_frame = streamer.stream_decoder.lock().unwrap().recieve_next_packet_until_frame()?;
+        let player = Player::new_from_bytes(&ctx, image_data)?;
+        let next_frame = player.video_streamer.lock().recieve_next_packet_until_frame()?;
         let pixels = next_frame
             .pixels
             .iter()
             .flat_map(|c32| [c32.r(), c32.g(), c32.b(), c32.a()])
             .collect::<Vec<u8>>();
-        RgbaImage::from_raw(streamer.width, streamer.height, pixels).context("failed to make image")?
+        RgbaImage::from_raw(player.width, player.height, pixels).context("failed to make image")?
     } else {
         image::load_from_memory(image_data)?.to_rgba8()
     };

@@ -20,6 +20,7 @@ use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
 use egui_notify::{Toast, Toasts};
 
+use egui_video::AudioStreamerCallback;
 use hex_color::HexColor;
 use image::{ImageBuffer, Rgba};
 use parking_lot::{Mutex};
@@ -691,6 +692,7 @@ pub struct SharedState {
     pub database_unlocked: UpdateFlag,
     pub disable_navbar: UpdateList<String>,
     pub database_changed: UpdateFlag,
+    pub audio_device: RefCell<egui_video::AudioStreamerDevice>,
 }
 
 impl SharedState {
@@ -893,7 +895,10 @@ impl AppUI {
     }
 
     pub fn new() -> Self {
+        let audio_sys = sdl2::init().expect("failed to init sdl2").audio().expect("failed to init audio subsystem");
+        
         let shared_state = SharedState {
+            audio_device: RefCell::new(AudioStreamerCallback::init(&audio_sys).expect("failed to init audio streamer")),
             updated_theme_selection: Arc::new(AtomicBool::new(false)),
             gallery_regenerate_flag: Arc::new(AtomicBool::new(false)),
             tag_data_ref: tags::initialize_tag_data(),
