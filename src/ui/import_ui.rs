@@ -19,16 +19,16 @@ use egui_modal::Modal;
 use tempfile::tempdir;
 use zip::ZipArchive;
 
+use crate::app::SharedState;
 use crate::import;
 use crate::ui::widgets;
 use crate::util::BatchPollBuffer;
 use crate::util::PollBuffer;
 
-use super::super::data;
-use super::super::ui;
-use super::super::Config;
+use crate::data;
+use crate::ui;
+use crate::Config;
 use super::icon;
-use super::SharedState;
 use crate::import::scan_directory;
 use crate::import::ImportationEntry;
 use anyhow::Result;

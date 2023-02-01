@@ -1,9 +1,9 @@
 use std::{fmt::Display, rc::Rc, sync::{atomic::Ordering}};
 
 use super::{
-    widgets::autocomplete::{self, AutocompleteOption}, SharedState, UserInterface,
+    widgets::autocomplete::{self, AutocompleteOption}, UserInterface,
 };
-use crate::config::Config;
+use crate::{config::Config, app::SharedState};
 use crate::ui;
 use crate::ui::icon;
 use egui::{Align, DragValue, Grid, Layout, Response, Ui};

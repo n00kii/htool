@@ -1,3 +1,5 @@
+use crate::app::SharedState;
+use crate::app::UpdateFlag;
 use crate::data::EntryId;
 use crate::data::EntryInfo;
 
@@ -6,7 +8,6 @@ use crate::gallery::GalleryEntry;
 use crate::tags;
 use crate::tags::Tag;
 
-use crate::ui::SharedState;
 use crate::util;
 
 use crate::util::BatchPollBuffer;
@@ -50,7 +51,6 @@ use super::preview_ui::PreviewStatus;
 use super::preview_ui::PreviewUI;
 use super::widgets;
 use super::widgets::autocomplete;
-use super::UpdateFlag;
 
 use anyhow::Result;
 

@@ -1,11 +1,11 @@
 use super::{
-    icon, tags_ui::TagsUI, widgets::autocomplete, widgets::star_rating::star_rating, RenderLoadingImageOptions, SharedState, ToastsRef, UpdateList,
+    icon, tags_ui::TagsUI, widgets::autocomplete, widgets::star_rating::star_rating, RenderLoadingImageOptions, ToastsRef,
 };
 use crate::{
     config::Config,
     data::{self, EntryId, EntryInfo},
     tags::Tag,
-    ui,
+    ui, app::{SharedState, UpdateList},
 };
 use anyhow::Result;
 use arboard::Clipboard;

@@ -1,4 +1,5 @@
-use super::{icon, toast_error_lock, toast_success_lock, toast_warning_lock, SharedState, UpdateFlag, UserInterface};
+use super::{icon, toast_error_lock, toast_success_lock, toast_warning_lock, UserInterface};
+use crate::app::{SharedState, UpdateFlag};
 use crate::data::DatabaseInfo;
 use crate::ui;
 use crate::{config::Config, data};

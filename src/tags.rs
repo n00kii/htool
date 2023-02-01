@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::Color32Opt,
     data,
-    ui::{widgets::autocomplete::AutocompleteOption, SharedState},
-    ui::{self, LayoutJobText},
+    ui::{widgets::autocomplete::AutocompleteOption},
+    ui::{self, LayoutJobText}, app::SharedState,
 };
 
 const TAG_DELIM: &str = "::";

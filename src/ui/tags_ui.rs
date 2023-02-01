@@ -7,7 +7,7 @@ use crate::{
     config::{Color32Opt},
     data::{self, EntryId},
     tags::TagLinkType,
-    ui::{self, LayoutJobText, SharedState, UpdateFlag, UpdateList, UserInterface, WindowContainer},
+    ui::{self, LayoutJobText, UserInterface, WindowContainer}, app::{SharedState, UpdateList, UpdateFlag},
 };
 use anyhow::{Error, Result};
 
