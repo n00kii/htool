@@ -13,9 +13,9 @@ use super::Config;
 use anyhow::anyhow;
 use anyhow::{Context, Result};
 use egui::Color32;
-use egui_extras::RetainedImage;
+
 use egui_video::Player;
-use image::DynamicImage;
+
 use image::RgbaImage;
 use image::{imageops, ImageBuffer, Rgba};
 use image_hasher::{HashAlg, HasherConfig};

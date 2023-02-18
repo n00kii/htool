@@ -2,7 +2,7 @@ use std::{rc::Rc, sync::{Arc, atomic::{AtomicBool, Ordering}}, cell::RefCell, co
 
 use egui::{Context, Vec2, Color32};
 use egui_notify::Toasts;
-use egui_video::AudioStreamerCallback;
+
 use parking_lot::Mutex;
 use crate::{ui::{ WindowContainer, gallery_ui::GalleryUI, data_ui::DataUI, self, ToastsRef, widgets::autocomplete::AutocompleteOption}, tags::{self, TagDataRef}, config::Config, data::{self, EntryId}};
 
@@ -183,7 +183,7 @@ impl App {
         options.icon_data = Some(ui::load_icon());
         // options.decorated = false;
         // options.renderer = Renderer::Wgpu;
-        eframe::run_native(
+        let _ = eframe::run_native(
             ui::constants::APPLICATION_NAME,
             options,
             Box::new(|creation_context| {

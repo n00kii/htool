@@ -4,7 +4,7 @@ use crate::{
     app::{App, SharedState},
     config::Config,
     data::{self, EntryId},
-    tags::{self, TagDataRef},
+    tags::{self},
 };
 use anyhow::Result;
 use downcast_rs as downcast;
@@ -25,12 +25,8 @@ use image::{ImageBuffer, Rgba};
 use parking_lot::Mutex;
 use poll_promise::Promise;
 use std::{
-    cell::RefCell,
-    collections::HashMap,
     fmt::Display,
-    rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread,
@@ -38,7 +34,7 @@ use std::{
     vec,
 };
 
-use self::{constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview, widgets::autocomplete::AutocompleteOption};
+use self::{constants::CONFIG_TITLE, preview_ui::MediaPreview};
 
 pub type ToastsRef = Arc<Mutex<Toasts>>;
 
