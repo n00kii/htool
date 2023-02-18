@@ -17,7 +17,7 @@ use egui::{
 };
 use egui_extras::RetainedImage;
 use egui_modal::Modal;
-use egui_video::VideoStream;
+use egui_video::Player;
 use image::FlatSamples;
 use parking_lot::Mutex;
 use rfd::FileDialog;
@@ -48,7 +48,7 @@ pub struct PreviewUI {
     clipboard_image: Option<Promise<Result<FlatSamples<Vec<u8>>>>>,
 
     // autocomplete_options: AutocompleteOptionsRef,
-    streamer: Option<VideoStream>,
+    player: Option<Player>,
     disassociated_entry_ids: Arc<Mutex<Vec<EntryId>>>,
     register_unknown_tags: bool,
     is_reordering: bool,
@@ -57,7 +57,7 @@ pub struct PreviewUI {
 
 pub enum MediaPreview {
     Picture(RetainedImage),
-    Movie(VideoStream),
+    Movie(Player),
 }
 
 pub enum Preview {
@@ -108,7 +108,7 @@ impl PreviewUI {
             updated_entry_info: None,
             shared_state: Rc::clone(shared_shate),
             id,
-            streamer: None,
+            player: None,
             // arc_toast: Arc::clone(&toasts),
             register_unknown_tags: false,
             current_dragged_index: None,
@@ -754,7 +754,7 @@ impl PreviewUI {
     fn render_fullscreen_preview(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let area = Area::new("media_fullview").interactable(true).fixed_pos(Pos2::ZERO);
         area.show(ctx, |ui: &mut Ui| {
-            let screen_rect = ui.ctx().input().screen_rect;
+            let screen_rect = ui.ctx().input(|i| i.screen_rect);
             ui.painter().rect_filled(screen_rect, Rounding::none(), Color32::BLACK);
 
             fn paint_text(text: impl Into<String>, text_color: Color32, pos: Pos2, painter: &Painter) -> Rect {
@@ -782,7 +782,7 @@ impl PreviewUI {
                     Some(Ok(image)) => {
                         let (texture_id, size) = match image {
                             MediaPreview::Picture(image) => (image.texture_id(ctx), image.size_vec2().into()),
-                            MediaPreview::Movie(streamer) => (streamer.texture_id(), [streamer.width as f32, streamer.height as f32]),
+                            MediaPreview::Movie(streamer) => (streamer.texture_handle.id(), [streamer.width as f32, streamer.height as f32]),
                         };
                         let mesh_size = options.scaled_image_size(size).into();
                         let mut mesh_pos = screen_rect.center() - (mesh_size / 2.);
@@ -796,9 +796,8 @@ impl PreviewUI {
                                 mesh.add_rect_with_uv(mesh_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                                 ui.painter().add(mesh);
                             }
-                            MediaPreview::Movie(streamer) => {
-                                streamer.process_state();
-                                streamer.ui_at(ui, mesh_rect);
+                            MediaPreview::Movie(player) => {
+                                player.ui_at(ui, mesh_rect);
                             }
                         }
                     }
@@ -815,7 +814,7 @@ impl PreviewUI {
 
             let ignore_fullscreen_frames = 20; // number of frames to ignore double click
             let mut was_rect_clicked = |rect: &Rect| -> bool {
-                if ui.rect_contains_pointer(*rect) && ctx.input().pointer.primary_released() {
+                if ui.rect_contains_pointer(*rect) && ctx.input(|i| i.pointer.primary_released()) {
                     self.ignore_fullscreen_edit = ignore_fullscreen_frames;
                     true
                 } else {
@@ -883,11 +882,11 @@ impl PreviewUI {
                     }
                 }
             }
-            let something_dragged = ctx.memory().is_anything_being_dragged();
-            let primary_down = ctx.input().pointer.primary_down();
+            let something_dragged = ctx.memory(|m| m.is_anything_being_dragged());
+            let primary_down = ctx.input(|i| i.pointer.primary_down());
             if !something_dragged && primary_down {
                 if let Some(image_size) = image_size {
-                    let delta = ctx.input().pointer.delta();
+                    let delta = ctx.input(|i| i.pointer.delta());
                     self.view_offset = (Vec2::from(self.view_offset) + delta).into();
                     // {view_offset_bound_factor} amount of the image allowed to clip offscreeen
                     let view_offset_bound_factor = 0.9;
@@ -898,11 +897,11 @@ impl PreviewUI {
                 }
             }
 
-            for event in &ctx.input().events {
+            for event in &ctx.input(|i| i.events.clone()) {
                 match event {
                     Event::Scroll(scroll_delta) => {
                         if let Some(image_center) = image_center {
-                            if let Some(hover_pos) = ui.ctx().input().pointer.hover_pos() {
+                            if let Some(hover_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                                 let zoom_factor = 1. / 300.;
                                 let new_view_zoom = (self.view_zoom + scroll_delta.y * zoom_factor).max(0.1);
                                 let delta_zoom = new_view_zoom - self.view_zoom;
@@ -938,7 +937,7 @@ impl PreviewUI {
         options.desired_image_size = [Config::global().ui.preview_size as f32; 2];
         options.hover_text_on_error_image = Some(Box::new(|error| format!("failed to load image: {error}").into()));
 
-        if !ctx.memory().is_anything_being_dragged() {
+        if !ctx.memory(|m| m.is_anything_being_dragged()) {
             if let Some(current_dragged_index) = self.current_dragged_index {
                 if let Some(current_drop_index) = self.current_drop_index {
                     match self.preview.as_mut() {
@@ -1094,9 +1093,9 @@ impl PreviewUI {
             let bytes = data::get_media_bytes(hash)?;
             let entry_info = data::get_entry_info(&EntryId::MediaEntry(hash.clone()))?;
             if entry_info.is_movie() {
-                let mut stream = VideoStream::new_from_bytes(&ctx, &bytes)?;
-                stream.start();
-                return Ok(MediaPreview::Movie(stream));
+                let mut player = Player::new_from_bytes(&ctx, &bytes)?;
+                player.start();
+                return Ok(MediaPreview::Movie(player));
             } else {
                 let dynamic_image = image::load_from_memory(&bytes)?;
                 let retained_image = ui::generate_retained_image(&dynamic_image.to_rgba8())?;

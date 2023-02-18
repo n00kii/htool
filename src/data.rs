@@ -18,7 +18,7 @@ use super::Config;
 use anyhow::anyhow;
 use anyhow::{Context, Result};
 use egui_extras::RetainedImage;
-use egui_video::VideoStream;
+use egui_video::Player;
 use image::DynamicImage;
 use image::RgbaImage;
 use image::{imageops, ImageBuffer, Rgba};
@@ -433,11 +433,13 @@ impl EntryDetails {
 
 // todo: move stuff out of struct
 pub fn generate_media_thumbnail(image_data: &[u8], is_movie: bool) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    use egui_video::Streamer;
+
     let thumbnail_size = Config::global().ui.thumbnail_resolution as u32;
     let image = if is_movie {
         let ctx = egui::Context::default();
-        let streamer = VideoStream::new_from_bytes(&ctx, image_data)?;
-        let next_frame = streamer.stream_decoder.lock().unwrap().recieve_next_packet_until_frame()?;
+        let streamer = Player::new_from_bytes(&ctx, image_data)?;
+        let next_frame = streamer.video_streamer.lock().recieve_next_packet_until_frame()?;
         let pixels = next_frame
             .pixels
             .iter()

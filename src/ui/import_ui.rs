@@ -135,7 +135,7 @@ impl ImporterUI {
     }
 
     fn process_dropped_files(&mut self, ctx: &Context) {
-        let dropped_files = ctx.input().raw.dropped_files.clone();
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped_files.is_empty() {
             let mut new_entries = vec![];
             for dropped_file in dropped_files {
@@ -169,8 +169,8 @@ impl ImporterUI {
 
     fn render_dropping_files(&self, ui: &mut Ui, ctx: &Context) {
         // todo!()
-        let screen_rect = ctx.input().screen_rect;
-        let hovering_count = ctx.input().raw.hovered_files.len();
+        let screen_rect = ctx.input(|i| i.screen_rect);
+        let hovering_count = ctx.input(|i| i.raw.hovered_files.len());
         if hovering_count > 0 {
             let drop_text = format!("+ {} file{}", hovering_count, if hovering_count > 1 { "s" } else { "" });
             let rect_size = Vec2::splat(100.);

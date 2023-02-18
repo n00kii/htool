@@ -19,7 +19,6 @@ use egui::{
 use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
 use egui_notify::{Toast, Toasts};
-use egui_video::VideoStream;
 use hex_color::HexColor;
 use image::{ImageBuffer, Rgba};
 use parking_lot::{Mutex, MutexGuard};
@@ -305,7 +304,7 @@ pub fn generate_regular_polygon(
     points
 }
 pub fn does_ui_have_focus(ui: &mut Ui, ctx: &Context) -> bool {
-    ctx.memory().layer_ids().filter(|l| l.order == layers::Order::Middle).last() == Some(ui.layer_id())
+    ctx.memory(|m| m.layer_ids().filter(|l| l.order == layers::Order::Middle).last() == Some(ui.layer_id()) )
 }
 pub fn generate_layout_job(text: Vec<impl Into<LayoutJobText>>) -> LayoutJob {
     let mut job = LayoutJob::default();
@@ -598,7 +597,6 @@ pub fn render_loading_preview(
                         response
                     }
                     MediaPreview::Movie(streamer) => {
-                        streamer.process_state();
                         streamer.ui(ui, image_size)
                     }
                 };
@@ -766,7 +764,7 @@ impl AppUI {
     pub fn init() {
         Config::load();
         // data::init();
-        egui_video::init();
+        // egui_video::init();
         puffin::set_scopes_on(true);
     }
     fn find_window<T>(&mut self) -> Option<&mut T> where T: UserInterface {
@@ -922,6 +920,7 @@ impl AppUI {
         }
         if let Some(color) = Config::global().themes.inactive_bg_fill_color() {
             style.visuals.widgets.inactive.bg_fill = color;
+            style.visuals.widgets.inactive.weak_bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.inactive_bg_stroke() {
             style.visuals.widgets.inactive.bg_stroke = stroke;
@@ -932,6 +931,7 @@ impl AppUI {
         }
         if let Some(color) = Config::global().themes.hovered_bg_fill_color() {
             style.visuals.widgets.hovered.bg_fill = color;
+            style.visuals.widgets.hovered.weak_bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.hovered_bg_stroke() {
             style.visuals.widgets.hovered.bg_stroke = stroke;
@@ -1216,9 +1216,10 @@ impl AppUI {
 }
 
 fn key_pressed(ctx: &Context, key: Key, modifiers: Modifiers) -> bool {
-    ctx.input().events.contains(&Event::Key {
+    ctx.input(|i| i.events.contains(&Event::Key {
         key,
         modifiers,
+        repeat: false,
         pressed: true,
-    })
+    }))
 }

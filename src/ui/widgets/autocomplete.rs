@@ -90,12 +90,15 @@ pub fn get_current_word(cursor_index: Option<usize>, text: &String) -> Option<(S
 }
 
 pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<AutocompleteOption>, multiline: bool, appear_below: bool) -> Response {
-    let consume_key = |ui: &Ui, key: Key| -> bool { ui.ctx().input_mut().consume_key(Modifiers::NONE, key) };
+    let consume_key = |ui: &Ui, key: Key| -> bool { ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, key)) };
     let insert_key = |ui: &Ui, key: Key| {
-        ui.ctx().input_mut().events.push(Event::Key {
-            key,
-            pressed: true,
-            modifiers: Modifiers::NONE,
+        ui.ctx().input_mut(|i| {
+            i.events.push(Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            })
         })
     };
 
@@ -109,14 +112,14 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
         egui::TextEdit::singleline(search)
     };
     tedit = tedit.lock_focus(true);
-    
+
     let mut tedit_output = tedit.show(ui);
 
     let mut tedit_response = tedit_output.response;
     // tedit_response.changed = false;
     if tedit_response.has_focus() {
         let id = Id::new(format!("{:?}_autocomplete", tedit_response.id));
-        let mut ac_state: AutocompleteState = ui.ctx().memory().data.get_temp(id).unwrap_or_default();
+        let mut ac_state: AutocompleteState = ui.ctx().memory_mut(|m| m.data.get_temp(id).unwrap_or_default());
         let last_ccursor_range = tedit_output.state.ccursor_range();
 
         if tedit_response.changed() {
@@ -206,7 +209,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                     .order(egui::Order::Tooltip)
                     .fixed_pos(Pos2::ZERO)
                     .show(&ui.ctx(), |ui: &mut Ui| {
-                        let _screen_rect = ui.ctx().input().screen_rect;
+                        let _screen_rect = ui.ctx().input(|i| i.screen_rect);
                         let painter = ui.painter();
                         painter.rect(
                             ac_rect,
@@ -226,11 +229,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
                             let interaction_rect = text_galley.rect.clone().translate(text_pos.to_vec2());
                             let _text_hovered = tedit_response
                                 .ctx
-                                .input()
-                                .pointer
-                                .hover_pos()
-                                .map(|p| interaction_rect.contains(p))
-                                .unwrap_or(false);
+                                .input(|i| i.pointer.hover_pos().map(|p| interaction_rect.contains(p)).unwrap_or(false));
                             let text_selected = ac_state.selected_index == index;
 
                             if text_selected {
@@ -255,7 +254,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
             }
         } else {
             if tab_pressed {
-                ui.ctx().memory().lock_focus(tedit_response.id, false);
+                ui.ctx().memory_mut(|m| m.lock_focus(tedit_response.id, false));
                 insert_key(ui, Key::Tab);
                 dbg!("hmm2");
                 tedit_response.surrender_focus()
@@ -264,7 +263,7 @@ pub fn autocomplete_ui(ui: &mut egui::Ui, search: &mut String, options: &Vec<Aut
         }
 
         // ac_state.last_ccursor_range = last_ccursor_range;
-        ui.ctx().memory().data.insert_temp(id, ac_state);
+        ui.ctx().memory_mut(|m| m.data.insert_temp(id, ac_state));
         ui.ctx().move_to_top(tedit_response.layer_id)
     } else {
         if down_arrow_pressed {

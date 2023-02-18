@@ -15,40 +15,46 @@ codegen-units = 1
 strip = true
 
 [dependencies]
+egui = { version = "0.21.0", features = [ "color-hex" ] }
+eframe = { version = "0.21.0", features = [ "wgpu" ] }
+
+egui-notify = "0.6.0"
+egui-modal = { git = "https://github.com/n00kii/egui-modal" }
+egui-video = { git = "https://github.com/n00kii/egui-video", features = [ "from_bytes" ] }
+egui_extras = "0.21.0"
+
 image = "0.24.2"
 image_hasher = "1.0.0"
-hex = "0.4.3"
-sha256 = "1.0.3"
-figment = { version = "0.10.6", features = [ "toml", "env", "yaml", "json" ] }
-serde = "1.0.137"
-path-absolutize = "3.0.13"
-toml = "0.5.9"
-anyhow = "1.0"
-eframe = { version = "0.20.1", features = [ "wgpu" ] }
-egui = { version = "0.20.1", features = [ "color-hex" ] }
-rfd = "0.10.0"
-egui_extras = "0.20.0"
-poll-promise = "0.1.0"
-chrono = "0.4.22"
-downcast-rs = "1.2.0"
-rusqlite = { version = "0.28.0", features = [ "blob", "modern_sqlite", "bundled-sqlcipher-vendored-openssl" ] }
-egui-notify = "0.5.0"
-egui-modal = { git = "https://github.com/n00kii/egui-modal"}
-egui-video = { path = "../../egui-video" } 
-once_cell = "1.15.0"
-arc-swap = "1.5.1"
 arboard = "3.1.0"
 mime_guess = "2.0.4"
-parking_lot = "0.12.1"
+
+hex = "0.4.3"
+sha256 = "1.0.3"
+chrono = "0.4.22"
+downcast-rs = "1.2.0"
+once_cell = "1.15.0"
+arc-swap = "1.5.1"
+rand = "0.8.5"
 regex = "1.6.0"
-lazy_static = "1.4.0"
-r2d2 = "0.8.10"
-r2d2_sqlite = "0.21.0"
+
+serde = "1.0.137"
+serde_yaml = "0.9.14"
+figment = { version = "0.10.6", features = [ "toml", "env", "yaml", "json" ] }
+path-absolutize = "3.0.13"
+toml = "0.5.9"
 zip = "0.6.3"
 tempfile = "3.3.0"
+rfd = "0.10.0"
+
+rusqlite = { version = "0.28.0", features = [ "blob", "modern_sqlite", "bundled-sqlcipher-vendored-openssl" ] }
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.21.0"
+
+anyhow = "1.0"
+poll-promise = "0.1.0"
+parking_lot = "0.12.1"
+lazy_static = "1.4.0"
 hex_color = "2.0.0"
-serde_yaml = "0.9.14"
 paste = "1.0.9"
 puffin = "0.14.0"
 enum-iterator = "1.2.0"
-rand = "0.8.5"

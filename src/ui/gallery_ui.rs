@@ -928,8 +928,8 @@ impl GalleryUI {
                                         if tex_id == *other_tex_id {
                                             exists = true;
                                             // dbg!(ctx.input().pointer.delta().length());
-                                            if ctx.input().pointer.delta().length() < 5. {
-                                                *other_hover_dur = (*other_hover_dur + ctx.input().stable_dt).min(max_hovered_dur + delay);
+                                            if ctx.input(|i| i.pointer.delta().length()) < 5. {
+                                                *other_hover_dur = (*other_hover_dur + ctx.input(|i| i.stable_dt)).min(max_hovered_dur + delay);
                                             }
                                         }
                                     }
@@ -969,7 +969,7 @@ impl GalleryUI {
                                         };
 
                                         if !is_currently_hovered {
-                                            *hover_duration -= ctx.input().stable_dt * 3.;
+                                            *hover_duration -= ctx.input(|i| i.stable_dt) * 3.;
                                         }
                                     }
                                 }
