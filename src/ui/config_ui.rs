@@ -1,10 +1,9 @@
-use std::{fmt::Display, rc::Rc, sync::{Arc, atomic::Ordering}};
+use std::{fmt::Display, rc::Rc, sync::{atomic::Ordering}};
 
 use super::{
-    widgets::autocomplete::{self, AutocompleteOption},
-    icon_text, SharedState, UserInterface,
+    widgets::autocomplete::{self, AutocompleteOption}, UserInterface,
 };
-use crate::config::Config;
+use crate::{config::Config, app::SharedState};
 use crate::ui;
 use crate::ui::icon;
 use egui::{Align, DragValue, Grid, Layout, Response, Ui};
@@ -133,6 +132,7 @@ impl ConfigUI {
                             value: t.name.clone(),
                             color: None,
                             description: String::from("theme"),
+                            succeeding_space: false,
                         })
                         .collect();
                     options.insert(
@@ -142,6 +142,7 @@ impl ConfigUI {
                             value: String::new(),
                             color: None,
                             description: String::from("theme"),
+                            succeeding_space: false,
                         },
                     );
                     if hook(ui.add(autocomplete::create(
@@ -166,7 +167,7 @@ impl ConfigUI {
 }
 
 impl UserInterface for ConfigUI {
-    fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.vertical_centered_justified(|ui| {
             if ui.button("load from file").clicked() {
                 let config = Config::load_from_file();

@@ -54,6 +54,7 @@ Thumbs.db
 # htool db
 *.db
 *.db-journal
+*.code-workspace
 root/
 
 Cargo.lock

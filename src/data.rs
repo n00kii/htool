@@ -1,14 +1,9 @@
-// use crate::gallery::gallery_ui::EntrySearch;
-
-// use crate::tags::tags::Tag;
-// use crate::tags::tags::TagData;
-// use crate::tags::tags::TagLink;
-// use crate::tags::tags::TagLinkType;
-
 use crate::tags::Tag;
 use crate::tags::TagData;
 use crate::tags::TagLink;
 use crate::tags::TagLinkType;
+use crate::ui::color32_from_hex;
+use crate::ui::color32_to_hex;
 use crate::ui::gallery_ui::EntrySearch;
 use crate::ui::preview_ui::MediaPreview;
 
@@ -17,16 +12,15 @@ use super::Config;
 
 use anyhow::anyhow;
 use anyhow::{Context, Result};
+use egui::Color32;
 use egui_extras::RetainedImage;
 use egui_video::Player;
 use image::DynamicImage;
 use image::RgbaImage;
 use image::{imageops, ImageBuffer, Rgba};
 use image_hasher::{HashAlg, HasherConfig};
-// use infer;
 use once_cell::sync::OnceCell;
 
-use parking_lot::lock_api::RawMutex;
 use parking_lot::RwLock;
 use poll_promise::Sender;
 use r2d2::Pool;
@@ -42,13 +36,12 @@ use std::fmt;
 use std::fmt::Display;
 
 use std::fs;
-use std::hash;
+
+use parking_lot::Mutex;
 use std::io::Cursor;
 use std::mem::discriminant;
 use std::path::PathBuf;
 use std::sync::Arc;
-// use std::sync::Mutex;
-use parking_lot::Mutex;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -75,15 +68,11 @@ pub struct DatabaseInfo {
 }
 
 pub fn load_database_info() -> Result<DatabaseInfo> {
-    // todo!()
     let conn = initialize_database_connection()?;
     let mut table_size_stmt = conn.prepare("SELECT SUM(pgsize) FROM dbstat WHERE name = ?1")?;
-    // let mut table_count_stmt = conn.prepare("SELECT COUNT(*) from ?1")?;
     let mut get_table_size = |table_name: &str| table_size_stmt.query_row(params![table_name], |row| row.get(0));
-    // let mut get_table_count = |table_name: &str| table_count_stmt.query_row(params![table_name], |row| row.get(0));
 
     let thumbnail_cache_size: usize = get_table_size("thumbnail_cache")?;
-    // let media_bytes_size: usize = get_table_size("media_bytes")?; // this takes too long
     let entry_info_size: usize = get_table_size("entry_info")?;
     let entry_tags_size: usize = get_table_size("entry_tags")?;
     let media_links_size: usize = get_table_size("media_links")?;
@@ -102,11 +91,6 @@ pub fn load_database_info() -> Result<DatabaseInfo> {
     let thumbnail_cache_count: usize = conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
     let tag_info_count: usize = conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
     let entry_tags_count: usize = conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
-    // let media_bytes_count: usize = get_table_count("media_bytes")?;
-    // let entry_info_count: usize = get_table_count("entry_info")?; // conn.query_row("SELECT COUNT(*) from entry_info", [], |row| row.get(0))?;
-    // let thumbnail_cache_count: usize = get_table_count("thumbnail_cache")?; // conn.query_row("SELECT COUNT(*) from thumbnail_cache", [], |row| row.get(0))?;
-    // let tag_info_count: usize = get_table_count("tag_info")?; // conn.query_row("SELECT COUNT(*) from tag_info", [], |row| row.get(0))?;
-    // let entry_tags_count: usize = get_table_count("entry_tags")?; // conn.query_row("SELECT COUNT(*) from entry_tags", [], |row| row.get(0))?;
 
     Ok(DatabaseInfo {
         entry_info_count,
@@ -431,21 +415,21 @@ impl EntryDetails {
     }
 }
 
+use egui_video::Streamer;
+
 // todo: move stuff out of struct
 pub fn generate_media_thumbnail(image_data: &[u8], is_movie: bool) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    use egui_video::Streamer;
-
     let thumbnail_size = Config::global().ui.thumbnail_resolution as u32;
     let image = if is_movie {
         let ctx = egui::Context::default();
-        let streamer = Player::new_from_bytes(&ctx, image_data)?;
-        let next_frame = streamer.video_streamer.lock().recieve_next_packet_until_frame()?;
+        let player = Player::new_from_bytes(&ctx, image_data)?;
+        let next_frame = player.video_streamer.lock().recieve_next_packet_until_frame()?;
         let pixels = next_frame
             .pixels
             .iter()
             .flat_map(|c32| [c32.r(), c32.g(), c32.b(), c32.a()])
             .collect::<Vec<u8>>();
-        RgbaImage::from_raw(streamer.width, streamer.height, pixels).context("failed to make image")?
+        RgbaImage::from_raw(player.width, player.height, pixels).context("failed to make image")?
     } else {
         image::load_from_memory(image_data)?.to_rgba8()
     };
@@ -684,7 +668,59 @@ fn setup_databaste_with_conn(conn: &Connection) -> Result<()> {
             )",
         [],
     )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS namespaces (
+                namespace TEXT,
+                color TEXT
+            )",
+        [],
+    )?;
     Ok(())
+}
+
+pub fn delete_namespace_color(namespace: &String) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    conn.execute("DELETE from namespaces WHERE namespace = ?1", params![namespace])?;
+    Ok(())
+}
+
+pub fn set_namespace_colors(namespaces: &HashMap<String, Color32>) -> Result<()> {
+    let conn = initialize_database_connection()?;
+    let mut delete_stmt = conn.prepare("DELETE FROM namespaces WHERE namespace = ?1")?;
+    let mut insert_stmt = conn.prepare("INSERT INTO namespaces (namespace, color) VALUES (?1, ?2)")?;
+    for (namespace, color) in namespaces {
+        let color_str = color32_to_hex(color);
+        delete_stmt.execute(params![namespace])?;
+        insert_stmt.execute(params![namespace, color_str])?;
+    }
+    Ok(())
+}
+// pub fn set_namespace_color(namespace: &String, color: &Color32) -> Result<()> {
+//     let conn = initialize_database_connection()?;
+//     let color_str = color32_to_hex(color);
+//     conn.execute("DELETE FROM namespaces WHERE namespace = ?1", params![namespace])?;
+//     conn.execute("INSERT INTO namespaces (namespace, color) VALUES (?1, ?2)", params![namespace, color_str])?;
+//     Ok(())
+// }
+
+// pub fn get_namespace(namespace: &String) -> Result<Option<Color32>> {
+//     let conn = initialize_database_connection()?;
+//     let color_str : Option<String> = conn.query_row("SELECT namespace FROM namespaces WHERE namespace = ?1", params![namespace], |row| row.get("namespace"))?;
+//     Ok(color_str.and_then(|cs| color32_from_hex(cs).ok()))
+// }
+pub fn get_namespace_colors() -> Result<HashMap<String, Color32>> {
+    let conn = initialize_database_connection()?;
+    let mut stmt = conn.prepare("SELECT namespace, color FROM namespaces")?;
+    let colors = stmt
+    .query_map([], |row| Ok((row.get("namespace")?, row.get("color")?)))?
+    .filter_map(|res| res.ok())
+    .collect::<HashMap<String, String>>();
+
+    Ok(colors
+        .into_iter()
+        .map(|(namespace, color_str)| (namespace, color32_from_hex(color_str).unwrap()))
+        .collect::<HashMap<String, Color32>>())
 }
 
 pub fn is_database_unencrypted() -> Result<bool> {
@@ -1151,11 +1187,11 @@ pub fn rekey_database(new_key: &String) -> Result<Option<(PathBuf, PathBuf)>> {
         let old_db_path = Config::global().path.database()?;
         let mut new_db_path = old_db_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
         new_db_path.push(temp_filename.clone());
-        
+
         let new_db_path_str = format!("file:///{}", new_db_path.to_str().unwrap());
         let conn = open_database_connection()?;
         apply_database_key_to_conn(&conn, &get_database_key())?;
-        
+
         conn.execute("ATTACH DATABASE ?1 AS ?2 KEY ?3", params![new_db_path_str, temp_filename, new_key])?;
         let _: Option<usize> = conn.query_row("SELECT sqlcipher_export(?1)", params![temp_filename], |row| row.get(0))?;
         conn.execute("DETACH DATABASE ?1", params![temp_filename])?;
@@ -1459,10 +1495,9 @@ fn register_media_with_conn(conn: &Connection, reg_form: &RegistrationForm) -> I
             }
         }
 
-        let sha_hash = sha256::digest_bytes(&reg_form.bytes);
+        let sha_hash = sha256::digest(&*reg_form.bytes as &[u8]);
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let serialized_mime = reg_form.mimetype.first().map(|mime| mime.to_string());
-        // }
 
         let mut statement = conn.prepare("SELECT 1 FROM entry_info WHERE hash = ?")?;
         let exists = statement.exists(params![sha_hash])?;
@@ -1667,7 +1702,7 @@ pub fn get_media_mime_with_conn(conn: &Connection, hash: &String) -> Result<Opti
 pub fn export_entry(entry_id: &EntryId, mut export_path: PathBuf) -> Result<PathBuf> {
     let conn = initialize_database_connection()?;
     match entry_id {
-        EntryId::PoolEntry(link_id) => todo!(),
+        EntryId::PoolEntry(_link_id) => todo!(),
         EntryId::MediaEntry(hash) => {
             let bytes = get_media_bytes(hash)?;
             let mime = get_media_mime_with_conn(&conn, hash)?;

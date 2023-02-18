@@ -1,16 +1,16 @@
-use super::{icon, toast_error_lock, toast_success_lock, toast_warning_lock, SharedState, ToastsRef, UpdateFlag, UserInterface};
+use super::{icon, toast_error_lock, toast_success_lock, toast_warning_lock, UserInterface};
+use crate::app::{SharedState, UpdateFlag};
 use crate::data::DatabaseInfo;
 use crate::ui;
 use crate::{config::Config, data};
 use anyhow::{anyhow, Result};
-use egui::{Align, Align2, Color32, Context, FontId, Label, Layout, ProgressBar, RichText, Rounding, Sense, Ui};
+use egui::{Align, Color32, Context, Label, Layout, Rounding, Sense};
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use egui_modal::Modal;
 use poll_promise::Promise;
 use std::fs;
 use std::sync::atomic::AtomicBool;
 use std::{
-    fs::{read, File},
     rc::Rc,
     sync::Arc,
     thread,

@@ -8,11 +8,12 @@ mod import;
 mod tags;
 mod ui;
 mod util;
+mod app;
 
+use app::App;
 use config::Config;
 
 fn main() {
-    ui::AppUI::init();
-    ui::AppUI::new().start();
-
+    App::init();
+    App::new().start();
 }

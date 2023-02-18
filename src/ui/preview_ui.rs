@@ -1,19 +1,18 @@
 use super::{
-    widgets::autocomplete, icon, widgets::star_rating::star_rating, tags_ui::TagsUI, AutocompleteOptionsRef, RenderLoadingImageOptions, SharedState, ToastsRef,
-    UpdateList,
+    icon, tags_ui::TagsUI, widgets::autocomplete, widgets::star_rating::star_rating, RenderLoadingImageOptions, ToastsRef,
 };
 use crate::{
     config::Config,
     data::{self, EntryId, EntryInfo},
-    tags::{Tag, TagDataRef},
-    ui,
+    tags::Tag,
+    ui, app::{SharedState, UpdateList},
 };
 use anyhow::Result;
 use arboard::Clipboard;
 use chrono::{TimeZone, Utc};
 use egui::{
-    layers, pos2, vec2, Align, Area, Color32, Context, DragValue, Event, FontId, Grid, Id, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2,
-    Rect, RichText, Rounding, ScrollArea, Sense, TextureId, Ui, Vec2,
+    pos2, vec2, Align, Area, Color32, Context, Event, FontId, Grid, Key, Label, Layout, Mesh, Modifiers, Order, Painter, Pos2, Rect, RichText,
+    Rounding, ScrollArea, Sense, Ui, Vec2,
 };
 use egui_extras::RetainedImage;
 use egui_modal::Modal;
@@ -53,6 +52,7 @@ pub struct PreviewUI {
     register_unknown_tags: bool,
     is_reordering: bool,
     original_order: Option<Vec<String>>,
+    movie_loaded: bool,
 }
 
 pub enum MediaPreview {
@@ -115,6 +115,7 @@ impl PreviewUI {
             current_drop_index: None,
             is_reordering: false,
             // tag_data: Rc::clone(all_tag_data),
+            movie_loaded: false,
             is_fullscreen: false,
             view_offset: [0., 0.],
             view_zoom: 0.5,
@@ -134,6 +135,30 @@ impl PreviewUI {
         if self.preview.is_none() {
             self.load_preview(ctx)
         }
+        let movie_loaded = self.preview.as_ref().map(|p| match p {
+            Preview::MediaEntry(promise) => {
+                matches!(promise.ready(), Some(Ok(MediaPreview::Movie(_))))
+            }
+            _ => false
+        }).unwrap_or(false);
+        if !self.movie_loaded && movie_loaded {
+            self.preview = match self.preview.take() {
+                Some(Preview::MediaEntry(p)) => {
+                    match p.block_and_take() {
+                        Ok(MediaPreview::Movie(player)) => {
+                            let mut player = player.with_audio(&mut self.shared_state.audio_device.borrow_mut()).ok();
+                            if let Some(player) = player.as_mut() {
+                                player.start();
+                            }
+                            player.map(|p| Preview::MediaEntry(Promise::from_ready(Ok(MediaPreview::Movie(p)))))
+                        }
+                        _ => unreachable!()
+                    }
+                }
+                _ => unreachable!()
+            };
+        }
+        self.movie_loaded = movie_loaded;
         if let Some(mut removed_list) = self.disassociated_entry_ids.try_lock() {
             match self.entry_info.try_lock().as_deref_mut() {
                 Some(EntryInfo::PoolEntry(pool_info)) => {
@@ -483,9 +508,9 @@ impl PreviewUI {
             ui.label("info");
             if let Some(entry_info) = self.entry_info.try_lock() {
                 egui::Grid::new(format!("info_{}", self.id)).num_columns(2).show(ui, |ui| {
-                    let datetime = Utc.timestamp(entry_info.details().date_registered, 0);
+                    let datetime = Utc.timestamp_opt(entry_info.details().date_registered, 0);
                     ui.label("registered");
-                    ui.label(datetime.format("%B %e, %Y @%l:%M%P").to_string());
+                    ui.label(datetime.unwrap().format("%B %e, %Y @%l:%M%P").to_string());
                     ui.end_row();
 
                     ui.label("size");
@@ -547,7 +572,7 @@ impl PreviewUI {
                                             true
                                         };
                                         ui.with_layout(egui::Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
-                                            let mut tag_text = tag.to_rich_text();
+                                            let mut tag_text = tag.to_rich_text(&self.shared_state);
                                             if !exists_in_tag_data {
                                                 tag_text = tag_text.strikethrough();
                                             }
@@ -564,7 +589,7 @@ impl PreviewUI {
                                                         .map(|tag_data| tag_data.occurances.to_string())
                                                         .unwrap_or(String::from("?"))
                                                 ))
-                                                .color(tag.namespace_color().unwrap_or(ui.style().visuals.text_color()));
+                                                .color(tag.namespace_color(&self.shared_state).unwrap_or(ui.style().visuals.text_color()));
                                                 response.on_hover_text_at_pointer(hover_text);
                                             }
                                         });
@@ -751,7 +776,7 @@ impl PreviewUI {
         modal
     }
 
-    fn render_fullscreen_preview(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+    fn render_fullscreen_preview(&mut self, _ui: &mut Ui, ctx: &egui::Context) {
         let area = Area::new("media_fullview").interactable(true).fixed_pos(Pos2::ZERO);
         area.show(ctx, |ui: &mut Ui| {
             let screen_rect = ui.ctx().input(|i| i.screen_rect);
@@ -955,7 +980,13 @@ impl PreviewUI {
         }
 
         let image_response = match self.preview.as_mut() {
-            Some(Preview::MediaEntry(image_promise)) => ui::render_loading_preview(ui, ctx, Some(image_promise), &options),
+            Some(Preview::MediaEntry(image_promise)) => {
+                // match image_promise.ready_mut() {
+                //     Some(Ok(MediaPreview::Movie(player))) => player.process_state(),
+                //     _ => ()
+                // }
+                ui::render_loading_preview(ui, ctx, Some(image_promise), &options)
+            },
             Some(Preview::PoolEntry((images_promise, current_view_index))) => {
                 options.desired_image_size = [Config::global().ui.preview_pool_size as f32; 2];
                 options.sense.push(Sense::drag());

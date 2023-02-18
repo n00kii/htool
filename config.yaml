@@ -1,7 +1,7 @@
 path:
   root: E:\root
   landing: F:\Media\Documents\Projects\htool2\htool2\testing_files
-  database: data-test
+  database: data1
 general:
   entry_max_score: 5
   gallery_base_search: independant=true limit=5000
@@ -18,6 +18,35 @@ ui:
 themes:
   current_theme: palenight
   themes:
+  - name: eggplant
+    bg_fill_color: '#814961'
+    secondary_bg_fill_color: '#804961'
+    tertiary_bg_fill_color: '#66374C'
+    bg_stroke_width: null
+    fg_stroke_width: null
+    inactive_bg_fill_color: '#965671'
+    inactive_bg_stroke_color: null
+    inactive_fg_stroke_color: '#C4FAFA' 
+    hovered_bg_fill_color: '#945771'
+    hovered_bg_stroke_color: null
+    hovered_fg_stroke_color: '#A0FFFF'
+    active_bg_fill_color: '#804961'
+    active_bg_stroke_color: null
+    active_fg_stroke_color: '#C4FAFA'
+    selected_fg_stroke_color: '#C4FAFA'
+    selected_bg_fill_color: '#804961'
+    blue_fill_color: null
+    blue_stroke_color: '#82AAFF'
+    red_fill_color: '#813445'
+    red_stroke_color: '#AD5D69'
+    green_fill_color: null
+    green_stroke_color: null
+    yellow_stroke_color: null
+    yellow_fill_color: null
+    accent_fill_color: '#80CBC4'
+    accent_stroke_color: '#203231'
+    override_widget_primary: '#C4FAFA'
+    override_widget_secondary: null
   - name: palenight
     bg_fill_color: '#232635'
     secondary_bg_fill_color: '#232635'
@@ -47,12 +76,3 @@ themes:
     accent_stroke_color: '#80CBC4'
     override_widget_primary: '#80CBC4'
     override_widget_secondary: null
-namespaces:
-- name: artist
-  color: '#686FD5'
-- name: character
-  color: '#915C55'
-- name: copyright
-  color: '#91D0CC'
-- name: ref
-  color: '#FFE326'

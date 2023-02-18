@@ -1,6 +1,7 @@
 // todo put common ui stuff in here, like generating thumbnails of specific sizew
 
 use crate::{
+    app::{App, SharedState},
     config::Config,
     data::{self, EntryId},
     tags::{self, TagDataRef},
@@ -13,18 +14,19 @@ use eframe::{
     epaint::{Color32, PathShape},
 };
 use egui::{
-    hex_color, pos2, text::LayoutJob, vec2, Align, Align2, CentralPanel, Context, Event, FontData, FontDefinitions, FontFamily, FontId, Frame, Id,
-    Key, Layout, Mesh, Modifiers, Painter, Pos2, ProgressBar, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, TopBottomPanel, Window, layers,
+    layers, pos2, text::LayoutJob, vec2, Align2, CentralPanel, Context, Event, FontData, FontDefinitions, FontFamily, FontId, Frame, Id, Key, Layout,
+    Mesh, Modifiers, Painter, Pos2, ProgressBar, Rect, Shape, Stroke, Style, TextEdit, TextFormat, TextureId, Window,
 };
 use egui_extras::RetainedImage;
 use egui_modal::{Modal, ModalStyle};
 use egui_notify::{Toast, Toasts};
 use hex_color::HexColor;
 use image::{ImageBuffer, Rgba};
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::Mutex;
 use poll_promise::Promise;
 use std::{
     cell::RefCell,
+    collections::HashMap,
     fmt::Display,
     rc::Rc,
     sync::{
@@ -36,7 +38,7 @@ use std::{
     vec,
 };
 
-use self::{widgets::autocomplete::AutocompleteOption, constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview};
+use self::{constants::CONFIG_TITLE, data_ui::DataUI, gallery_ui::GalleryUI, preview_ui::MediaPreview, widgets::autocomplete::AutocompleteOption};
 
 pub type ToastsRef = Arc<Mutex<Toasts>>;
 
@@ -46,8 +48,8 @@ pub mod debug_ui;
 pub mod gallery_ui;
 pub mod import_ui;
 pub mod preview_ui;
-pub mod widgets;
 pub mod tags_ui;
+pub mod widgets;
 
 pub mod constants {
     use eframe::epaint::Color32;
@@ -396,6 +398,7 @@ enum LabelSize {
     Exact(f32),
     Relative(f32),
 }
+
 impl Default for RenderLoadingImageOptions {
     fn default() -> Self {
         RenderLoadingImageOptions {
@@ -608,41 +611,6 @@ pub fn render_loading_preview(
     }
 }
 
-/// Here is the same code again, but a bit more compact:
-#[allow(dead_code)]
-fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
-    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
-    if response.clicked() {
-        *on = !*on;
-        response.mark_changed();
-    }
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, *on, ""));
-
-    if ui.is_rect_visible(rect) {
-        let how_on = ui.ctx().animate_bool(response.id, *on);
-        let visuals = ui.style().interact_selectable(&response, *on);
-        let rect = rect.expand(visuals.expansion);
-        let radius = 0.5 * rect.height();
-        ui.painter().rect(rect, radius, visuals.bg_fill, visuals.bg_stroke);
-        let circle_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
-        let center = egui::pos2(circle_x, rect.center().y);
-        ui.painter().circle(center, 0.75 * radius, visuals.bg_fill, visuals.fg_stroke);
-    }
-
-    response
-}
-
-// A wrapper that allows the more idiomatic usage pattern: `ui.add(toggle(&mut my_bool))`
-/// iOS-style toggle switch.
-///
-/// ## Example:
-/// ``` ignore
-/// ui.add(toggle(&mut my_bool));
-/// ```
-pub fn toggle(on: &mut bool) -> impl egui::Widget + '_ {
-    move |ui: &mut egui::Ui| toggle_ui(ui, on)
-}
 pub struct WindowContainer {
     pub title: String,
     pub window: Box<dyn UserInterface>,
@@ -654,7 +622,7 @@ pub trait UserInterface: downcast::Downcast {
 }
 
 downcast::impl_downcast!(UserInterface);
-fn load_icon() -> eframe::IconData {
+pub fn load_icon() -> eframe::IconData {
     let (icon_rgba, icon_width, icon_height) = {
         let icon_bytes = include_bytes!("resources/icon.ico");
         let image = image::load_from_memory(icon_bytes).expect("failed to application load icon").into_rgba8();
@@ -670,70 +638,7 @@ fn load_icon() -> eframe::IconData {
     }
 }
 
-pub type UpdateFlag = Arc<AtomicBool>;
-pub type UpdateList<T> = Arc<Mutex<Vec<T>>>;
-pub type AutocompleteOptionsRef = Rc<RefCell<Option<Vec<AutocompleteOption>>>>;
-
-pub struct SharedState {
-    pub toasts: ToastsRef,
-    pub tag_data_ref: TagDataRef,
-    pub autocomplete_options: AutocompleteOptionsRef,
-    pub window_title: String,
-    pub all_entries_update_flag: UpdateFlag,
-    pub updated_entries: UpdateList<EntryId>,
-    pub deleted_entries: UpdateList<EntryId>,
-    pub tag_data_update_flag: UpdateFlag,
-    pub updated_theme_selection: UpdateFlag,
-    pub gallery_regenerate_flag: UpdateFlag,
-    // pub database_info_modified_flag: UpdateFlag,
-    pub database_unlocked: UpdateFlag,
-    pub disable_navbar: UpdateList<String>,
-    pub database_changed: UpdateFlag,
-}
-
-impl SharedState {
-    pub fn set_update_flag(flag: &UpdateFlag, new_state: bool) {
-        flag.store(new_state, Ordering::Relaxed);
-    }
-    pub fn raise_update_flag(flag: &UpdateFlag) {
-        Self::set_update_flag(flag, true);
-    }
-    pub fn read_update_flag(flag: &UpdateFlag) -> bool {
-        flag.load(Ordering::Relaxed)
-    }
-    pub fn consume_update_flag(flag: &UpdateFlag) -> bool {
-        if Self::read_update_flag(flag) {
-            Self::set_update_flag(flag, false);
-            true
-        } else {
-            false
-        }
-    }
-    pub fn add_disabled_reason(list: &UpdateList<String>, reason: &str) {
-        list.lock().push(String::from(reason));
-    }
-    pub fn remove_disabled_reason(list: &UpdateList<String>, reason: &str) {
-        list.lock().retain(|l| *l != String::from(reason));
-    }
-    pub fn set_title(&mut self, addition: Option<String>) {
-        if let Some(addition) = addition {
-            self.window_title = format!("{}: {}", constants::APPLICATION_NAME, addition)
-        } else {
-            self.window_title = constants::APPLICATION_NAME.to_string();
-        }
-    }
-    pub fn append_to_update_list<T>(list: &UpdateList<T>, mut new_items: Vec<T>) {
-        list.lock().append(&mut new_items)
-    }
-}
-pub struct AppUI {
-    shared_state: Rc<SharedState>,
-    current_window: String,
-    windows: Vec<WindowContainer>,
-    input_database_key: Arc<Mutex<String>>,
-}
-
-impl eframe::App for AppUI {
+impl eframe::App for App {
     fn persist_native_window(&self) -> bool {
         true
     }
@@ -750,77 +655,38 @@ impl eframe::App for AppUI {
     }
 }
 
-pub fn color32_to_hex(color: Color32) -> String {
+pub fn color32_to_hex(color: &Color32) -> String {
     let hex_color = HexColor::rgba(color.r(), color.g(), color.b(), color.a());
     hex_color.to_string()
 }
 
-pub fn color32_from_hex(hex: &str) -> Result<Color32> {
-    let hex_color = HexColor::parse(hex)?;
+pub fn color32_from_hex(hex: impl Into<String>) -> Result<Color32> {
+    let hex_color = HexColor::parse(hex.into().as_str())?;
     Ok(Color32::from_rgba_unmultiplied(hex_color.r, hex_color.g, hex_color.b, hex_color.a))
 }
 
-impl AppUI {
-    pub fn init() {
-        Config::load();
-        // data::init();
-        // egui_video::init();
-        puffin::set_scopes_on(true);
+impl App {
+
+    pub fn load_namespace_colors(&mut self) {
+        let load_res = data::get_namespace_colors();
+        match load_res {
+            Ok(namespace_colors) => {
+                *self.shared_state.namespace_colors.borrow_mut() = namespace_colors;
+            }
+            Err(e) => toast_error_lock(&self.shared_state.toasts, format!("failed to load namespace colors: {e}")),
+        }
     }
-    fn find_window<T>(&mut self) -> Option<&mut T> where T: UserInterface {
+    pub fn find_window<T>(&mut self) -> Option<&mut T>
+    where
+        T: UserInterface,
+    {
         self.windows
             .iter_mut()
             .find(|container| container.window.downcast_ref::<T>().is_some())
             .map(|c| c.window.downcast_mut::<T>().unwrap())
     }
-    fn process_state(&mut self, ctx: &Context) {
-        if let Some(mut update_list) = self.shared_state.updated_entries.try_lock() {
-            if update_list.len() > 0 {
-                if let Some(gallery_container) = self
-                    .windows
-                    .iter_mut()
-                    .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
-                {
-                    puffin::profile_scope!("update_gallery_entries");
-                    let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
-                    gallery_window.update_entries(&update_list);
-                }
-            }
-            update_list.clear();
-        }
-        if let Some(mut delete_list) = self.shared_state.deleted_entries.try_lock() {
-            if delete_list.len() > 0 {
-                if let Some(gallery_container) = self
-                    .windows
-                    .iter_mut()
-                    .find(|container| container.window.downcast_ref::<GalleryUI>().is_some())
-                {
-                    puffin::profile_scope!("update_gallery_entries");
-                    let gallery_window = gallery_container.window.downcast_mut::<GalleryUI>().unwrap();
-                    gallery_window.delete_entries(&delete_list);
-                }
-            }
-            delete_list.clear();
-        }
-        if SharedState::consume_update_flag(&self.shared_state.tag_data_update_flag) {
-            tags::reload_tag_data(&self.shared_state.tag_data_ref);
-        }
-        if SharedState::consume_update_flag(&self.shared_state.updated_theme_selection) {
-            AppUI::load_style(ctx);
-        }
-        if SharedState::consume_update_flag(&self.shared_state.gallery_regenerate_flag) {
-            self.generate_gallery_entries();
-        }
-        if SharedState::consume_update_flag(&self.shared_state.database_changed) {
-            self.check_database();
-            if let Some(data_ui) = self.find_window::<DataUI>() {
-                data_ui.database_info = None;
-            }
-        }
-        *self.shared_state.autocomplete_options.borrow_mut() = tags::generate_autocomplete_options(&self.shared_state.tag_data_ref);
-    }
 
-    fn load_fonts(ctx: &egui::Context) {
+    pub fn load_fonts(ctx: &egui::Context) {
         let mut fonts = FontDefinitions::default();
 
         fonts.font_data.insert(
@@ -875,31 +741,6 @@ impl AppUI {
             .push("symbols_fallback".to_owned());
 
         ctx.set_fonts(fonts);
-    }
-
-    pub fn new() -> Self {
-        let shared_state = SharedState {
-            updated_theme_selection: Arc::new(AtomicBool::new(false)),
-            gallery_regenerate_flag: Arc::new(AtomicBool::new(false)),
-            tag_data_ref: tags::initialize_tag_data(),
-            autocomplete_options: Rc::new(RefCell::new(None)),
-            window_title: env!("CARGO_PKG_NAME").to_string(),
-            toasts: Arc::new(Mutex::new(Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft))),
-            all_entries_update_flag: Arc::new(AtomicBool::new(false)),
-            updated_entries: Arc::new(Mutex::new(vec![])),
-            deleted_entries: Arc::new(Mutex::new(vec![])),
-            tag_data_update_flag: Arc::new(AtomicBool::new(false)),
-            database_unlocked: Arc::new(AtomicBool::new(false)),
-            disable_navbar: Arc::new(Mutex::new(vec![])),
-            database_changed: Arc::new(AtomicBool::new(false)),
-            // database_info_modified_flag: Arc::new(AtomicBool::new(false)),
-        };
-        AppUI {
-            shared_state: Rc::new(shared_state),
-            windows: vec![],
-            current_window: String::new(),
-            input_database_key: Arc::new(Mutex::new(String::new())),
-        }
     }
 
     pub fn load_style(ctx: &Context) {
@@ -958,26 +799,6 @@ impl AppUI {
         ctx.set_style(style)
     }
 
-    pub fn start(mut self) {
-        let mut options = eframe::NativeOptions::default();
-        options.initial_window_size = Some(Vec2::new(1390.0, 600.0));
-        options.icon_data = Some(load_icon());
-        // options.decorated = false;
-        // options.renderer = Renderer::Wgpu;
-        eframe::run_native(
-            constants::APPLICATION_NAME,
-            options,
-            Box::new(|creation_context| {
-                let ctx = &creation_context.egui_ctx;
-                Self::load_fonts(ctx);
-                Self::load_style(ctx);
-                self.load_windows();
-
-                Box::new(self)
-            }),
-        );
-    }
-
     pub fn load_windows(&mut self) {
         let gallery_window = gallery_ui::GalleryUI::new(&self.shared_state);
         self.windows = vec![
@@ -1010,38 +831,8 @@ impl AppUI {
 
                 title: icon!(constants::DATA_TITLE, DATA_ICON),
             },
-            // WindowContainer {
-            //     window: Box::new(debug_ui::DebugUI::default()),
-            //     is_open: Some(false),
-
-            //     title: icon!(constants::DEBUG_TITLE, DEBUG_ICON),
-            // },
         ];
         self.check_database();
-    }
-
-    fn check_database(&mut self) {
-        match data::try_unlock_database_with_key(&data::get_database_key()) {
-            Ok(true) => {
-                self.generate_gallery_entries();
-                tags::reload_tag_data(&self.shared_state.tag_data_ref);
-                SharedState::set_update_flag(&self.shared_state.database_unlocked, true);
-                SharedState::remove_disabled_reason(&self.shared_state.disable_navbar, constants::DISABLED_LABEL_LOCKED_DATABASE);
-            }
-            _ => {
-                self.current_window = String::new();
-                SharedState::set_update_flag(&self.shared_state.database_unlocked, false);
-                SharedState::add_disabled_reason(&self.shared_state.disable_navbar, constants::DISABLED_LABEL_LOCKED_DATABASE);
-            }
-        };
-    }
-
-    fn generate_gallery_entries(&mut self) {
-        for window in self.windows.iter_mut() {
-            if let Some(gallery_ui) = window.window.downcast_mut::<GalleryUI>() {
-                gallery_ui.generate_entries();
-            }
-        }
     }
 
     fn render_top_bar(&mut self, ctx: &egui::Context) {
@@ -1086,7 +877,7 @@ impl AppUI {
             let max_rect = ui.max_rect();
             let painter = ui.painter();
 
-            painter.rect(max_rect.shrink(1.), 0., ctx.style().visuals.window_fill(), Stroke::none());
+            painter.rect(max_rect.shrink(1.), 0., ctx.style().visuals.window_fill(), Stroke::NONE);
             painter.text(
                 max_rect.center_top() + vec2(0., height / 2.),
                 Align2::CENTER_CENTER,

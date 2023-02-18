@@ -5,7 +5,7 @@ use crate::data::RegistrationForm;
 use crate::ui::preview_ui::MediaPreview;
 use anyhow::{Error, Result};
 
-use egui_extras::RetainedImage;
+
 use parking_lot::Mutex;
 use poll_promise::Promise;
 use std::collections::HashMap;

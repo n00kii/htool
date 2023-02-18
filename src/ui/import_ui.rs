@@ -5,10 +5,10 @@ use egui::Align2;
 use egui::Color32;
 use egui::Context;
 
-use egui::FontId;
-use egui::Id;
-use egui::LayerId;
-use egui::Order;
+
+
+
+
 use egui::Rect;
 use egui::Rounding;
 use egui::Stroke;
@@ -19,20 +19,20 @@ use egui_modal::Modal;
 use tempfile::tempdir;
 use zip::ZipArchive;
 
+use crate::app::SharedState;
 use crate::import;
 use crate::ui::widgets;
 use crate::util::BatchPollBuffer;
 use crate::util::PollBuffer;
 
-use super::super::data;
-use super::super::ui;
-use super::super::Config;
+use crate::data;
+use crate::ui;
+use crate::Config;
 use super::icon;
-use super::SharedState;
 use crate::import::scan_directory;
 use crate::import::ImportationEntry;
 use anyhow::Result;
-use eframe::egui::{self, Button, Direction, ProgressBar, ScrollArea, Ui};
+use eframe::egui::{self, Button, Direction, ScrollArea, Ui};
 use eframe::emath::{Align, Vec2};
 use poll_promise::Promise;
 use rfd::FileDialog;
@@ -49,7 +49,7 @@ use std::rc::Rc;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+
 
 pub struct ImporterUI {
     shared_state: Rc<SharedState>,
@@ -64,6 +64,7 @@ pub struct ImporterUI {
     dir_link_map: Arc<Mutex<HashMap<String, i32>>>,
     thumbnail_buffer: PollBuffer<ImportationEntry>,
     import_buffer: BatchPollBuffer<ImportationEntry>,
+    scroll_to: Option<PathBuf>,
     is_import_status_window_open: bool,
     is_filters_window_open: bool,
     pending_archive_extracts: Option<Vec<ArchiveExtractionProgress>>, // TODO: doesnt need to be an option
@@ -101,6 +102,7 @@ impl ImporterUI {
             // toasts: egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomLeft),
             shared_state: Rc::clone(&shared_state),
             import_failures_list: Arc::new(Mutex::new(vec![])),
+            scroll_to: None,
             thumbnail_buffer,
             pending_archive_extracts: None,
             import_buffer,
@@ -455,7 +457,6 @@ impl ImporterUI {
                     for import_entry in self.get_selected_media_entries() {
                         if import_entry.borrow().is_archive {
                             selected_archives_exist = true;
-                            // continue;
                         }
                         import_entry.borrow_mut().importation_status = Some(Promise::from_ready(ImportationStatus::Pending));
                         import_entry.borrow_mut().is_selected = false;
@@ -630,6 +631,10 @@ impl ImporterUI {
                                 if response.clicked() && is_importable {
                                     let new_state = !is_selected;
                                     media_entry.borrow_mut().is_selected = new_state;
+                                    
+                                    if new_state {
+                                        self.scroll_to = Some(media_entry.borrow().dir_entry.path());
+                                    }
                                 };
                                 let _disabled_reason = media_entry.borrow().get_status_label();
                                 if let Some(status) = media_entry.borrow().get_status_label() {
@@ -771,9 +776,20 @@ impl ImporterUI {
                                     options.is_button = importation_entry.is_importable();
                                     options.is_button_selected = Some(importation_entry.is_selected);
                                     let response = ui::render_loading_preview(ui, ctx, importation_entry.thumbnail.as_mut(), &options);
+                                    
                                     if let Some(response) = response.as_ref() {
+                                        if self.scroll_to.is_some() {
+                                            let scroll_to = self.scroll_to.as_ref().unwrap();
+                                            if importation_entry.dir_entry.path() == *scroll_to {
+                                                response.scroll_to_me(None);
+                                                self.scroll_to = None;
+                                            }
+                                        }
+                                        
                                         if response.clicked() && importation_entry.is_importable() {
                                             importation_entry.is_selected = !importation_entry.is_selected
+
+                                            
                                         }
                                         widgets::selected(importation_entry.is_selected, response, ui.painter());
                                     }
