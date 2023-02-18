@@ -782,6 +782,7 @@ impl App {
         }
         if let Some(color) = Config::global().themes.active_bg_fill_color() {
             style.visuals.widgets.active.bg_fill = color;
+            style.visuals.widgets.active.weak_bg_fill = color;
         }
         if let Some(stroke) = Config::global().themes.active_bg_stroke() {
             style.visuals.widgets.active.bg_stroke = stroke;

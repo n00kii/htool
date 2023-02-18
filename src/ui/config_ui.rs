@@ -131,7 +131,7 @@ impl ConfigUI {
                             label: t.name.clone(),
                             value: t.name.clone(),
                             color: None,
-                            description: String::from("theme"),
+                            description: String::new(),
                             succeeding_space: false,
                         })
                         .collect();
@@ -141,7 +141,7 @@ impl ConfigUI {
                             label: String::from("none"),
                             value: String::new(),
                             color: None,
-                            description: String::from("theme"),
+                            description: String::new(),
                             succeeding_space: false,
                         },
                     );
