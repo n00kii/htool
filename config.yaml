@@ -16,7 +16,7 @@ ui:
   preview_reorder_size: 543
   preview_size: 500
 themes:
-  current_theme: palenight
+  current_theme: black
   themes:
   - name: eggplant
     bg_fill_color: '#814961'
@@ -75,4 +75,33 @@ themes:
     accent_fill_color: '#203231'
     accent_stroke_color: '#80CBC4'
     override_widget_primary: '#80CBC4'
+    override_widget_secondary: null
+  - name: black
+    bg_fill_color: '#000000'
+    secondary_bg_fill_color: '#000000'
+    tertiary_bg_fill_color: '#000000'
+    bg_stroke_width: null
+    fg_stroke_width: null
+    inactive_bg_fill_color: '#111111'
+    inactive_bg_stroke_color: null
+    inactive_fg_stroke_color: '#808080'
+    hovered_bg_fill_color: '#1d1d1d'
+    hovered_bg_stroke_color: '#333333'
+    hovered_fg_stroke_color: '#b6b6b6'
+    active_bg_fill_color: '#686868'
+    active_bg_stroke_color: '#c5c5c5'
+    active_fg_stroke_color: '#c5c5c5'
+    selected_fg_stroke_color: '#dbdbdb'
+    selected_bg_fill_color: '#272727'
+    blue_fill_color: null
+    blue_stroke_color: '#82AAFF'
+    red_fill_color: '#2c1616'
+    red_stroke_color: '#9c5555'
+    green_fill_color: null
+    green_stroke_color: null
+    yellow_stroke_color: null
+    yellow_fill_color: null
+    accent_fill_color: '#3d3d3d'
+    accent_stroke_color: '#dbdbdb'
+    override_widget_primary: '#dbdbdb'
     override_widget_secondary: null

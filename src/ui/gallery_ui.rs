@@ -11,8 +11,6 @@ use crate::tags::Tag;
 use crate::util;
 
 use crate::util::BatchPollBuffer;
-// use anyhow::Context;
-
 use anyhow::Context;
 
 use eframe::egui::Layout;
@@ -21,9 +19,6 @@ use eframe::epaint::Shadow;
 
 use egui::Align2;
 use egui::Color32;
-
-
-
 
 use egui::Rect;
 use egui::RichText;
@@ -36,7 +31,6 @@ use egui_modal::Modal;
 
 use rand::seq::SliceRandom;
 use regex::Regex;
-
 
 use crate::ui::RenderLoadingImageOptions;
 use crate::ui::WindowContainer;
@@ -73,6 +67,21 @@ use lazy_static::lazy_static;
 use parking_lot::Mutex;
 use std::thread;
 
+#[derive(Clone, Copy)]
+enum Icon {
+    None,
+    Movie,
+    Pool,
+}
+
+#[derive(Clone)]
+struct HoverInfo {
+    texture_id: TextureId,
+    thumbnail_rect: Rect,
+    animation: f32,
+    icon_type: Icon,
+}
+
 pub struct GalleryUI {
     pub thumbnail_buffer: BatchPollBuffer<GalleryEntry>,
     pub refresh_buffer: BatchPollBuffer<GalleryEntry>,
@@ -89,7 +98,7 @@ pub struct GalleryUI {
     is_selection_mode: bool,
     include_dependants: bool,
     include_pools: bool,
-    last_hovered: Vec<(TextureId, Rect, f32)>,
+    last_hovered: Vec<HoverInfo>,
     selected_rects: Vec<Rect>,
 }
 
@@ -304,12 +313,8 @@ impl GalleryUI {
                     let mut next_entry_info = None;
                     let mut gallery_entries_len = 0;
                     let (preview_entry_id, increment) = match preview_status.as_ref().unwrap() {
-                        PreviewStatus::Previous(entry_id) => {
-                            (entry_id.clone(), -1)
-                        }
-                        PreviewStatus::Next(entry_id) => {
-                            (entry_id.clone(), 1)
-                        }
+                        PreviewStatus::Previous(entry_id) => (entry_id.clone(), -1),
+                        PreviewStatus::Next(entry_id) => (entry_id.clone(), 1),
                         _ => unreachable!(),
                     };
                     let gallery_entry_index = self.filtered_gallery_entries.as_ref().and_then(|gallery_entries| {
@@ -798,6 +803,35 @@ impl GalleryUI {
     }
 
     fn render_gallery_entries(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        fn paint_icon(painter: &egui::Painter, thumbnail_rect: Rect, icon_type: Icon) {
+            let icon_size = 20.;
+            let icon_offset = 5.;
+            let icon_pos = thumbnail_rect.right_bottom() - Vec2::splat(icon_offset);
+            let icon_rect = Rect::from_two_pos(icon_pos, icon_pos - Vec2::splat(icon_size));
+            let icon_rounding = Rounding::same(3.);
+            let icon_color = Color32::BLACK.linear_multiply(0.7);
+            let icon_text_color = Color32::WHITE;
+            let icon_fid = ui::font_id_sized(16.);
+            let paint_character = |c: &str| {
+                painter.rect_filled(icon_rect, icon_rounding, icon_color);
+                painter.text(
+                    icon_rect.center(),
+                    Align2::CENTER_CENTER,
+                    c,
+                    icon_fid,
+                    icon_text_color,
+                );
+            };
+            match icon_type {
+                Icon::Pool => {
+                    paint_character(ui::constants::LINK_ICON)
+                }
+                Icon::Movie => {
+                    paint_character(ui::constants::MOVIE_ICON)
+                }
+                _ => (),
+            }
+        }
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
             ScrollArea::vertical()
                 .id_source("previews_col")
@@ -820,35 +854,19 @@ impl GalleryUI {
 
                                 let response = ui::render_loading_preview(ui, ctx, gallery_entry.borrow_mut().thumbnail.as_mut(), &options);
                                 if let Some(mut response) = response {
-                                    let icon_size = 20.;
-                                    let icon_offset = 5.;
-                                    let icon_pos = response.rect.right_bottom() - Vec2::splat(icon_offset);
-                                    let icon_rect = Rect::from_two_pos(icon_pos, icon_pos - Vec2::splat(icon_size));
-                                    let icon_rounding = Rounding::same(3.);
-                                    let icon_color = Color32::BLACK.linear_multiply(0.7);
-                                    let icon_text_color = Color32::WHITE;
-                                    let icon_fid = ui::font_id_sized(16.);
-                                    if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
-                                        if entry_info.entry_id().is_pool_entry_id() {
-                                            ui.painter().rect_filled(icon_rect, icon_rounding, icon_color);
-                                            ui.painter().text(
-                                                icon_rect.center(),
-                                                Align2::CENTER_CENTER,
-                                                ui::constants::LINK_ICON,
-                                                icon_fid,
-                                                icon_text_color,
-                                            );
+                                    let icon_type = if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
+                                        let icon_type = if entry_info.entry_id().is_pool_entry_id() {
+                                            Icon::Pool
                                         } else if entry_info.is_movie() {
-                                            ui.painter().rect_filled(icon_rect, icon_rounding, icon_color);
-                                            ui.painter().text(
-                                                icon_rect.center(),
-                                                Align2::CENTER_CENTER,
-                                                ui::constants::MOVIE_ICON,
-                                                icon_fid,
-                                                icon_text_color,
-                                            );
-                                        }
-                                    }
+                                            Icon::Movie
+                                        } else {
+                                            Icon::None
+                                        };
+                                        paint_icon(ui.painter(), response.rect, icon_type);
+                                        icon_type
+                                    } else {
+                                        Icon::None
+                                    };
 
                                     if self.is_selection_mode {
                                         if response.clicked() {
@@ -865,22 +883,6 @@ impl GalleryUI {
 
                                         widgets::selected(gallery_entry.borrow().is_selected, &response, ui.painter());
 
-                                        // if gallery_entry.borrow().is_selected {
-                                        //     let base_color = Config::global().themes.accent_fill_color().unwrap_or(Color32::WHITE);
-                                        //     let secondary_color = Config::global().themes.accent_stroke_color().unwrap_or(Color32::BLACK);
-                                        //     let stroke = Stroke::new(3., base_color);
-                                        //     let mut text_fid = FontId::default();
-                                        //     text_fid.size = 32.;
-                                        //     ui.painter()
-                                        //         .rect(response.rect, Rounding::from(3.), secondary_color.linear_multiply(0.3), stroke);
-                                        //     ui.painter().circle(response.rect.center(), 20., base_color, Stroke::NONE);
-                                        //     ui.painter().text(
-                                        //         response.rect.center(),
-                                        //         Align2::CENTER_CENTER,
-                                        //         ui::constants::SUCCESS_ICON,
-                                        //         text_fid,
-                                        //         secondary_color,
-                                        //     );
                                         if response.hovered() && !gallery_entry.borrow().is_selected {
                                             ui.painter()
                                                 .rect_stroke(response.rect, Rounding::from(3.), Stroke::new(2., Color32::GRAY));
@@ -899,11 +901,16 @@ impl GalleryUI {
                                                 if let Ok(MediaPreview::Picture(thumbnail)) = thumbnail {
                                                     // get current hovered
                                                     if response.hovered() {
-                                                        current_hovered = Some((thumbnail.texture_id(ctx), response.rect));
+                                                        current_hovered = Some(HoverInfo {
+                                                            texture_id: thumbnail.texture_id(ctx),
+                                                            thumbnail_rect: response.rect,
+                                                            animation: 0.,
+                                                            icon_type,
+                                                        });
                                                     }
-                                                    for (t, r, _) in self.last_hovered.iter_mut() {
-                                                        if *t == thumbnail.texture_id(ctx) {
-                                                            *r = response.rect;
+                                                    for hover_info in self.last_hovered.iter_mut() {
+                                                        if hover_info.texture_id == thumbnail.texture_id(ctx) {
+                                                            hover_info.thumbnail_rect = response.rect;
                                                         }
                                                     }
                                                 }
@@ -918,37 +925,38 @@ impl GalleryUI {
                                 let max_hovered_dur = 0.7;
                                 let delay = 0.15;
 
-                                if let Some((tex_id, rect)) = current_hovered {
+                                if let Some(current_hovered) = current_hovered.as_ref() {
                                     // increment current hovered, or add it if dont exists
                                     let mut exists = false;
-                                    for (other_tex_id, _, other_hover_dur) in self.last_hovered.iter_mut() {
-                                        if tex_id == *other_tex_id {
+                                    for other_hover_info in self.last_hovered.iter_mut() {
+                                        if current_hovered.texture_id == other_hover_info.texture_id {
                                             exists = true;
                                             // dbg!(ctx.input().pointer.delta().length());
                                             if ctx.input(|i| i.pointer.delta().length()) < 5. {
-                                                *other_hover_dur = (*other_hover_dur + ctx.input(|i| i.stable_dt)).min(max_hovered_dur + delay);
+                                                other_hover_info.animation =
+                                                    (other_hover_info.animation + ctx.input(|i| i.stable_dt)).min(max_hovered_dur + delay);
                                             }
                                         }
                                     }
                                     if !exists {
-                                        self.last_hovered.push((tex_id, rect, 0.))
+                                        self.last_hovered.push(current_hovered.clone())
                                     }
                                 }
 
                                 // remove non hovered expired
-                                self.last_hovered.retain(|(_, _, d)| !(*d < 0.));
+                                self.last_hovered.retain(|h| !(h.animation < 0.));
 
                                 // paint, decrement
-                                for (tex_id, rect, hover_duration) in self.last_hovered.iter_mut() {
+                                for hover_info in self.last_hovered.iter_mut() {
                                     let mut expansion = 10.;
-                                    let hovered_frac = ((*hover_duration - delay).max(0.) / max_hovered_dur).min(1.);
+                                    let hovered_frac = ((hover_info.animation - delay).max(0.) / max_hovered_dur).min(1.);
                                     if hovered_frac > 0. {
                                         expansion *= ui::ease_in_cubic(hovered_frac);
 
                                         let mut options = RenderLoadingImageOptions::default();
                                         options.desired_image_size = [Config::global().ui.gallery_thumbnail_size as f32; 2];
-                                        let image_mesh_size = options.scaled_image_size(rect.size().into()).into();
-                                        let image_mesh_pos = rect.center() - (image_mesh_size / 2.);
+                                        let image_mesh_size = options.scaled_image_size(hover_info.thumbnail_rect.size().into()).into();
+                                        let image_mesh_pos = hover_info.thumbnail_rect.center() - (image_mesh_size / 2.);
                                         let image_rect = Rect::from_min_size(image_mesh_pos, image_mesh_size).expand(expansion);
                                         let tweened_image_rect = Rect::from_min_size(image_mesh_pos, image_mesh_size).expand(expansion);
                                         let mut shadow = Shadow::big_dark();
@@ -957,16 +965,17 @@ impl GalleryUI {
                                         let shadow_mesh = shadow.tessellate(image_rect, Rounding::none());
 
                                         ui.painter().add(shadow_mesh);
-                                        ui::paint_image(ui.painter(), &tex_id, tweened_image_rect);
+                                        ui::paint_image(ui.painter(), &hover_info.texture_id, tweened_image_rect);
+                                        paint_icon(ui.painter(), tweened_image_rect, hover_info.icon_type);
 
-                                        let is_currently_hovered = if let Some((current_hovered_tex_id, _)) = current_hovered {
-                                            current_hovered_tex_id == *tex_id
+                                        let is_currently_hovered = if let Some(current_hovered) = current_hovered.as_mut() {
+                                            current_hovered.texture_id == hover_info.texture_id
                                         } else {
                                             false
                                         };
 
                                         if !is_currently_hovered {
-                                            *hover_duration -= ctx.input(|i| i.stable_dt) * 3.;
+                                            hover_info.animation -= ctx.input(|i| i.stable_dt) * 3.;
                                         }
                                     }
                                 }

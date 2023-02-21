@@ -32,7 +32,7 @@ pub struct SharedState {
     pub database_unlocked: UpdateFlag,
     pub disable_navbar: UpdateList<String>,
     pub database_changed: UpdateFlag,
-    pub audio_device: RefCell<egui_video::AudioStreamerDevice>,
+    pub audio_device: RefCell<egui_video::AudioDevice>,
 }
 
 impl SharedState {
