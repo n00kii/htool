@@ -218,7 +218,7 @@ impl PartialEq for ImportationStatus {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Hash)]
 pub enum EntryId {
     MediaEntry(String),
     PoolEntry(i32),
@@ -262,6 +262,20 @@ pub enum EntryInfo {
 }
 
 impl EntryInfo {
+    pub fn as_media_entry(&self) -> Option<&MediaInfo> {
+        if let EntryInfo::MediaEntry(media_info) = self {
+            Some(media_info)
+        } else {
+            None
+        }
+    }
+    pub fn as_pool_entry(&self) -> Option<&PoolInfo> {
+        if let EntryInfo::PoolEntry(pool_info) = self {
+            Some(pool_info)
+        } else {
+            None
+        }
+    }
     pub fn details(&self) -> &EntryDetails {
         match self {
             EntryInfo::MediaEntry(media_info) => &media_info.details,
@@ -317,6 +331,11 @@ impl EntryInfo {
         }
         if let Some((max_score, inclusive)) = search.score_max {
             if (score > max_score) || ((score == max_score) && !inclusive) {
+                return false;
+            }
+        }
+        if let Some(id) = search.id.as_ref() {
+            if !self.entry_id().to_string().starts_with(id) {
                 return false;
             }
         }
@@ -713,9 +732,9 @@ pub fn get_namespace_colors() -> Result<HashMap<String, Color32>> {
     let conn = initialize_database_connection()?;
     let mut stmt = conn.prepare("SELECT namespace, color FROM namespaces")?;
     let colors = stmt
-    .query_map([], |row| Ok((row.get("namespace")?, row.get("color")?)))?
-    .filter_map(|res| res.ok())
-    .collect::<HashMap<String, String>>();
+        .query_map([], |row| Ok((row.get("namespace")?, row.get("color")?)))?
+        .filter_map(|res| res.ok())
+        .collect::<HashMap<String, String>>();
 
     Ok(colors
         .into_iter()
@@ -819,7 +838,12 @@ pub fn entry_info_row_to_id(row: &Row) -> Result<EntryId, rusqlite::Error> {
     }
 }
 
-pub fn get_all_entry_ids_with_conn(conn: &Connection) -> Result<Vec<EntryId>> {
+pub fn get_all_entry_ids() -> Result<Vec<EntryId>> {
+    let conn = initialize_database_connection()?;
+    get_all_entry_ids_with_conn(&conn)
+}
+
+fn get_all_entry_ids_with_conn(conn: &Connection) -> Result<Vec<EntryId>> {
     let mut stmt = conn.prepare("SELECT hash, link_id FROM entry_info")?;
     let all_entry_ids = stmt
         .query_map([], |row| {
@@ -1699,10 +1723,19 @@ pub fn get_media_mime_with_conn(conn: &Connection, hash: &String) -> Result<Opti
     Ok(mime_type)
 }
 
-pub fn export_entry(entry_id: &EntryId, mut export_path: PathBuf) -> Result<PathBuf> {
-    let conn = initialize_database_connection()?;
+fn export_entry_with_conn(conn: &Connection, entry_id: &EntryId, mut export_path: PathBuf) -> Result<PathBuf> {
     match entry_id {
-        EntryId::PoolEntry(_link_id) => todo!(),
+        EntryId::PoolEntry(link_id) => {
+            export_path.push(link_id.to_string());
+            fs::create_dir_all(&export_path)?;
+            for entry_id in get_hashes_of_media_link_with_conn(&conn, link_id)?
+                .into_iter()
+                .map(|h| EntryId::MediaEntry(h))
+            {
+                export_entry_with_conn(conn, &entry_id, export_path.clone())?;
+            }
+            Ok(export_path)
+        }
         EntryId::MediaEntry(hash) => {
             let bytes = get_media_bytes(hash)?;
             let mime = get_media_mime_with_conn(&conn, hash)?;
@@ -1716,5 +1749,37 @@ pub fn export_entry(entry_id: &EntryId, mut export_path: PathBuf) -> Result<Path
             Ok(export_path)
         }
     }
-    // Ok(())
+}
+
+pub fn export_entry(entry_id: &EntryId, export_path: PathBuf) -> Result<PathBuf> {
+    let conn = initialize_database_connection()?;
+    export_entry_with_conn(&conn, entry_id, export_path)
+}
+
+pub fn find_duplicates() -> Result<Vec<Vec<(EntryId, String)>>> {
+    let hamming_threshold = 2;
+    fn hamming_distance(s1: &String, s2: &String) -> usize {
+        s1.chars().zip(s2.chars()).map(|(c1, c2)| if c1 == c2 { 0 } else { 1 }).sum()
+    }
+    let conn = initialize_database_connection()?;
+    let all_entry_info = get_all_entry_info_with_conn(&conn)?;
+    let all_p_hashes = all_entry_info.into_iter().filter_map(|e| {
+        e.as_media_entry()
+            .and_then(|m| m.p_hash.clone().map(|p_hash| (e.entry_id().as_media_entry_id().unwrap().clone(), p_hash)))
+    }).collect::<Vec<_>>();
+    let mut duplicates: Vec<Vec<(String, String)>> = Vec::new();
+    for (media_hash, p_hash) in all_p_hashes {
+        let mut found_duplicate = false;
+        for duplicate_group in &mut duplicates {
+            if duplicate_group.iter().any(|(_, other_p_hash)| hamming_distance(&p_hash, other_p_hash) <= hamming_threshold) {
+                duplicate_group.push((media_hash.clone(), p_hash.clone()));
+                found_duplicate = true;
+                break;
+            }
+        }
+        if !found_duplicate {
+            duplicates.push(vec![(media_hash.clone(), p_hash.clone())]);
+        }
+    }
+    Ok(duplicates.into_iter().map(|v| v.into_iter().map(|(m, p)| (EntryId::MediaEntry(m), p)).collect::<Vec<_>>()).filter(|v| v.len() > 1).collect::<Vec<_>>())
 }

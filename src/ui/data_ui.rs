@@ -1,26 +1,34 @@
 use super::{icon, toast_error_lock, toast_success_lock, toast_warning_lock, UserInterface};
 use crate::app::{SharedState, UpdateFlag};
-use crate::data::DatabaseInfo;
+use crate::data::{DatabaseInfo, EntryId};
 use crate::ui;
 use crate::{config::Config, data};
 use anyhow::{anyhow, Result};
-use egui::{Align, Color32, Context, Label, Layout, Rounding, Sense};
+use egui::{Align, Color32, Context, Label, Layout, ProgressBar, Rounding, Sense, TextEdit};
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use egui_modal::Modal;
+use parking_lot::Mutex;
 use poll_promise::Promise;
 use std::fs;
-use std::sync::atomic::AtomicBool;
-use std::{
-    rc::Rc,
-    sync::Arc,
-    thread,
-};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{rc::Rc, sync::Arc, thread};
 
 pub struct DataUI {
     pub database_info: Option<Promise<Result<DatabaseInfo>>>,
     pub shared_state: Rc<SharedState>,
     pub currently_rekeying: UpdateFlag,
+    takeout_progress: Option<Arc<TakeoutProgress>>,
+    duplicates: Option<Promise<Result<Vec<Vec<EntryId>>>>>,
     pub database_key: String,
+    pub takeout_path: String,
+}
+
+struct TakeoutProgress {
+    current_index: AtomicUsize,
+    total: AtomicUsize,
+    cancel_flag: AtomicBool,
+    current_item: Arc<Mutex<String>>,
 }
 
 impl DataUI {
@@ -29,7 +37,10 @@ impl DataUI {
             shared_state: Rc::clone(&shared_state),
             database_info: None,
             database_key: String::new(),
+            takeout_path: String::new(),
             currently_rekeying: Arc::new(AtomicBool::new(false)),
+            takeout_progress: None,
+            duplicates: None,
         }
     }
 }
@@ -39,6 +50,7 @@ const DB_JOURNAL_SUFFIX: &str = "-journal";
 impl UserInterface for DataUI {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         self.process_database_info();
+        self.render_takeout_progress(ctx);
         StripBuilder::new(ui)
             .size(Size::exact(0.)) // FIXME: not sure why this is adding more space.
             .size(Size::exact(ui::constants::OPTIONS_COLUMN_WIDTH))
@@ -117,6 +129,7 @@ impl DataUI {
     }
     fn render_options(&mut self, ui: &mut egui::Ui, ctx: &Context) {
         let rekey_modal = self.render_rekey_modal(ctx);
+        let export_all_modal = self.render_takeout_modal(ctx);
         ui.with_layout(Layout::top_down_justified(Align::Center), |ui| {
             ui.label("data");
             if ui.button(icon!("refresh", REFRESH_ICON)).clicked() {
@@ -137,6 +150,14 @@ impl DataUI {
             );
             if ui.button(icon!("rekey", REKEY_ICON)).clicked() {
                 rekey_modal.open();
+            }
+            ui::space(ui);
+            if ui.button(icon!("takeout", EXPORT_ICON)).clicked() {
+                export_all_modal.open();
+            }
+            ui::space(ui);
+            if ui.button(icon!("deduplicate", DUPLICATE_ICON)).clicked() {
+                dbg!(data::find_duplicates());
             }
         });
     }
@@ -166,7 +187,7 @@ impl DataUI {
                                 });
                             });
                             body.row(ui::constants::TABLE_ROW_HEIGHT, |mut row| {
-                                if !database_info.is_unencrypted { 
+                                if !database_info.is_unencrypted {
                                     row.col(|ui| {
                                         ui.label("database key");
                                     });
@@ -268,6 +289,100 @@ impl DataUI {
                 });
             }
         }
+    }
+    fn render_takeout_progress(&mut self, ctx: &Context) {
+        let mut close = false;
+        if let Some(takeout_progress) = self.takeout_progress.as_deref() {
+            let current = takeout_progress.current_index.load(Ordering::Relaxed) + 1;
+            let total = takeout_progress.total.load(Ordering::Relaxed);
+            let progress = current as f32 / total as f32;
+            egui::Window::new("takeout progress").show(ctx, |ui| {
+                if progress != 1. {
+                    let current_item = if let Some(current_item) = takeout_progress.current_item.try_lock() {
+                        current_item.clone()
+                    } else {
+                        String::from("[ ? ]")
+                    };
+                    ui.label(format!("exporting {current_item}..."));
+                    ui.add(ProgressBar::new(progress).animate(true).text(format!("{current} / {total}")));
+                    ui.separator();
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        if ui.button("cancel").clicked() {
+                            takeout_progress.cancel_flag.store(true, Ordering::Relaxed);
+                        }
+                    });
+                } else {
+                    ui.vertical_centered_justified(|ui| {
+                        ui.label(icon!(format!("{total} items exported"), SUCCESS_ICON));
+                        if ui.button(icon!("open takeout folder", OPEN_ICON)).clicked() {
+                            if let Err(e) = open::that(&self.takeout_path) {
+                                ui::toast_error_lock(&self.shared_state.toasts, format!("failed to open path: {e}"));
+                            }
+                        }
+                        if ui.button("close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+            });
+        }
+        if close {
+            self.takeout_progress = None;
+        }
+    }
+
+    fn render_takeout_modal(&mut self, ctx: &Context) -> Modal {
+        let ask_modal = Modal::new(ctx, "export_everything_ask_modal");
+        ask_modal.show(|ui| {
+            ask_modal.title(ui, icon!("export all items", EXPORT_ICON));
+            ask_modal.frame(ui, |ui| {
+                ask_modal.body(ui, "export everything?\nchoose a path to export to");
+                let tedit_resp = ui.add(
+                    TextEdit::singleline(&mut self.takeout_path)
+                        .hint_text("click to set path")
+                        .interactive(false)
+                        .clip_text(false),
+                );
+
+                if ui.interact(tedit_resp.rect, tedit_resp.id.with("click_sense"), Sense::click()).clicked() {
+                    if let Some(path_buf) = rfd::FileDialog::new().pick_folder() {
+                        self.takeout_path = path_buf.as_path().to_string_lossy().to_string();
+                    }
+                }
+                ask_modal.buttons(ui, |ui| {
+                    ask_modal.button(ui, "cancel");
+                    if ask_modal.suggested_button(ui, icon!("export all", EXPORT_ICON)).clicked() {
+                        self.takeout_progress = Some(Arc::new(TakeoutProgress {
+                            current_index: AtomicUsize::new(0),
+                            total: AtomicUsize::new(0),
+                            cancel_flag: AtomicBool::new(false),
+                            current_item: Arc::new(Mutex::new(String::new())),
+                        }));
+                        let takeout_progress = Arc::clone(self.takeout_progress.as_ref().unwrap());
+                        let toasts = Arc::clone(&self.shared_state.toasts);
+                        let export_path = PathBuf::from(&self.takeout_path);
+                        thread::spawn(move || match data::get_all_entry_info() {
+                            Ok(mut entry_info) => {
+                                entry_info.retain(|e| e.details().is_independant);
+                                takeout_progress.total.store(entry_info.len(), Ordering::Relaxed);
+                                for (i, entry_info) in entry_info.iter().enumerate() {
+                                    if takeout_progress.cancel_flag.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    *takeout_progress.current_item.lock() = ui::pretty_entry_id(entry_info.entry_id());
+                                    takeout_progress.current_index.store(i, Ordering::Relaxed);
+                                    if let Err(e) = data::export_entry(entry_info.entry_id(), export_path.clone()) {
+                                        ui::toast_error_lock(&toasts, format!("failed to export {}: {e}", ui::pretty_entry_id(entry_info.entry_id())))
+                                    }
+                                }
+                            }
+                            Err(e) => ui::toast_error_lock(&toasts, format!("failed to load entry ids: {e}")),
+                        });
+                    }
+                });
+            });
+        });
+        ask_modal
     }
     fn render_rekey_modal(&mut self, ctx: &Context) -> Modal {
         let rekey_modal = Modal::new(ctx, "rekey_modal");

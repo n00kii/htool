@@ -98,6 +98,7 @@ pub mod constants {
     pub const REKEY_ICON: &str = "🔑";
     pub const KEY_ICON: &str = "🔐";
     pub const SHUFFLE_ICON: &str = "🔀";
+    pub const DUPLICATE_ICON: &str = "🗐";
 
     pub const GALLERY_TITLE: &str = "gallery";
     pub const IMPORT_TITLE: &str = "importer";

@@ -150,6 +150,7 @@ pub struct EntrySearch {
     pub is_media: Option<bool>,
     pub is_valid: bool,
     pub limit: Option<i64>,
+    pub id: Option<String>,
 }
 
 impl Default for EntrySearch {
@@ -167,6 +168,7 @@ impl Default for EntrySearch {
             is_pool: None,
             is_valid: true,
             limit: None,
+            id: None,
         }
     }
 }
@@ -177,6 +179,7 @@ const TYPE_QUANTIFIER: &str = "type";
 const INDEPENDANT_QUANTIFIER: &str = "independant";
 const LIMIT_QUANTIFIER: &str = "limit";
 const BOOKMARKED_QUANTIFIER: &str = "bookmarked";
+const ID_QUANTIFIER: &str = "id";
 const SCORE_QUANTIFIER: &str = "score";
 const SCORE_Q_QUANTIFIER: &str = "score_q";
 
@@ -198,6 +201,7 @@ impl From<String> for EntrySearch {
             static ref NOT_RE: Regex = regex(&grouping_re(NOT_QUANTIFIER));
             static ref TYPE_RE: Regex = regex(&value_re(TYPE_QUANTIFIER));
             static ref BOOKMARKED_RE: Regex = regex(&value_re(BOOKMARKED_QUANTIFIER));
+            static ref ID_RE: Regex = regex(&value_re(ID_QUANTIFIER));
             static ref INDEPENDANT_RE: Regex = regex(&value_re(INDEPENDANT_QUANTIFIER));
             static ref LIMIT_RE: Regex = regex(&value_re(LIMIT_QUANTIFIER));
             static ref SCORE_RE: Regex = regex(&format!(r"{SCORE_QUANTIFIER}(?P<{SCORE_Q_QUANTIFIER}>.+?)(?P<{SCORE_QUANTIFIER}>\d+)"));
@@ -227,6 +231,9 @@ impl From<String> for EntrySearch {
         }
         for cap in BOOKMARKED_RE.captures_iter(&search) {
             entry_search.is_bookmarked = str_to_bool(&cap[BOOKMARKED_QUANTIFIER])
+        }
+        for cap in ID_RE.captures_iter(&search) {
+            entry_search.id = Some(cap[ID_QUANTIFIER].to_string())
         }
         for cap in INDEPENDANT_RE.captures_iter(&search) {
             entry_search.is_independant = str_to_bool(&cap[INDEPENDANT_QUANTIFIER])
@@ -262,6 +269,7 @@ impl From<String> for EntrySearch {
         stripped = INDEPENDANT_RE.replace_all(&stripped, "").to_string();
         stripped = SCORE_RE.replace_all(&stripped, "").to_string();
         stripped = LIMIT_RE.replace_all(&stripped, "").to_string();
+        stripped = ID_RE.replace_all(&stripped, "").to_string();
 
         entry_search.and_relations.push(Tag::from_tagstrings(&stripped));
         entry_search
@@ -827,8 +835,10 @@ impl GalleryUI {
         }
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
             let thumbnail_size = Config::global().ui.gallery_thumbnail_size as f32;
-            let entries_per_row = ui.available_size_before_wrap().x / thumbnail_size;
-            let num_rows = gallery_entries.len() as f32 / entries_per_row;
+            let entry_spacing = ui.spacing().item_spacing.x;
+            let row_size = ui.available_size_before_wrap().x;
+            let entries_per_row = ((row_size + entry_spacing) / (thumbnail_size + entry_spacing)).floor();
+            let num_rows = (gallery_entries.len() as f32 / entries_per_row).ceil();
             ScrollArea::vertical().id_source("previews_col").auto_shrink([false, false]).show_rows(
                 ui,
                 thumbnail_size,

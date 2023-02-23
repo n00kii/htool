@@ -1,5 +1,5 @@
 path:
-  root: D:/root
+  root: C:/htool
   landing: F:\Media\Documents\Projects\htool2\htool2\testing_files
   database: data1
 general:
@@ -85,23 +85,23 @@ themes:
     inactive_bg_fill_color: '#111111'
     inactive_bg_stroke_color: null
     inactive_fg_stroke_color: '#808080'
-    hovered_bg_fill_color: '#1d1d1d'
+    hovered_bg_fill_color: '#1D1D1D'
     hovered_bg_stroke_color: '#333333'
-    hovered_fg_stroke_color: '#b6b6b6'
+    hovered_fg_stroke_color: '#B6B6B6'
     active_bg_fill_color: '#686868'
-    active_bg_stroke_color: '#c5c5c5'
-    active_fg_stroke_color: '#c5c5c5'
-    selected_fg_stroke_color: '#dbdbdb'
+    active_bg_stroke_color: '#C5C5C5'
+    active_fg_stroke_color: '#C5C5C5'
+    selected_fg_stroke_color: '#DBDBDB'
     selected_bg_fill_color: '#272727'
     blue_fill_color: null
     blue_stroke_color: '#82AAFF'
-    red_fill_color: '#2c1616'
-    red_stroke_color: '#9c5555'
+    red_fill_color: '#2C1616'
+    red_stroke_color: '#9C5555'
     green_fill_color: null
     green_stroke_color: null
     yellow_stroke_color: null
     yellow_fill_color: null
-    accent_fill_color: '#3d3d3d'
-    accent_stroke_color: '#dbdbdb'
-    override_widget_primary: '#dbdbdb'
+    accent_fill_color: '#3D3D3D'
+    accent_stroke_color: '#DBDBDB'
+    override_widget_primary: '#DBDBDB'
     override_widget_secondary: null
