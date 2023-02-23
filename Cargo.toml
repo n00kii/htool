@@ -22,6 +22,7 @@ egui-notify = "0.6.0"
 egui-modal = { git = "https://github.com/n00kii/egui-modal" }
 egui-video = { git = "https://github.com/n00kii/egui-video", features = [ "from_bytes" ] }
 egui_extras = "0.21.0"
+puffin_egui = "0.20.0"
 
 image = "0.24.2"
 image_hasher = "1.0.0"

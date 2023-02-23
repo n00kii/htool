@@ -295,8 +295,9 @@ impl GalleryUI {
             .collect::<Vec<_>>()
     }
     fn process_previews(&mut self, ctx: &egui::Context) {
+        puffin::profile_scope!("process_preview");
+
         let mut do_refiter = false;
-        // let mut preview_index = 0;
         let mut new_previews = vec![];
         self.preview_windows.retain_mut(|window_container| {
             if let Some(preview_ui) = window_container.window.downcast_mut::<PreviewUI>() {
@@ -803,6 +804,8 @@ impl GalleryUI {
     }
 
     fn render_gallery_entries(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        puffin::profile_scope!("render_gallery_entries");
+
         fn paint_icon(painter: &egui::Painter, thumbnail_rect: Rect, icon_type: Icon) {
             let icon_size = 20.;
             let icon_offset = 5.;
@@ -814,38 +817,35 @@ impl GalleryUI {
             let icon_fid = ui::font_id_sized(16.);
             let paint_character = |c: &str| {
                 painter.rect_filled(icon_rect, icon_rounding, icon_color);
-                painter.text(
-                    icon_rect.center(),
-                    Align2::CENTER_CENTER,
-                    c,
-                    icon_fid,
-                    icon_text_color,
-                );
+                painter.text(icon_rect.center(), Align2::CENTER_CENTER, c, icon_fid, icon_text_color);
             };
             match icon_type {
-                Icon::Pool => {
-                    paint_character(ui::constants::LINK_ICON)
-                }
-                Icon::Movie => {
-                    paint_character(ui::constants::MOVIE_ICON)
-                }
+                Icon::Pool => paint_character(ui::constants::LINK_ICON),
+                Icon::Movie => paint_character(ui::constants::MOVIE_ICON),
                 _ => (),
             }
         }
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
-            ScrollArea::vertical()
-                .id_source("previews_col")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
+            let thumbnail_size = Config::global().ui.gallery_thumbnail_size as f32;
+            let entries_per_row = ui.available_size_before_wrap().x / thumbnail_size;
+            let num_rows = gallery_entries.len() as f32 / entries_per_row;
+            ScrollArea::vertical().id_source("previews_col").auto_shrink([false, false]).show_rows(
+                ui,
+                thumbnail_size,
+                num_rows as usize,
+                |ui, row_range| {
                     let layout = egui::Layout::from_main_dir_and_cross_align(Direction::LeftToRight, Align::Center).with_main_wrap(true);
                     ui.allocate_ui(Vec2::new(ui.available_size_before_wrap().x, 0.0), |ui| {
                         ui.with_layout(layout, |ui| {
                             let mut current_hovered = None;
                             ui.style_mut().spacing.item_spacing = Vec2::new(0., 0.);
-                            for gallery_entry in gallery_entries.iter() {
+                            for (index, gallery_entry) in gallery_entries.iter().enumerate() {
+                                let entry_visible = row_range.contains(&(index / entries_per_row as usize));
+                                if !entry_visible {
+                                    continue;
+                                }
                                 let status_label = gallery_entry.borrow().get_status_label().map(|label| label.into());
                                 let mut options = RenderLoadingImageOptions::default();
-                                let thumbnail_size = Config::global().ui.gallery_thumbnail_size as f32;
                                 options.hover_text_on_none_image = Some("(loading bytes for thumbnail...)".into());
                                 options.hover_text_on_loading_image = Some("(loading thumbnail...)".into());
                                 options.hover_text = status_label;
@@ -982,7 +982,8 @@ impl GalleryUI {
                             }
                         });
                     });
-                });
+                },
+            );
         } else {
             ui.with_layout(Layout::left_to_right(Align::Center).with_main_justify(true), |ui| {
                 ui.spinner();
@@ -1017,6 +1018,8 @@ impl GalleryUI {
     }
 
     fn render_preview_windows(&mut self, ctx: &egui::Context) {
+        puffin::profile_scope!("render_preview_windows");
+
         self.preview_windows.retain(|window| window.is_open.unwrap());
         for preview_window in self.preview_windows.iter_mut() {
             let window = egui::Window::new(&preview_window.title)

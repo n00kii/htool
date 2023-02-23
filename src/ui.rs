@@ -565,7 +565,7 @@ pub fn render_loading_preview(
             Some(Ok(image)) => {
                 let original_size = match image {
                     MediaPreview::Picture(image) => image.size_vec2(),
-                    MediaPreview::Movie(streamer) => vec2(streamer.width as f32, streamer.height as f32),
+                    MediaPreview::Movie(player) => vec2(player.width as f32, player.height as f32),
                 };
 
                 // let texture_id
@@ -595,8 +595,8 @@ pub fn render_loading_preview(
                         };
                         response
                     }
-                    MediaPreview::Movie(streamer) => {
-                        streamer.ui(ui, image_size)
+                    MediaPreview::Movie(player) => {
+                        player.ui(ui, image_size)
                     }
                 };
 
@@ -827,6 +827,12 @@ impl App {
                 is_open: None,
 
                 title: icon!(constants::DATA_TITLE, DATA_ICON),
+            },
+            WindowContainer {
+                window: Box::new(debug_ui::DebugUI::new(&self.shared_state)),
+                is_open: Some(false),
+
+                title: icon!(constants::DEBUG_TITLE, DEBUG_ICON),
             },
         ];
         self.check_database();
