@@ -99,6 +99,7 @@ pub struct GalleryUI {
     include_dependants: bool,
     include_pools: bool,
     last_hovered: Vec<HoverInfo>,
+    actual_thumbnail_size: Option<f32>,
     selected_rects: Vec<Rect>,
 }
 
@@ -129,6 +130,7 @@ impl GalleryUI {
             gallery_entries: None,
             filtered_gallery_entries: None,
             last_gallery_entry_index: 0,
+            actual_thumbnail_size: None,
             max_processed_gallery_entries_per_frame: 100,
             include_dependants: false,
             include_pools: true,
@@ -835,9 +837,9 @@ impl GalleryUI {
         }
         if let Some(gallery_entries) = self.filtered_gallery_entries.as_mut() {
             let thumbnail_size = Config::global().ui.gallery_thumbnail_size as f32;
-            let entry_spacing = ui.spacing().item_spacing.x;
+            let actual_thumbnail_size = self.actual_thumbnail_size.unwrap_or(thumbnail_size);
             let row_size = ui.available_size_before_wrap().x;
-            let entries_per_row = ((row_size + entry_spacing) / (thumbnail_size + entry_spacing)).floor();
+            let entries_per_row = (row_size / actual_thumbnail_size).floor();
             let num_rows = (gallery_entries.len() as f32 / entries_per_row).ceil();
             ScrollArea::vertical().id_source("previews_col").auto_shrink([false, false]).show_rows(
                 ui,
@@ -864,6 +866,8 @@ impl GalleryUI {
 
                                 let response = ui::render_loading_preview(ui, ctx, gallery_entry.borrow_mut().thumbnail.as_mut(), &options);
                                 if let Some(mut response) = response {
+                                    self.actual_thumbnail_size = Some(response.rect.width());
+                                    // dbg!(format!("{}, {}",response.rect.width(), response.rect.height()));
                                     let icon_type = if let Some(entry_info) = gallery_entry.borrow().entry_info.try_lock() {
                                         let icon_type = if entry_info.entry_id().is_pool_entry_id() {
                                             Icon::Pool

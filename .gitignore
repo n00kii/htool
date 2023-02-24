@@ -56,5 +56,6 @@ Thumbs.db
 *.db-journal
 *.code-workspace
 root/
+testing_files/
 
 Cargo.lock
